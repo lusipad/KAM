@@ -1,0 +1,15 @@
+.venv/
+
+# Frontend dependencies and build artifacts
+app/node_modules/
+app/dist/
+app/playwright-report/
+app/test-results/
+
+# Local runtime files
+app/*.log
+backend/*.log
+backend/storage/
+
+# Environment overrides
+.env
