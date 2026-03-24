@@ -2,7 +2,6 @@
 Lite 任务台 API
 """
 from typing import Any, Optional
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -191,13 +190,7 @@ async def get_run_artifacts(run_id: str, db: Session = Depends(get_db)):
     run = service.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run 不存在")
-    artifacts = []
-    for artifact in run.artifacts:
-        payload = artifact.to_dict()
-        if artifact.path and Path(artifact.path).exists():
-            payload["content"] = Path(artifact.path).read_text(encoding="utf-8", errors="replace")
-        artifacts.append(payload)
-    return {"artifacts": artifacts}
+    return {"artifacts": [service.hydrate_artifact(artifact) for artifact in run.artifacts]}
 
 
 @router.get("/reviews/{task_id}")
@@ -221,17 +214,7 @@ async def summarize_review(task_id: str, db: Session = Depends(get_db)):
 @router.post("/reviews/{task_id}/compare")
 async def compare_review(task_id: str, db: Session = Depends(get_db)):
     service = WorkspaceService(db)
-    review = service.get_review(task_id)
-    if not review:
+    comparison = service.compare_runs(task_id)
+    if comparison is None:
         raise HTTPException(status_code=404, detail="任务不存在")
-
-    comparison = [
-        {
-            "runId": run["id"],
-            "agentName": run["agentName"],
-            "status": run["status"],
-            "artifactCount": len(run.get("artifacts", [])),
-        }
-        for run in review["runs"]
-    ]
     return {"comparison": comparison}

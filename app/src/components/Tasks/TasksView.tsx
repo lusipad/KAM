@@ -18,6 +18,10 @@ interface ComparisonRow {
   agentName: string;
   status: string;
   artifactCount: number;
+  changedFiles: number;
+  untrackedFiles: number;
+  hasPatch: boolean;
+  repoRoot?: string;
 }
 
 const statusTone: Record<string, string> = {
@@ -392,6 +396,14 @@ export function TasksView() {
                       <span className="font-medium">{item.agentName}</span>
                       <span className="ml-2 text-muted-foreground">{item.status}</span>
                       <span className="ml-2 text-muted-foreground">artifacts: {item.artifactCount}</span>
+                      <span className="ml-2 text-muted-foreground">files: {item.changedFiles}</span>
+                      {item.hasPatch && <span className="ml-2 text-muted-foreground">patch</span>}
+                      {!!item.untrackedFiles && (
+                        <span className="ml-2 text-muted-foreground">untracked: {item.untrackedFiles}</span>
+                      )}
+                      {!!item.repoRoot && (
+                        <div className="mt-1 break-all text-[11px] text-muted-foreground">{item.repoRoot}</div>
+                      )}
                     </div>
                   ))}
                 </div>

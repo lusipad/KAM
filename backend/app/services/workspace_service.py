@@ -337,7 +337,16 @@ class WorkspaceService:
             summary_lines.append(f"引用数: {len(task.refs)}")
 
         for run in task.runs[:5]:
-            summary_lines.append(f"- {run.agent_name}: {run.status}")
+            change_stats = self._extract_run_change_stats(run)
+            suffix = ""
+            if change_stats["changedFiles"]:
+                suffix = f" ({change_stats['changedFiles']} files"
+                if change_stats["hasPatch"]:
+                    suffix += ", patch"
+                if change_stats["untrackedFiles"]:
+                    suffix += f", {change_stats['untrackedFiles']} untracked"
+                suffix += ")"
+            summary_lines.append(f"- {run.agent_name}: {run.status}{suffix}")
 
         return {
             "task": task.to_dict(),
@@ -345,6 +354,28 @@ class WorkspaceService:
             "artifacts": artifacts,
             "summary": "\n".join(summary_lines),
         }
+
+    def compare_runs(self, task_id: str) -> list[dict[str, Any]] | None:
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        comparison = []
+        for run in task.runs:
+            change_stats = self._extract_run_change_stats(run)
+            comparison.append(
+                {
+                    "runId": str(run.id),
+                    "agentName": run.agent_name,
+                    "status": run.status,
+                    "artifactCount": len(run.artifacts or []),
+                    "changedFiles": change_stats["changedFiles"],
+                    "untrackedFiles": change_stats["untrackedFiles"],
+                    "hasPatch": change_stats["hasPatch"],
+                    "repoRoot": change_stats["repoRoot"],
+                }
+            )
+        return comparison
 
     def hydrate_artifact(self, artifact: RunArtifact) -> dict[str, Any]:
         payload = artifact.to_dict()
@@ -453,6 +484,17 @@ class WorkspaceService:
         )
         self.db.add(artifact)
         return artifact
+
+    def _extract_run_change_stats(self, run: AgentRun) -> dict[str, Any]:
+        changes_artifact = next((artifact for artifact in run.artifacts if artifact.artifact_type == "changes"), None)
+        patch_artifact = next((artifact for artifact in run.artifacts if artifact.artifact_type == "patch"), None)
+        metadata = changes_artifact.metadata_ if changes_artifact else {}
+        return {
+            "changedFiles": metadata.get("changed", 0),
+            "untrackedFiles": metadata.get("untracked", 0),
+            "hasPatch": bool(patch_artifact or metadata.get("trackedDiff")),
+            "repoRoot": metadata.get("repoRoot"),
+        }
 
     def _refresh_task_status(self, task_id: str):
         task = self.get_task(task_id)

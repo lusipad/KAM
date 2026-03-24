@@ -27,6 +27,10 @@ def _read_text(path: Path, max_chars: int = 200_000) -> str:
     return content
 
 
+def _write_text(path: Path, content: str):
+    path.write_text(content, encoding="utf-8")
+
+
 class RunExecutionManager:
     def __init__(self):
         self._lock = threading.Lock()
@@ -174,6 +178,12 @@ class RunExecutionManager:
                 summary_text,
                 str(execution["summary_path"]) if execution["summary_path"] else None,
             )
+            git_summary = self._capture_git_artifacts(db, run, execution)
+            if git_summary:
+                run.metadata_ = {
+                    **(run.metadata_ or {}),
+                    "git": git_summary,
+                }
 
             run.completed_at = run.completed_at or datetime.utcnow()
             if run.status == "canceled":
@@ -238,6 +248,7 @@ class RunExecutionManager:
                 "command": command,
                 "display_command": display_command,
                 "execution_cwd": str(execution_cwd),
+                "run_dir": str(run_dir),
                 "stdout_path": stdout_path,
                 "stderr_path": stderr_path,
                 "summary_path": summary_path,
@@ -276,6 +287,7 @@ class RunExecutionManager:
             "command": command,
             "display_command": subprocess.list2cmdline(command) if os.name == "nt" else " ".join(command),
             "execution_cwd": str(execution_cwd),
+            "run_dir": str(run_dir),
             "stdout_path": stdout_path,
             "stderr_path": stderr_path,
             "summary_path": summary_path,
@@ -294,6 +306,160 @@ class RunExecutionManager:
 
     def _resolve_cli(self, configured: str, fallback: str) -> str:
         return shutil.which(configured) or shutil.which(fallback) or configured
+
+    def _capture_git_artifacts(self, db: Session, run: AgentRun, execution: dict[str, Any]) -> dict[str, Any] | None:
+        execution_cwd = Path(execution["execution_cwd"])
+        run_dir = Path(execution["run_dir"])
+        repo_root = self._get_git_root(execution_cwd)
+        if not repo_root:
+            return None
+
+        status_output = self._git_output(execution_cwd, ["status", "--short", "--untracked-files=all"])
+        diffstat_output = self._git_output(execution_cwd, ["diff", "--stat", "--find-renames", "HEAD"])
+        patch_output = self._git_output(
+            execution_cwd,
+            ["diff", "--binary", "--no-ext-diff", "--find-renames", "HEAD"],
+        )
+        files = self._parse_git_status(status_output)
+        summary = self._build_change_summary(repo_root, files, diffstat_output, execution_cwd)
+        changes_path = run_dir / "git-changes.txt"
+        patch_path = run_dir / "git.patch"
+
+        _write_text(changes_path, summary)
+        if patch_output.strip():
+            _write_text(patch_path, patch_output)
+        elif patch_path.exists():
+            patch_path.unlink()
+
+        counts = {
+            "changed": len(files),
+            "untracked": sum(1 for item in files if item["status"] == "??"),
+            "trackedDiff": bool(patch_output.strip()),
+        }
+        change_artifact = self._ensure_artifact(
+            db,
+            run,
+            "changes",
+            "git changes",
+            summary,
+            str(changes_path),
+        )
+        change_artifact.metadata_ = {
+            "repoRoot": str(repo_root),
+            "executionCwd": str(execution_cwd),
+            "files": files,
+            **counts,
+        }
+
+        if patch_output.strip():
+            patch_artifact = self._ensure_artifact(
+                db,
+                run,
+                "patch",
+                "git patch",
+                patch_output,
+                str(patch_path),
+            )
+            patch_artifact.metadata_ = {
+                "repoRoot": str(repo_root),
+                "executionCwd": str(execution_cwd),
+                "files": [item["path"] for item in files],
+                "changed": len(files),
+            }
+
+        return {
+            "repoRoot": str(repo_root),
+            "executionCwd": str(execution_cwd),
+            "files": files,
+            **counts,
+        }
+
+    def _git_output(self, cwd: Path, args: list[str]) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(cwd), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return ""
+
+    def _parse_git_status(self, status_output: str) -> list[dict[str, str]]:
+        files: list[dict[str, str]] = []
+        for raw_line in status_output.splitlines():
+            line = raw_line.rstrip()
+            if len(line) < 4:
+                continue
+
+            status = line[:2]
+            path_text = line[3:] if len(line) > 2 and line[2] == " " else line[2:]
+            original_path = ""
+            if " -> " in path_text:
+                original_path, path_text = path_text.split(" -> ", 1)
+
+            files.append(
+                {
+                    "status": status,
+                    "label": self._map_git_status(status),
+                    "path": path_text,
+                    "originalPath": original_path,
+                }
+            )
+        return files
+
+    def _map_git_status(self, status: str) -> str:
+        status = status.strip()
+        if status == "??":
+            return "untracked"
+        if "R" in status:
+            return "renamed"
+        if "A" in status:
+            return "added"
+        if "D" in status:
+            return "deleted"
+        if "M" in status:
+            return "modified"
+        if "C" in status:
+            return "copied"
+        return status or "unknown"
+
+    def _build_change_summary(
+        self,
+        repo_root: Path,
+        files: list[dict[str, str]],
+        diffstat_output: str,
+        execution_cwd: Path,
+    ) -> str:
+        lines = [
+            f"Repo root: {repo_root}",
+            f"Execution cwd: {execution_cwd}",
+            f"Changed files: {len(files)}",
+            "",
+        ]
+
+        if files:
+            lines.append("Files:")
+            for item in files:
+                entry = f"- [{item['status']}] {item['path']}"
+                if item["originalPath"]:
+                    entry += f" (from {item['originalPath']})"
+                lines.append(entry)
+        else:
+            lines.extend(
+                [
+                    "Files:",
+                    "- No git changes detected.",
+                ]
+            )
+
+        lines.extend(["", "Diff stat:"])
+        if diffstat_output:
+            lines.extend(diffstat_output.splitlines())
+        else:
+            lines.append("No tracked diff detected.")
+        return "\n".join(lines)
 
     def _build_custom_command(self, command_text: str) -> tuple[list[str], str]:
         if os.name == "nt":

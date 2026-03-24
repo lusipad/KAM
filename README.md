@@ -19,18 +19,20 @@
   - 上下文快照生成
   - Agent run 创建、启动、取消、重试
   - review 汇总与 run artifacts 查看
+  - run 维度 compare 结果
 - 前端任务台页面
   - 任务列表
   - 引用录入
   - Context 查看
   - Agent runs 控制台
   - 运行状态自动刷新
-  - 日志 / summary / prompt / context 查看
+  - 日志 / summary / prompt / context / changes / patch 查看
 - 真实执行器
   - `Codex` CLI adapter
   - `Claude Code` CLI adapter
   - 自定义命令 adapter
   - `git worktree` 隔离工作目录（有 repo-path 引用时优先使用）
+  - `git changes / patch` artifact 自动采集
 - 历史模块仍保留
   - 笔记
   - 记忆
@@ -40,7 +42,7 @@
 
 ### 尚未实现
 - Run 日志实时流式 tail
-- patch / diff 自动结构化回写
+- patch 自动回写 / 应用
 - 复杂权限、多用户协作、审批流
 - 默认开启的向量检索
 
@@ -53,9 +55,9 @@
 3. 生成上下文快照
 4. 为任务创建一个或多个 Agent run
 5. 后端自动拉起 `Codex / Claude Code / custom command`
-6. 查看 review summary、stdout/stderr、summary 等 artifacts
+6. 查看 review summary、stdout/stderr、summary、changes、patch 等 artifacts
 
-这条链路现在已经可用，run 会真实执行并把 `prompt / context / launch plan / stdout / stderr / summary` 回填到 artifacts。
+这条链路现在已经可用，run 会真实执行并把 `prompt / context / launch plan / stdout / stderr / summary / changes / patch` 回填到 artifacts。
 
 ## 技术栈
 
@@ -201,6 +203,7 @@ KAM/
 - `POST /api/runs/{run_id}/retry`
 - `GET /api/runs/{run_id}/artifacts`
 - `GET /api/reviews/{task_id}`
+- `POST /api/reviews/{task_id}/compare`
 
 ### 历史 API
 以下旧 API 仍保留：
@@ -228,7 +231,7 @@ KAM/
 
 1. 接真实 `Codex / Claude Code` adapter
 2. 补 run 日志实时 tail / 流式输出
-3. 补 patch / diff 识别与结果对比视图
+3. 补 patch 自动回写 / 应用能力
 4. 补 ADO / Git 引用自动拉取
 5. 只在确实需要时再加向量检索
 
