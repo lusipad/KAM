@@ -24,6 +24,8 @@ interface ComparisonRow {
   repoRoot?: string;
 }
 
+const liveArtifactTypes = ['stdout', 'stderr', 'summary', 'changes', 'patch'] as const;
+
 const statusTone: Record<string, string> = {
   inbox: 'secondary',
   ready: 'default',
@@ -44,7 +46,15 @@ export function TasksView() {
   const [review, setReview] = useState<ReviewData | null>(null);
   const [comparison, setComparison] = useState<ComparisonRow[]>([]);
   const [selectedRunArtifacts, setSelectedRunArtifacts] = useState<
-    Array<{ id: string; title: string; type: string; content: string; path?: string }>
+    Array<{
+      id: string;
+      title: string;
+      type: string;
+      content: string;
+      path?: string;
+      truncated?: boolean;
+      size?: number;
+    }>
   >([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -83,6 +93,11 @@ export function TasksView() {
     [selectedTask]
   );
 
+  const selectedRun = useMemo(
+    () => selectedTask?.runs?.find((run) => run.id === selectedRunId) || null,
+    [selectedTask, selectedRunId]
+  );
+
   useEffect(() => {
     void loadTasks();
   }, []);
@@ -96,6 +111,34 @@ export function TasksView() {
 
     return () => window.clearInterval(timer);
   }, [selectedTask?.id, hasActiveRuns]);
+
+  useEffect(() => {
+    if (!selectedRunId) {
+      setSelectedRunArtifacts([]);
+      return;
+    }
+
+    if (!selectedRun) {
+      setSelectedRunId(null);
+      setSelectedRunArtifacts([]);
+    }
+  }, [selectedRun, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRunId || !selectedRun || !['planned', 'queued', 'running'].includes(selectedRun.status)) return;
+
+    const timer = window.setInterval(() => {
+      void loadRunArtifacts(selectedRunId, true);
+    }, 2000);
+
+    return () => window.clearInterval(timer);
+  }, [selectedRun?.status, selectedRunId]);
+
+  const loadRunArtifacts = async (runId: string, tail = false) => {
+    const response: any = await tasksApi.getRunArtifacts(runId, tail ? { tail_chars: 20000 } : undefined);
+    setSelectedRunArtifacts(response.artifacts || []);
+    setSelectedRunId(runId);
+  };
 
   const handleCreateTask = async () => {
     if (!taskForm.title.trim()) return;
@@ -146,9 +189,7 @@ export function TasksView() {
   };
 
   const handleViewArtifacts = async (runId: string) => {
-    const response: any = await tasksApi.getRunArtifacts(runId);
-    setSelectedRunArtifacts(response.artifacts || []);
-    setSelectedRunId(runId);
+    await loadRunArtifacts(runId, false);
   };
 
   const handleQuickRuns = async () => {
@@ -416,7 +457,11 @@ export function TasksView() {
           <Card className="min-h-0">
             <CardHeader>
               <CardTitle>Run Artifacts</CardTitle>
-              <CardDescription>Run: {selectedRunId}</CardDescription>
+              <CardDescription>
+                Run: {selectedRunId}
+                {selectedRun && ` · ${selectedRun.status}`}
+                {selectedRun && ['planned', 'queued', 'running'].includes(selectedRun.status) && ' · 实时 tail 中'}
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {selectedRunArtifacts.map((artifact) => (
@@ -424,9 +469,17 @@ export function TasksView() {
                   <div className="mb-2 flex items-center gap-2 text-sm">
                     <Badge variant="outline">{artifact.type}</Badge>
                     <span className="font-medium">{artifact.title}</span>
+                    {liveArtifactTypes.includes(artifact.type as (typeof liveArtifactTypes)[number]) && artifact.truncated && (
+                      <span className="text-xs text-muted-foreground">tail</span>
+                    )}
                   </div>
                   {!!artifact.path && (
                     <div className="mb-2 break-all text-xs text-muted-foreground">{artifact.path}</div>
+                  )}
+                  {typeof artifact.size === 'number' && (
+                    <div className="mb-2 text-[11px] text-muted-foreground">
+                      {artifact.truncated ? `显示尾部 20k 字符，源内容约 ${artifact.size} 字符` : `内容长度 ${artifact.size} 字符`}
+                    </div>
                   )}
                   <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">
                     {artifact.content || '(empty)'}

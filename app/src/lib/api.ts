@@ -259,8 +259,8 @@ export const tasksApi = {
   retryRun: (runId: string) =>
     api.post(`/runs/${runId}/retry`),
 
-  getRunArtifacts: (runId: string) =>
-    api.get(`/runs/${runId}/artifacts`),
+  getRunArtifacts: (runId: string, params?: { tail_chars?: number }) =>
+    api.get(`/runs/${runId}/artifacts`, { params }),
 
   getReview: (taskId: string) =>
     api.get(`/reviews/${taskId}`),

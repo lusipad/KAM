@@ -185,12 +185,16 @@ async def retry_run(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/runs/{run_id}/artifacts")
-async def get_run_artifacts(run_id: str, db: Session = Depends(get_db)):
+async def get_run_artifacts(
+    run_id: str,
+    tail_chars: Optional[int] = Query(default=None, ge=200, le=500_000),
+    db: Session = Depends(get_db),
+):
     service = WorkspaceService(db)
     run = service.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run 不存在")
-    return {"artifacts": [service.hydrate_artifact(artifact) for artifact in run.artifacts]}
+    return {"artifacts": [service.hydrate_artifact(artifact, max_chars=tail_chars) for artifact in run.artifacts]}
 
 
 @router.get("/reviews/{task_id}")

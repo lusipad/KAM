@@ -377,12 +377,20 @@ class WorkspaceService:
             )
         return comparison
 
-    def hydrate_artifact(self, artifact: RunArtifact) -> dict[str, Any]:
+    def hydrate_artifact(self, artifact: RunArtifact, max_chars: int | None = None) -> dict[str, Any]:
         payload = artifact.to_dict()
         if artifact.path:
             path = Path(artifact.path)
             if path.exists():
-                payload["content"] = path.read_text(encoding="utf-8", errors="replace")
+                content = path.read_text(encoding="utf-8", errors="replace")
+                if max_chars is not None and len(content) > max_chars:
+                    payload["content"] = content[-max_chars:]
+                    payload["truncated"] = True
+                    payload["tailChars"] = max_chars
+                else:
+                    payload["content"] = content
+                    payload["truncated"] = False
+                payload["size"] = len(content)
         return payload
 
     # ===== helpers =====

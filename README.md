@@ -27,6 +27,7 @@
   - Agent runs 控制台
   - 运行状态自动刷新
   - 日志 / summary / prompt / context / changes / patch 查看
+  - 运行中 artifact tail 轮询
 - 真实执行器
   - `Codex` CLI adapter
   - `Claude Code` CLI adapter
@@ -41,7 +42,7 @@
   - 对话
 
 ### 尚未实现
-- Run 日志实时流式 tail
+- Run 日志 WebSocket / SSE 实时推送
 - patch 自动回写 / 应用
 - 复杂权限、多用户协作、审批流
 - 默认开启的向量检索
@@ -202,6 +203,7 @@ KAM/
 - `POST /api/runs/{run_id}/cancel`
 - `POST /api/runs/{run_id}/retry`
 - `GET /api/runs/{run_id}/artifacts`
+  - 支持 `tail_chars` 查询参数，用于返回 path-backed artifact 的尾部内容
 - `GET /api/reviews/{task_id}`
 - `POST /api/reviews/{task_id}/compare`
 
@@ -230,7 +232,7 @@ KAM/
 优先顺序建议：
 
 1. 接真实 `Codex / Claude Code` adapter
-2. 补 run 日志实时 tail / 流式输出
+2. 补 WebSocket / SSE 级别的实时推送
 3. 补 patch 自动回写 / 应用能力
 4. 补 ADO / Git 引用自动拉取
 5. 只在确实需要时再加向量检索

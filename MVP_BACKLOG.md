@@ -42,6 +42,7 @@
 - [ ] worktree 生命周期管理
 - [x] run 日志和退出码追踪
 - [x] git changes / patch artifact 采集
+- [x] artifact tail 轮询接口
 
 ## 本轮执行
 
@@ -52,6 +53,7 @@
 - 前端任务台已可创建任务、绑定引用、创建 runs、查看 artifacts
 - 真实 `Codex / Claude Code / custom command` 执行已接入
 - `git changes / patch` artifacts 已接入
+- 运行中 stdout/stderr 已支持 tail 轮询
 - 旧知识管理 / ClawTeam / ADO 页面继续保留
 
 ## 暂不处理
