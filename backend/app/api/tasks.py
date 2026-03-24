@@ -2,6 +2,7 @@
 Lite 任务台 API
 """
 from typing import Any, Optional
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -157,6 +158,15 @@ async def get_run(run_id: str, db: Session = Depends(get_db)):
     return run.to_dict()
 
 
+@router.post("/runs/{run_id}/start")
+async def start_run(run_id: str, db: Session = Depends(get_db)):
+    service = WorkspaceService(db)
+    run = service.start_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run 不存在")
+    return run.to_dict(include_artifacts=False)
+
+
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str, db: Session = Depends(get_db)):
     service = WorkspaceService(db)
@@ -181,7 +191,13 @@ async def get_run_artifacts(run_id: str, db: Session = Depends(get_db)):
     run = service.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run 不存在")
-    return {"artifacts": [artifact.to_dict() for artifact in run.artifacts]}
+    artifacts = []
+    for artifact in run.artifacts:
+        payload = artifact.to_dict()
+        if artifact.path and Path(artifact.path).exists():
+            payload["content"] = Path(artifact.path).read_text(encoding="utf-8", errors="replace")
+        artifacts.append(payload)
+    return {"artifacts": artifacts}
 
 
 @router.get("/reviews/{task_id}")

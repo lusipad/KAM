@@ -247,8 +247,26 @@ export const tasksApi = {
   getRuns: (params?: { task_id?: string; status?: string }) =>
     api.get('/runs', { params }),
 
+  getRun: (runId: string) =>
+    api.get(`/runs/${runId}`),
+
+  startRun: (runId: string) =>
+    api.post(`/runs/${runId}/start`),
+
+  cancelRun: (runId: string) =>
+    api.post(`/runs/${runId}/cancel`),
+
+  retryRun: (runId: string) =>
+    api.post(`/runs/${runId}/retry`),
+
+  getRunArtifacts: (runId: string) =>
+    api.get(`/runs/${runId}/artifacts`),
+
   getReview: (taskId: string) =>
     api.get(`/reviews/${taskId}`),
+
+  compareReview: (taskId: string) =>
+    api.post(`/reviews/${taskId}/compare`),
 };
 
 export default api;

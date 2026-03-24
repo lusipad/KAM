@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.note import Note
 from app.models.workspace import AgentRun, ContextSnapshot, RunArtifact, TaskCard, TaskRef
+from app.services.run_executor import execution_manager
 
 
 class WorkspaceService:
@@ -145,6 +146,18 @@ class WorkspaceService:
     def get_run(self, run_id: str) -> AgentRun | None:
         return self.db.query(AgentRun).filter(AgentRun.id == run_id).first()
 
+    def start_run(self, run_id: str) -> AgentRun | None:
+        run = self.get_run(run_id)
+        if not run:
+            return None
+        if execution_manager.launch_run(str(run.id)):
+            self.db.expire(run)
+            self.db.refresh(run)
+            self._refresh_task_status(str(run.task_id))
+            self.db.commit()
+            self.db.refresh(run)
+        return run
+
     def create_runs(self, task_id: str, agents: Iterable[dict[str, Any]]) -> list[AgentRun] | None:
         task = self.get_task(task_id)
         if not task:
@@ -162,6 +175,7 @@ class WorkspaceService:
             agent_type = agent.get("type") or agent.get("agentType") or "custom"
             command = agent.get("command")
             workdir = self._create_workdir(task_id, agent_name)
+            launch_plan = self._build_launch_plan(agent_type, command, workdir)
 
             run = AgentRun(
                 task_id=task.id,
@@ -174,7 +188,7 @@ class WorkspaceService:
                 metadata_={
                     "requestedAt": datetime.utcnow().isoformat(),
                     "snapshotId": str(snapshot.id) if snapshot else None,
-                    "launchPlan": self._build_launch_plan(agent_type, command, workdir),
+                    "launchPlan": launch_plan,
                 },
             )
             self.db.add(run)
@@ -199,27 +213,29 @@ class WorkspaceService:
                 json.dumps(snapshot.data if snapshot else {}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            if command:
-                self._create_artifact(
-                    run,
-                    artifact_type="plan",
-                    title=f"{agent_name} launch plan",
-                    content=self._build_launch_plan(agent_type, command, workdir),
-                )
-                (workdir / "launch-plan.txt").write_text(
-                    self._build_launch_plan(agent_type, command, workdir),
-                    encoding="utf-8",
-                )
+            self._create_artifact(
+                run,
+                artifact_type="plan",
+                title=f"{agent_name} launch plan",
+                content=launch_plan,
+                path=str(workdir / "launch-plan.txt"),
+            )
+            (workdir / "launch-plan.txt").write_text(
+                launch_plan,
+                encoding="utf-8",
+            )
 
             created_runs.append(run)
 
-        if created_runs:
-            task.status = "running"
-
+        self._refresh_task_status(str(task.id))
         self.db.commit()
         for run in created_runs:
             self.db.refresh(run)
         self.db.refresh(task)
+        for run in created_runs:
+            if execution_manager.launch_run(str(run.id)):
+                self.db.expire(run)
+                self.db.refresh(run)
         return created_runs
 
     def cancel_run(self, run_id: str) -> AgentRun | None:
@@ -227,9 +243,13 @@ class WorkspaceService:
         if not run:
             return None
 
+        execution_manager.cancel_run(str(run.id))
+
         if run.status not in {"completed", "failed", "canceled"}:
             run.status = "canceled"
             run.completed_at = datetime.utcnow()
+            run.error_message = run.error_message or "Run 已被用户取消"
+            self._refresh_task_status(str(run.task_id))
             self.db.commit()
             self.db.refresh(run)
         return run
@@ -256,18 +276,48 @@ class WorkspaceService:
         self.db.add(clone)
         self.db.flush()
 
+        workdir = Path(clone.workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+
         self._create_artifact(
             clone,
             artifact_type="prompt",
             title=f"{clone.agent_name} retry prompt",
             content=clone.prompt,
-            path=str(Path(clone.workdir) / "prompt.md"),
+            path=str(workdir / "prompt.md"),
         )
-        Path(clone.workdir).mkdir(parents=True, exist_ok=True)
-        (Path(clone.workdir) / "prompt.md").write_text(clone.prompt, encoding="utf-8")
+        (workdir / "prompt.md").write_text(clone.prompt, encoding="utf-8")
 
+        context_artifact = next(
+            (artifact for artifact in previous_run.artifacts if artifact.artifact_type == "context"),
+            None,
+        )
+        context_content = context_artifact.content if context_artifact else "{}"
+        self._create_artifact(
+            clone,
+            artifact_type="context",
+            title=f"{clone.agent_name} retry context",
+            content=context_content,
+            path=str(workdir / "context.json"),
+        )
+        (workdir / "context.json").write_text(context_content, encoding="utf-8")
+
+        launch_plan = self._build_launch_plan(clone.agent_type, clone.command, workdir)
+        self._create_artifact(
+            clone,
+            artifact_type="plan",
+            title=f"{clone.agent_name} retry launch plan",
+            content=launch_plan,
+            path=str(workdir / "launch-plan.txt"),
+        )
+        (workdir / "launch-plan.txt").write_text(launch_plan, encoding="utf-8")
+
+        self._refresh_task_status(str(clone.task_id))
         self.db.commit()
         self.db.refresh(clone)
+        if execution_manager.launch_run(str(clone.id)):
+            self.db.expire(clone)
+            self.db.refresh(clone)
         return clone
 
     # ===== Review =====
@@ -295,6 +345,14 @@ class WorkspaceService:
             "artifacts": artifacts,
             "summary": "\n".join(summary_lines),
         }
+
+    def hydrate_artifact(self, artifact: RunArtifact) -> dict[str, Any]:
+        payload = artifact.to_dict()
+        if artifact.path:
+            path = Path(artifact.path)
+            if path.exists():
+                payload["content"] = path.read_text(encoding="utf-8", errors="replace")
+        return payload
 
     # ===== helpers =====
     def _find_related_notes(self, task: TaskCard) -> list[dict[str, Any]]:
@@ -349,7 +407,7 @@ class WorkspaceService:
 
     def _create_workdir(self, task_id: str, agent_name: str) -> Path:
         safe_agent_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in agent_name.lower()).strip("-")
-        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
         workroot = Path(settings.AGENT_WORKROOT)
         workdir = workroot / str(task_id) / f"{safe_agent_name}-{timestamp}"
         workdir.mkdir(parents=True, exist_ok=True)
@@ -358,11 +416,24 @@ class WorkspaceService:
     def _build_launch_plan(self, agent_type: str, command: str | None, workdir: Path) -> str:
         if command:
             return f"Agent type: {agent_type}\nWorkdir: {workdir}\nCommand: {command}"
+
+        if agent_type == "codex":
+            command_line = (
+                f"{settings.CODEX_CLI_PATH} exec --skip-git-repo-check --full-auto "
+                f"--output-last-message {workdir / 'final.md'} -C <execution_cwd> <prompt>"
+            )
+        elif agent_type in {"claude", "claude-code"}:
+            command_line = (
+                f"{settings.CLAUDE_CODE_CLI_PATH} -p --permission-mode bypassPermissions "
+                "--output-format text <prompt>"
+            )
+        else:
+            command_line = "No built-in adapter. Please provide a custom command."
+
         return (
             f"Agent type: {agent_type}\n"
             f"Workdir: {workdir}\n"
-            "Command: not configured\n"
-            "This run is persisted as a planned run and can be connected to a real CLI adapter later."
+            f"Adapter command: {command_line}"
         )
 
     def _create_artifact(
@@ -382,3 +453,17 @@ class WorkspaceService:
         )
         self.db.add(artifact)
         return artifact
+
+    def _refresh_task_status(self, task_id: str):
+        task = self.get_task(task_id)
+        if not task:
+            return
+
+        runs = task.runs or []
+        statuses = {run.status for run in runs}
+        if not runs:
+            task.status = "ready"
+        elif statuses & {"running", "queued", "planned"}:
+            task.status = "running"
+        else:
+            task.status = "review"

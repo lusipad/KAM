@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,6 +13,13 @@ interface ReviewData {
   artifacts: Array<{ id: string; title: string; type: string }>;
 }
 
+interface ComparisonRow {
+  runId: string;
+  agentName: string;
+  status: string;
+  artifactCount: number;
+}
+
 const statusTone: Record<string, string> = {
   inbox: 'secondary',
   ready: 'default',
@@ -21,6 +28,7 @@ const statusTone: Record<string, string> = {
   done: 'outline',
   archived: 'outline',
   planned: 'secondary',
+  queued: 'secondary',
   completed: 'outline',
   failed: 'destructive',
   canceled: 'outline',
@@ -30,6 +38,11 @@ export function TasksView() {
   const [tasks, setTasks] = useState<WorkspaceTask[]>([]);
   const [selectedTask, setSelectedTask] = useState<WorkspaceTask | null>(null);
   const [review, setReview] = useState<ReviewData | null>(null);
+  const [comparison, setComparison] = useState<ComparisonRow[]>([]);
+  const [selectedRunArtifacts, setSelectedRunArtifacts] = useState<
+    Array<{ id: string; title: string; type: string; content: string; path?: string }>
+  >([]);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [taskForm, setTaskForm] = useState({ title: '', description: '' });
   const [refForm, setRefForm] = useState({ type: 'url', label: '', value: '' });
@@ -61,9 +74,24 @@ export function TasksView() {
     setReview(nextReview);
   };
 
+  const hasActiveRuns = useMemo(
+    () => !!selectedTask?.runs?.some((run) => ['planned', 'queued', 'running'].includes(run.status)),
+    [selectedTask]
+  );
+
   useEffect(() => {
     void loadTasks();
   }, []);
+
+  useEffect(() => {
+    if (!selectedTask?.id || !hasActiveRuns) return;
+
+    const timer = window.setInterval(() => {
+      void loadTaskDetail(selectedTask.id);
+    }, 3000);
+
+    return () => window.clearInterval(timer);
+  }, [selectedTask?.id, hasActiveRuns]);
 
   const handleCreateTask = async () => {
     if (!taskForm.title.trim()) return;
@@ -90,6 +118,33 @@ export function TasksView() {
     await tasksApi.createRuns(selectedTask.id, [runForm]);
     setRunForm({ name: 'Codex', type: 'codex', command: '' });
     await loadTaskDetail(selectedTask.id);
+  };
+
+  const handleStartRun = async (runId: string) => {
+    await tasksApi.startRun(runId);
+    if (selectedTask) await loadTaskDetail(selectedTask.id);
+  };
+
+  const handleCancelRun = async (runId: string) => {
+    await tasksApi.cancelRun(runId);
+    if (selectedTask) await loadTaskDetail(selectedTask.id);
+  };
+
+  const handleRetryRun = async (runId: string) => {
+    await tasksApi.retryRun(runId);
+    if (selectedTask) await loadTaskDetail(selectedTask.id);
+  };
+
+  const handleCompare = async () => {
+    if (!selectedTask) return;
+    const response: any = await tasksApi.compareReview(selectedTask.id);
+    setComparison(response.comparison || []);
+  };
+
+  const handleViewArtifacts = async (runId: string) => {
+    const response: any = await tasksApi.getRunArtifacts(runId);
+    setSelectedRunArtifacts(response.artifacts || []);
+    setSelectedRunId(runId);
   };
 
   const handleQuickRuns = async () => {
@@ -174,7 +229,11 @@ export function TasksView() {
               <Button variant="outline" size="sm" onClick={handleQuickRuns}>
                 快速创建双 Agent Runs
               </Button>
+              <Button variant="outline" size="sm" onClick={handleCompare}>
+                Compare
+              </Button>
               {isLoading && <span className="text-xs text-muted-foreground">加载中...</span>}
+              {hasActiveRuns && <span className="text-xs text-muted-foreground">运行中，自动刷新中...</span>}
             </CardContent>
           )}
         </Card>
@@ -227,7 +286,7 @@ export function TasksView() {
           <Card>
             <CardHeader>
               <CardTitle>Agent Runs</CardTitle>
-              <CardDescription>先记录计划中的 run，后续再接真实 CLI。</CardDescription>
+              <CardDescription>支持直接拉起 Codex / Claude Code，也支持自定义命令。</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="grid gap-2 sm:grid-cols-2">
@@ -262,6 +321,31 @@ export function TasksView() {
                       <Badge variant={(statusTone[run.status] as any) || 'secondary'}>{run.status}</Badge>
                     </div>
                     {run.workdir && <div className="mt-2 text-xs text-muted-foreground break-all">{run.workdir}</div>}
+                    {run.errorMessage && (
+                      <div className="mt-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+                        {run.errorMessage}
+                      </div>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button variant="outline" size="sm" onClick={() => handleViewArtifacts(run.id)}>
+                        查看产物
+                      </Button>
+                      {run.status === 'planned' && (
+                        <Button variant="outline" size="sm" onClick={() => handleStartRun(run.id)}>
+                          启动
+                        </Button>
+                      )}
+                      {['planned', 'queued', 'running'].includes(run.status) && (
+                        <Button variant="outline" size="sm" onClick={() => handleCancelRun(run.id)}>
+                          取消
+                        </Button>
+                      )}
+                      {['failed', 'canceled', 'completed'].includes(run.status) && (
+                        <Button variant="outline" size="sm" onClick={() => handleRetryRun(run.id)}>
+                          重试
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 ))}
                 {!selectedTask?.runs?.length && (
@@ -300,9 +384,46 @@ export function TasksView() {
                   ))}
                 </div>
               )}
+              {!!comparison.length && (
+                <div className="mt-4 space-y-2 border-t pt-3">
+                  <div className="text-sm font-medium">Compare Result</div>
+                  {comparison.map((item) => (
+                    <div key={item.runId} className="rounded border border-dashed p-2 text-xs">
+                      <span className="font-medium">{item.agentName}</span>
+                      <span className="ml-2 text-muted-foreground">{item.status}</span>
+                      <span className="ml-2 text-muted-foreground">artifacts: {item.artifactCount}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
+
+        {!!selectedRunArtifacts.length && (
+          <Card className="min-h-0">
+            <CardHeader>
+              <CardTitle>Run Artifacts</CardTitle>
+              <CardDescription>Run: {selectedRunId}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {selectedRunArtifacts.map((artifact) => (
+                <div key={artifact.id} className="rounded-lg border p-3">
+                  <div className="mb-2 flex items-center gap-2 text-sm">
+                    <Badge variant="outline">{artifact.type}</Badge>
+                    <span className="font-medium">{artifact.title}</span>
+                  </div>
+                  {!!artifact.path && (
+                    <div className="mb-2 break-all text-xs text-muted-foreground">{artifact.path}</div>
+                  )}
+                  <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap text-xs text-muted-foreground">
+                    {artifact.content || '(empty)'}
+                  </pre>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );
