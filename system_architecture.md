@@ -2,25 +2,25 @@
 
 ## 1. 修订说明
 
-### 1.1 v1.1 架构定位
-本次修订将系统从“多个 AI 模块并列组合”调整为“工作流优先的上下文平台”。系统不取代 Azure DevOps、Git、Wiki 等既有业务系统，而是在其上构建统一的上下文层、执行层和治理层。
+### 1.1 v1.2 Lite 架构定位
+本次修订将系统进一步收敛为“开发内用的外置大脑 + Agent 指挥台”。系统不追求复杂工作流平台、治理平台或知识平台形态，而是专注于把任务接住、把上下文组装好、把多个 Agent 调度起来，并把结果统一收口给人判断。
 
-v1.1 的关键定义如下：
-- 外部系统仍是事实源，平台负责聚合、增强和受控写回。
-- ClawTeam 降级为内部执行引擎，不作为普通用户直接编排的主入口。
-- 默认模式是读优先、写受控，写操作必须经过审批、审计和幂等保护。
-- Prompt、评测、成本、权限、审计属于架构内建能力，不是后补功能。
+v1.2 Lite 的关键定义如下：
+- 外部系统仍是事实源，平台负责读取、引用、增强和收口，不承担复杂审批写回。
+- Agent 以外部 worker 形式接入，如 Codex、Claude Code，本系统负责调度而不是重造 Agent。
+- 记忆以任务历史、笔记、上下文快照和摘要为主，不做复杂长期记忆治理。
+- 技术栈坚持单库优先、少服务优先，优先保证本地和小团队能稳定使用。
 
 ### 1.2 架构原则
 
 | 原则 | 说明 |
 |------|------|
-| **工作流优先** | 服务边界围绕高频闭环场景设计，而不是围绕“知识/记忆/代理”等概念单独堆模块 |
-| **上下文统一组装** | 所有回答、草稿和执行动作都必须基于统一的 Context Service 组装上下文 |
-| **外部系统为事实源** | ADO、Git、Wiki 等保留主系统地位，平台只做缓存、副本和增强 |
-| **读优先写受控** | 读操作可自助，写操作必须经过审批、策略校验和写回记录 |
-| **治理前置** | RBAC、审计、Prompt Registry、Eval、成本统计和密钥管理默认为基础设施 |
-| **平台化复用** | 工作流、连接器、Prompt、审批策略和评测基线必须能在团队间复用 |
+| **人主导** | 系统负责调度和整理，最终决策由人完成 |
+| **任务优先** | 一切围绕任务卡、上下文、运行结果和复盘沉淀展开 |
+| **外部 Agent 复用** | 优先复用现有成熟 Agent，通过 adapter 统一接入 |
+| **最小复杂度** | 不为未来假想需求引入重型中间件和平台组件 |
+| **文本优先** | 先靠笔记、链接、摘要、全文搜索解决问题，再考虑图谱和复杂记忆 |
+| **逐步增强** | 向量检索、多用户权限、模板市场都放在真实需求出现后再加 |
 
 ## 2. 目标架构
 
@@ -28,44 +28,36 @@ v1.1 的关键定义如下：
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         AI工作助手 v1.1 目标架构                              │
+│                       AI工作助手 v1.2 Lite 目标架构                           │
 └─────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 入口层                                                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ 工作流工作台 | 对话入口 | 知识搜索 | 管理后台(连接器/审批/治理/评测)          │
+│ Inbox/任务台 | Agent Runs | Notes/Search | 对话入口                          │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 应用服务层                                                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ Workflow Orchestrator | Context Service | Knowledge/Memory Service          │
-│ Connector Service | Approval Service | Writeback Service | Conversation API │
+│ Task Service | Context Builder | Note Service | Connector Service            │
+│ Agent Runner | Review Service | Conversation API                            │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 执行与运行时层                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ ClawTeam Execution Engine | Tool Registry | Async Worker | Retry/DLQ        │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ 治理与控制层                                                                │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ Auth/SSO | RBAC | Policy Engine | Prompt Registry | Eval Service            │
-│ Audit Log | Cost Control | Secret Management | Observability                │
+│ Codex Adapter | Claude Code Adapter | Git Worktree Manager | Async Queue    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 数据与外部系统层                                                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ PostgreSQL + pgvector | Redis | Object Storage | Azure DevOps | Git/Wiki    │
-│ LLM Providers | Identity Provider                                           │
+│ PostgreSQL | Redis(可选) | Local/Object Storage | Azure DevOps | Git/Docs   │
+│ OpenAI / Anthropic / Local CLI                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -73,33 +65,31 @@ v1.1 的关键定义如下：
 
 | 服务 | 职责 | 说明 |
 |------|------|------|
-| **Workflow Orchestrator** | 管理工作流模板、运行状态和步骤编排 | 决定是规则执行、单代理执行还是多代理执行 |
-| **Context Service** | 汇聚知识、记忆、项目状态和历史执行结果 | 统一做权限裁剪、召回、重排序、上下文打包 |
-| **Knowledge/Memory Service** | 管理笔记、记忆、摘要、索引和引用关系 | 既服务对话，也服务工作流 |
-| **Connector Service** | 管理外部系统连接、同步游标、Webhook 和标准化数据模型 | 对 ADO/Git/Wiki 提供统一读取接口 |
-| **Approval Service** | 管理审批策略、审批节点和人工接管 | 所有高风险写操作必须经过此服务 |
-| **Writeback Service** | 负责外部系统草稿落地、幂等写入和补偿逻辑 | 不直接暴露给前端，必须由编排器调用 |
-| **ClawTeam Execution Engine** | 承接复杂任务拆解、工具调用和结果综合 | 内部执行能力，不直接作为产品主模型暴露 |
-| **Governance Plane** | 审计、Prompt 版本、评测、配额、成本和策略管理 | 贯穿整条执行链路 |
+| **Task Service** | 管理收件箱、任务卡、状态流转和任务引用 | 系统的主入口和主对象 |
+| **Context Builder** | 按任务聚合 ADO、代码、文档、笔记和历史运行结果 | 输出可传给 Agent 的上下文快照 |
+| **Note Service** | 管理 Markdown 笔记、复盘、总结和常用 Prompt | 轻量记忆的主要载体 |
+| **Connector Service** | 读取 ADO、Git、文档和本地文件 | 以只读和按需刷新为主 |
+| **Agent Runner** | 启动、跟踪、停止和重试外部 Agent 运行 | 统一管理 Codex、Claude Code 等 worker |
+| **Review Service** | 收集 patch、日志、命令输出和结论 | 方便人做比对和最终判断 |
+| **Conversation API** | 在任务上下文基础上提供问答和解释能力 | 作为辅助入口，不是产品核心结构 |
 
 ### 2.3 技术栈建议
 
 | 领域 | 推荐选型 | 说明 |
 |------|----------|------|
-| **API与应用层** | Python 3.11+ + FastAPI | 统一同步/异步接口，适合快速迭代业务服务 |
-| **工作流运行时** | LangGraph + Celery | 适配长链路编排、状态机和异步任务执行 |
-| **连接器与同步** | HttpClient/官方 SDK + Webhook + 定时增量同步 | 兼顾实时性和可恢复性 |
-| **主数据库** | PostgreSQL 15+ + pgvector | 结构化数据、JSONB 文档和向量统一管理 |
-| **缓存与会话** | Redis | 热点缓存、短期上下文、分布式锁 |
-| **对象存储** | MinIO / S3 | 附件、转写文件、归档结果 |
-| **消息系统** | RabbitMQ | 工作流异步执行、重试和死信处理 |
-| **LLM集成** | OpenAI / Azure OpenAI | 支持模型分级路由和企业网络要求 |
-| **观测性** | OpenTelemetry + Prometheus + Grafana | 指标、日志、Tracing 一体化 |
-| **身份与安全** | 企业 OIDC/SSO + Secret Manager | 对接企业身份体系和密钥托管 |
+| **API与应用层** | Python 3.11+ + FastAPI | 足够支撑 Lite 场景，开发效率高 |
+| **前端工作台** | React 18 + TypeScript | 任务台、笔记、Agent Runs 面板 |
+| **主数据库** | PostgreSQL 15+ | 任务、笔记、历史、上下文快照单库管理 |
+| **可选向量** | pgvector | 仅在文档问答不足时启用 |
+| **缓存/队列** | Redis | 可选，用于 run 状态和简单异步任务 |
+| **Agent 适配** | Codex / Claude Code CLI + subprocess | 直接复用现成工具 |
+| **工作区隔离** | git worktree | 支持多个 coding agent 并发执行 |
+| **对象存储** | 本地目录 / MinIO | 保存附件、导出结果、日志 |
+| **部署** | Docker Compose | 优先支持本地与小团队环境 |
 
 ## 3. 数据库Schema
 
-> 说明: 以下表结构主要是 v1.0 的功能基线，适合作为原型或单体版起点。若按 v1.1 目标架构落地到生产，至少还需要补充 `workflow_definitions`、`workflow_runs`、`workflow_steps`、`approval_requests`、`writeback_jobs`、`connector_cursors`、`audit_logs`、`prompt_versions`、`eval_runs`、`cost_usages`、`policy_bindings` 等治理与执行表。
+> 说明: 以下表结构主要是 v1.0 的功能基线，适合作为原型或单体版起点。若按 v1.2 Lite 架构落地，建议优先补充 `task_cards`、`task_refs`、`agent_runs`、`run_artifacts`、`context_snapshots`、`run_logs` 等表；企业治理相关的审批、策略、评测和成本表可后置。
 
 ### notes 表
 ```sql
@@ -277,27 +267,36 @@ CREATE TABLE messages (
 
 ## 4. API设计
 
-v1.1 的 API 设计从“模块接口集合”改为“工作流和上下文驱动”。普通用户主要消费工作流、搜索、对话和审批接口；代理、模型和工具编排接口默认收敛为内部接口。
+v1.2 Lite 的 API 设计从“模块接口集合”进一步收敛为“任务、上下文、Agent runs、笔记和集成”五类接口。重点是让任务能被创建、上下文能被组装、Agent 能被调度、结果能被回看。
 
-### 4.1 工作流API
+### 4.1 任务API
 ```
-GET    /api/workflows                          # 获取可用工作流模板
-POST   /api/workflows/{workflow_id}/runs       # 启动一次工作流执行
-GET    /api/workflow-runs/{run_id}             # 获取执行状态和步骤明细
-POST   /api/workflow-runs/{run_id}/cancel      # 取消执行
-POST   /api/workflow-runs/{run_id}/retry       # 重试失败步骤
-GET    /api/workflow-runs/{run_id}/artifacts   # 获取草稿、引用、附件等产物
+GET    /api/tasks                              # 获取任务列表
+POST   /api/tasks                              # 创建任务卡
+GET    /api/tasks/{task_id}                    # 获取任务详情
+PUT    /api/tasks/{task_id}                    # 更新任务
+POST   /api/tasks/{task_id}/archive            # 归档任务
 ```
 
 ### 4.2 上下文与搜索API
 ```
-POST   /api/context/resolve                    # 组装一次任务上下文
-POST   /api/context/search                     # 跨知识/记忆/项目数据搜索
+POST   /api/tasks/{task_id}/context/resolve    # 为任务组装上下文
+POST   /api/context/search                     # 搜索任务、笔记、历史结果、项目数据
 GET    /api/context/sources/{source_id}        # 查看引用源详情
-GET    /api/context/entities/{type}/{id}       # 查看实体标准化视图
+GET    /api/context/snapshots/{snapshot_id}    # 查看历史上下文快照
 ```
 
-### 4.3 知识与对话API
+### 4.3 Agent Runs API
+```
+POST   /api/tasks/{task_id}/runs               # 启动一个或多个 Agent 运行
+GET    /api/runs                               # 获取运行列表
+GET    /api/runs/{run_id}                      # 获取运行详情
+POST   /api/runs/{run_id}/cancel               # 中断运行
+POST   /api/runs/{run_id}/retry                # 重试运行
+GET    /api/runs/{run_id}/artifacts            # 查看 patch、日志、摘要等产物
+```
+
+### 4.4 笔记与对话API
 ```
 GET    /api/notes
 POST   /api/notes
@@ -307,115 +306,84 @@ GET    /api/notes/search
 
 GET    /api/conversations
 POST   /api/conversations
-GET    /api/conversations/{id}
-POST   /api/conversations/{id}/messages        # 自动调用 Context Service 做增强
+POST   /api/conversations/{id}/messages        # 基于当前任务上下文做增强问答
 ```
 
-### 4.4 连接器与同步API
+### 4.5 连接器与外部系统API
 ```
 GET    /api/connectors                         # 获取连接器配置
-POST   /api/connectors                         # 新增连接器
 PUT    /api/connectors/{id}                    # 更新连接器
-POST   /api/connectors/{id}/sync               # 触发增量同步
-GET    /api/connectors/{id}/sync-jobs          # 查看同步任务
-GET    /api/sources/ado/workitems              # 获取标准化后的工作项数据
+POST   /api/connectors/{id}/refresh            # 手动刷新当前连接
+GET    /api/ado/workitems                      # 获取工作项
+GET    /api/ado/pull-requests                  # 获取 PR
+GET    /api/ado/builds                         # 获取构建状态
 ```
 
-### 4.5 审批与写回API
+### 4.6 评审与收口API
 ```
-GET    /api/approvals                          # 获取审批列表
-GET    /api/approvals/{id}                     # 获取审批详情
-POST   /api/approvals/{id}/approve             # 审批通过
-POST   /api/approvals/{id}/reject              # 审批拒绝
-POST   /api/writebacks/{id}/execute            # 执行已审批写回
-GET    /api/writebacks/{id}                    # 查看写回结果和回滚信息
-```
-
-### 4.6 治理与运营API
-```
-GET    /api/audit/logs                         # 审计日志
-GET    /api/prompts                            # Prompt版本列表
-POST   /api/evals/runs                         # 发起评测
-GET    /api/cost/usage                         # 成本统计
-GET    /api/policies                           # 权限和审批策略
+GET    /api/reviews/{task_id}                  # 获取某任务的结果收口视图
+POST   /api/reviews/{task_id}/summarize        # 汇总多个 Agent 结果
+POST   /api/reviews/{task_id}/compare          # 对比多个 Agent 的结果
 ```
 
 ## 5. 核心功能实现
 
 ### 5.1 上下文组装
 ```python
-async def build_context(user, workflow_id, query, entity_refs):
-    policy = await policy_engine.resolve(user=user, workflow_id=workflow_id)
-    sources = await connector_service.resolve_entities(entity_refs, policy=policy)
+async def build_task_context(task_id: str):
+    task = await task_repo.get(task_id)
+    refs = await task_repo.get_refs(task_id)
 
-    recalls = await context_service.hybrid_retrieve(
-        query=query,
-        sources=sources,
-        include=["knowledge", "memory", "ado", "conversation_history"],
-        top_k=20,
-    )
+    project_data = await connector_service.fetch_refs(refs)
+    related_notes = await note_service.search(task.title, limit=5)
+    recent_runs = await run_repo.get_recent_by_task(task_id, limit=5)
 
-    ranked = await context_service.rerank(query=query, candidates=recalls)
-    packed = context_service.pack(
-        ranked[:8],
-        include_citations=True,
-        token_budget=6000,
-    )
+    snapshot = {
+        "task": task,
+        "refs": project_data,
+        "notes": related_notes,
+        "recent_runs": recent_runs,
+    }
 
-    return packed
+    await context_repo.save_snapshot(task_id, snapshot)
+    return snapshot
 ```
 
-### 5.2 工作流执行
+### 5.2 Agent 派发
 ```python
-async def run_workflow(workflow_id: str, payload: dict, user):
-    workflow = await workflow_repo.load(workflow_id)
-    context = await build_context(user, workflow_id, payload["query"], payload["refs"])
+async def dispatch_agents(task_id: str, agents: list[str]):
+    context = await build_task_context(task_id)
+    runs = []
 
-    plan = await orchestrator.plan(workflow=workflow, context=context, payload=payload)
-    mode = "multi_agent" if plan.requires_decomposition else "single_agent"
+    for agent_name in agents:
+        worktree = await git_manager.create_worktree(task_id, agent_name)
+        run = await runner.start(
+            agent=agent_name,
+            task_id=task_id,
+            context=context,
+            workdir=worktree.path,
+        )
+        runs.append(run)
 
-    result = await execution_engine.execute(
-        mode=mode,
-        plan=plan,
-        context=context,
-        tool_policy=workflow.tool_policy,
-    )
-
-    await trace_service.record(run=plan.run_id, result=result)
-
-    if result.contains_write_intent:
-        return await approval_service.create_request(plan.run_id, result.write_draft)
-
-    return result
+    return runs
 ```
 
-### 5.3 受控写回
+### 5.3 结果收口
 ```python
-async def execute_writeback(approval_id: str, operator):
-    approval = await approval_service.ensure_approved(approval_id, operator=operator)
-    job = await writeback_repo.create_job(
-        approval_id=approval.id,
-        idempotency_key=approval.idempotency_key,
+async def collect_artifacts(task_id: str):
+    runs = await run_repo.list_by_task(task_id)
+    artifacts = []
+
+    for run in runs:
+        artifacts.extend(await artifact_repo.list_by_run(run.id))
+
+    return review_service.summarize(
+        task_id=task_id,
+        artifacts=artifacts,
+        include_diff=True,
+        include_logs=True,
+        include_risks=True,
     )
-
-    response = await connector_runtime.write(
-        system=approval.target_system,
-        operation=approval.operation,
-        payload=approval.payload,
-        idempotency_key=job.idempotency_key,
-    )
-
-    await audit_log.record(
-        action="writeback.execute",
-        actor=operator.id,
-        target=approval.target_ref,
-        result=response.status,
-    )
-
-    if response.failed:
-        await compensator.schedule(job.id)
-
-    return response
 ```
 
 ## 6. 部署架构
@@ -426,7 +394,7 @@ version: '3.8'
 
 services:
   frontend:
-    build: ./frontend
+    build: ./app
     ports:
       - "80:80"
     depends_on:
@@ -439,25 +407,13 @@ services:
     environment:
       - DATABASE_URL=postgresql://user:pass@postgres:5432/ai_assistant
       - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CODEX_CLI_PATH=/usr/local/bin/codex
+      - CLAUDE_CODE_CLI_PATH=/usr/local/bin/claude
+      - AGENT_WORKROOT=/workspace/agent-runs
     depends_on:
       - postgres
       - redis
-      - rabbitmq
-
-  worker:
-    build: ./backend
-    command: celery -A app.worker worker --loglevel=info
-    environment:
-      - DATABASE_URL=postgresql://user:pass@postgres:5432/ai_assistant
-      - REDIS_URL=redis://redis:6379
-      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-    depends_on:
-      - postgres
-      - redis
-      - rabbitmq
 
   postgres:
     image: ankane/pgvector:latest
@@ -473,11 +429,6 @@ services:
     volumes:
       - redis_data:/data
 
-  rabbitmq:
-    image: rabbitmq:3-management
-    ports:
-      - "15672:15672"
-
 volumes:
   postgres_data:
   redis_data:
@@ -490,7 +441,6 @@ volumes:
 # 数据库
 DATABASE_URL=postgresql://user:pass@localhost:5432/ai_assistant
 REDIS_URL=redis://localhost:6379
-RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 
 # OpenAI
 OPENAI_API_KEY=sk-...
@@ -506,11 +456,12 @@ APP_SECRET_KEY=your-secret-key
 APP_DEBUG=false
 APP_CORS_ORIGINS=http://localhost:5173,http://localhost:3000
 
-# 身份与治理
-OIDC_ISSUER=https://idp.example.com
-OIDC_CLIENT_ID=ai-work-assistant
-OIDC_CLIENT_SECRET=...
-APPROVAL_REQUIRED_SCOPES=ado.workitem.write,ado.comment.write
-SECRET_PROVIDER=vault
-PROMPT_REGISTRY_BACKEND=database
+# Agent 适配
+CODEX_CLI_PATH=codex
+CLAUDE_CODE_CLI_PATH=claude
+AGENT_WORKROOT=./worktrees
+
+# 外部系统
+ADO_BASE_URL=https://ado.example.com
+ADO_PAT=...
 ```

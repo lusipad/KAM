@@ -1,0 +1,384 @@
+"""
+Lite 任务台服务
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Iterable
+
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.models.note import Note
+from app.models.workspace import AgentRun, ContextSnapshot, RunArtifact, TaskCard, TaskRef
+
+
+class WorkspaceService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    # ===== 任务 =====
+    def list_tasks(self, status: str | None = None) -> list[TaskCard]:
+        query = self.db.query(TaskCard)
+        if status:
+            query = query.filter(TaskCard.status == status)
+        return query.order_by(TaskCard.updated_at.desc()).all()
+
+    def create_task(self, data: dict[str, Any]) -> TaskCard:
+        task = TaskCard(
+            title=data["title"],
+            description=data.get("description", ""),
+            status=data.get("status", "inbox"),
+            priority=data.get("priority", "medium"),
+            tags=data.get("tags") or [],
+            metadata_=data.get("metadata") or {},
+        )
+        self.db.add(task)
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
+    def get_task(self, task_id: str) -> TaskCard | None:
+        return self.db.query(TaskCard).filter(TaskCard.id == task_id).first()
+
+    def update_task(self, task_id: str, data: dict[str, Any]) -> TaskCard | None:
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        for field, attr in {
+            "title": "title",
+            "description": "description",
+            "status": "status",
+            "priority": "priority",
+        }.items():
+            if field in data:
+                setattr(task, attr, data[field])
+
+        if "tags" in data:
+            task.tags = data["tags"] or []
+        if "metadata" in data:
+            task.metadata_ = {**(task.metadata_ or {}), **(data["metadata"] or {})}
+
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
+    def archive_task(self, task_id: str) -> TaskCard | None:
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        task.status = "archived"
+        task.metadata_ = {
+            **(task.metadata_ or {}),
+            "archivedAt": datetime.utcnow().isoformat(),
+        }
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
+    # ===== 引用 =====
+    def add_task_ref(self, task_id: str, data: dict[str, Any]) -> TaskRef | None:
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        ref = TaskRef(
+            task_id=task.id,
+            ref_type=data["type"],
+            label=data["label"],
+            value=data["value"],
+            metadata_=data.get("metadata") or {},
+        )
+        self.db.add(ref)
+        self.db.commit()
+        self.db.refresh(ref)
+        return ref
+
+    def delete_task_ref(self, task_id: str, ref_id: str) -> bool:
+        ref = self.db.query(TaskRef).filter(TaskRef.id == ref_id, TaskRef.task_id == task_id).first()
+        if not ref:
+            return False
+        self.db.delete(ref)
+        self.db.commit()
+        return True
+
+    # ===== 上下文 =====
+    def resolve_context(self, task_id: str) -> ContextSnapshot | None:
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        refs = [ref.to_dict() for ref in task.refs] if task.refs else []
+        related_notes = self._find_related_notes(task)
+        recent_runs = [run.to_dict(include_artifacts=False) for run in task.runs[:5]] if task.runs else []
+
+        data = {
+            "task": task.to_dict(include_relations=False),
+            "refs": refs,
+            "notes": related_notes,
+            "recentRuns": recent_runs,
+        }
+        summary = self._build_context_summary(task, refs, related_notes, recent_runs)
+
+        snapshot = ContextSnapshot(task_id=task.id, summary=summary, data=data)
+        self.db.add(snapshot)
+        self.db.commit()
+        self.db.refresh(snapshot)
+        return snapshot
+
+    def get_snapshot(self, snapshot_id: str) -> ContextSnapshot | None:
+        return self.db.query(ContextSnapshot).filter(ContextSnapshot.id == snapshot_id).first()
+
+    # ===== Runs =====
+    def list_runs(self, task_id: str | None = None, status: str | None = None) -> list[AgentRun]:
+        query = self.db.query(AgentRun)
+        if task_id:
+            query = query.filter(AgentRun.task_id == task_id)
+        if status:
+            query = query.filter(AgentRun.status == status)
+        return query.order_by(AgentRun.created_at.desc()).all()
+
+    def get_run(self, run_id: str) -> AgentRun | None:
+        return self.db.query(AgentRun).filter(AgentRun.id == run_id).first()
+
+    def create_runs(self, task_id: str, agents: Iterable[dict[str, Any]]) -> list[AgentRun] | None:
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        snapshot = self.resolve_context(task_id)
+        prompt = self._build_prompt(task, snapshot)
+        created_runs: list[AgentRun] = []
+
+        for agent in agents:
+            agent_name = agent.get("name") or agent.get("agentName")
+            if not agent_name:
+                continue
+
+            agent_type = agent.get("type") or agent.get("agentType") or "custom"
+            command = agent.get("command")
+            workdir = self._create_workdir(task_id, agent_name)
+
+            run = AgentRun(
+                task_id=task.id,
+                agent_name=agent_name,
+                agent_type=agent_type,
+                status="planned",
+                workdir=str(workdir),
+                prompt=prompt,
+                command=command,
+                metadata_={
+                    "requestedAt": datetime.utcnow().isoformat(),
+                    "snapshotId": str(snapshot.id) if snapshot else None,
+                    "launchPlan": self._build_launch_plan(agent_type, command, workdir),
+                },
+            )
+            self.db.add(run)
+            self.db.flush()
+
+            self._create_artifact(
+                run,
+                artifact_type="prompt",
+                title=f"{agent_name} prompt",
+                content=prompt,
+                path=str(workdir / "prompt.md"),
+            )
+            (workdir / "prompt.md").write_text(prompt, encoding="utf-8")
+            self._create_artifact(
+                run,
+                artifact_type="context",
+                title=f"{agent_name} context",
+                content=json.dumps(snapshot.data if snapshot else {}, ensure_ascii=False, indent=2),
+                path=str(workdir / "context.json"),
+            )
+            (workdir / "context.json").write_text(
+                json.dumps(snapshot.data if snapshot else {}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            if command:
+                self._create_artifact(
+                    run,
+                    artifact_type="plan",
+                    title=f"{agent_name} launch plan",
+                    content=self._build_launch_plan(agent_type, command, workdir),
+                )
+                (workdir / "launch-plan.txt").write_text(
+                    self._build_launch_plan(agent_type, command, workdir),
+                    encoding="utf-8",
+                )
+
+            created_runs.append(run)
+
+        if created_runs:
+            task.status = "running"
+
+        self.db.commit()
+        for run in created_runs:
+            self.db.refresh(run)
+        self.db.refresh(task)
+        return created_runs
+
+    def cancel_run(self, run_id: str) -> AgentRun | None:
+        run = self.get_run(run_id)
+        if not run:
+            return None
+
+        if run.status not in {"completed", "failed", "canceled"}:
+            run.status = "canceled"
+            run.completed_at = datetime.utcnow()
+            self.db.commit()
+            self.db.refresh(run)
+        return run
+
+    def retry_run(self, run_id: str) -> AgentRun | None:
+        previous_run = self.get_run(run_id)
+        if not previous_run:
+            return None
+
+        clone = AgentRun(
+            task_id=previous_run.task_id,
+            agent_name=previous_run.agent_name,
+            agent_type=previous_run.agent_type,
+            status="planned",
+            workdir=str(self._create_workdir(str(previous_run.task_id), previous_run.agent_name)),
+            prompt=previous_run.prompt,
+            command=previous_run.command,
+            metadata_={
+                **(previous_run.metadata_ or {}),
+                "retryOf": str(previous_run.id),
+                "requestedAt": datetime.utcnow().isoformat(),
+            },
+        )
+        self.db.add(clone)
+        self.db.flush()
+
+        self._create_artifact(
+            clone,
+            artifact_type="prompt",
+            title=f"{clone.agent_name} retry prompt",
+            content=clone.prompt,
+            path=str(Path(clone.workdir) / "prompt.md"),
+        )
+        Path(clone.workdir).mkdir(parents=True, exist_ok=True)
+        (Path(clone.workdir) / "prompt.md").write_text(clone.prompt, encoding="utf-8")
+
+        self.db.commit()
+        self.db.refresh(clone)
+        return clone
+
+    # ===== Review =====
+    def get_review(self, task_id: str) -> dict[str, Any] | None:
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        runs = [run.to_dict() for run in task.runs]
+        artifacts = [artifact.to_dict() for run in task.runs for artifact in run.artifacts]
+        summary_lines = [
+            f"任务: {task.title}",
+            f"状态: {task.status}",
+            f"运行数: {len(runs)}",
+        ]
+        if task.refs:
+            summary_lines.append(f"引用数: {len(task.refs)}")
+
+        for run in task.runs[:5]:
+            summary_lines.append(f"- {run.agent_name}: {run.status}")
+
+        return {
+            "task": task.to_dict(),
+            "runs": runs,
+            "artifacts": artifacts,
+            "summary": "\n".join(summary_lines),
+        }
+
+    # ===== helpers =====
+    def _find_related_notes(self, task: TaskCard) -> list[dict[str, Any]]:
+        query = self.db.query(Note)
+        if task.title:
+            query = query.filter(Note.title.ilike(f"%{task.title}%") | Note.content.ilike(f"%{task.title}%"))
+        notes = query.order_by(Note.updated_at.desc()).limit(5).all()
+        return [note.to_dict() for note in notes]
+
+    def _build_context_summary(
+        self,
+        task: TaskCard,
+        refs: list[dict[str, Any]],
+        notes: list[dict[str, Any]],
+        runs: list[dict[str, Any]],
+    ) -> str:
+        lines = [
+            f"任务: {task.title}",
+            f"优先级: {task.priority}",
+            f"状态: {task.status}",
+            "",
+            "任务描述:",
+            task.description or "无",
+            "",
+            f"引用数量: {len(refs)}",
+            f"关联笔记: {len(notes)}",
+            f"历史运行: {len(runs)}",
+        ]
+        if refs:
+            lines.extend(["", "主要引用:"])
+            lines.extend([f"- [{ref['type']}] {ref['label']}: {ref['value']}" for ref in refs[:5]])
+        return "\n".join(lines)
+
+    def _build_prompt(self, task: TaskCard, snapshot: ContextSnapshot | None) -> str:
+        summary = snapshot.summary if snapshot else task.description
+        return "\n".join(
+            [
+                f"# Task: {task.title}",
+                "",
+                "## Goal",
+                task.description or "请根据当前任务完成工作。",
+                "",
+                "## Context",
+                summary or "无上下文摘要。",
+                "",
+                "## Output Requirements",
+                "- 给出关键结论",
+                "- 标注风险与假设",
+                "- 如有代码修改，说明涉及文件与建议后续动作",
+            ]
+        )
+
+    def _create_workdir(self, task_id: str, agent_name: str) -> Path:
+        safe_agent_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in agent_name.lower()).strip("-")
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        workroot = Path(settings.AGENT_WORKROOT)
+        workdir = workroot / str(task_id) / f"{safe_agent_name}-{timestamp}"
+        workdir.mkdir(parents=True, exist_ok=True)
+        return workdir
+
+    def _build_launch_plan(self, agent_type: str, command: str | None, workdir: Path) -> str:
+        if command:
+            return f"Agent type: {agent_type}\nWorkdir: {workdir}\nCommand: {command}"
+        return (
+            f"Agent type: {agent_type}\n"
+            f"Workdir: {workdir}\n"
+            "Command: not configured\n"
+            "This run is persisted as a planned run and can be connected to a real CLI adapter later."
+        )
+
+    def _create_artifact(
+        self,
+        run: AgentRun,
+        artifact_type: str,
+        title: str,
+        content: str,
+        path: str | None = None,
+    ) -> RunArtifact:
+        artifact = RunArtifact(
+            run_id=run.id,
+            artifact_type=artifact_type,
+            title=title,
+            content=content,
+            path=path,
+        )
+        self.db.add(artifact)
+        return artifact

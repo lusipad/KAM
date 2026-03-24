@@ -49,7 +49,7 @@ def get_db() -> Generator[Session, None, None]:
 def init_db():
     """初始化数据库 - 创建所有表"""
     # 导入所有模型以确保它们被注册
-    from app.models import note, link, memory, agent, task, ado_config, conversation
+    from app.models import note, link, memory, agent, task, ado_config, conversation, workspace
     
     # 创建表
     Base.metadata.create_all(bind=engine)

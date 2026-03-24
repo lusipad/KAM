@@ -235,6 +235,68 @@ export interface Tool {
   updatedAt: Date;
 }
 
+// ===== Lite 任务台 =====
+export interface WorkspaceTaskRef {
+  id: string;
+  taskId: string;
+  type: string;
+  label: string;
+  value: string;
+  metadata: Record<string, any>;
+  createdAt: Date | string;
+}
+
+export interface ContextSnapshot {
+  id: string;
+  taskId: string;
+  summary: string;
+  data?: Record<string, any>;
+  createdAt: Date | string;
+}
+
+export interface AgentRunArtifact {
+  id: string;
+  runId: string;
+  type: string;
+  title: string;
+  content: string;
+  path?: string;
+  metadata: Record<string, any>;
+  createdAt: Date | string;
+}
+
+export interface AgentRunRecord {
+  id: string;
+  taskId: string;
+  agentName: string;
+  agentType: string;
+  status: 'planned' | 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
+  workdir?: string;
+  prompt: string;
+  command?: string;
+  errorMessage?: string;
+  metadata: Record<string, any>;
+  artifacts?: AgentRunArtifact[];
+  createdAt: Date | string;
+  startedAt?: Date | string;
+  completedAt?: Date | string;
+}
+
+export interface WorkspaceTask {
+  id: string;
+  title: string;
+  description: string;
+  status: 'inbox' | 'ready' | 'running' | 'review' | 'done' | 'archived';
+  priority: 'low' | 'medium' | 'high';
+  tags: string[];
+  metadata: Record<string, any>;
+  refs?: WorkspaceTaskRef[];
+  runs?: AgentRunRecord[];
+  latestSnapshot?: ContextSnapshot | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
 // ===== Azure DevOps集成模块 =====
 export interface AzureDevOpsConfig {
   id: string;
@@ -363,7 +425,7 @@ export interface Conversation {
 // ===== 应用状态 =====
 export interface AppState {
   // 当前视图
-  currentView: 'knowledge' | 'memory' | 'clawteam' | 'azure-devops' | 'chat';
+  currentView: 'tasks' | 'knowledge' | 'memory' | 'clawteam' | 'azure-devops' | 'chat';
   
   // 侧边栏状态
   sidebarCollapsed: boolean;

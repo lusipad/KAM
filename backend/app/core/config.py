@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # 文件存储
     STORAGE_PATH: str = "./storage"
     MAX_UPLOAD_SIZE: int = 50 * 1024 * 1024  # 50MB
+
+    # Agent 运行时
+    AGENT_WORKROOT: str = "./storage/agent-runs"
+    CODEX_CLI_PATH: str = "codex"
+    CLAUDE_CODE_CLI_PATH: str = "claude"
     
     class Config:
         env_file = ".env"

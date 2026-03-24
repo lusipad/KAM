@@ -209,4 +209,46 @@ export const conversationsApi = {
     api.delete(`/conversations/${id}/messages`),
 };
 
+// ========== Lite 任务台 API ==========
+export const tasksApi = {
+  getAll: (params?: { status?: string }) =>
+    api.get('/tasks', { params }),
+
+  create: (data: {
+    title: string;
+    description?: string;
+    status?: string;
+    priority?: string;
+    tags?: string[];
+    metadata?: any;
+  }) => api.post('/tasks', data),
+
+  getById: (id: string) =>
+    api.get(`/tasks/${id}`),
+
+  update: (id: string, data: any) =>
+    api.put(`/tasks/${id}`, data),
+
+  archive: (id: string) =>
+    api.post(`/tasks/${id}/archive`),
+
+  addRef: (taskId: string, data: { type: string; label: string; value: string; metadata?: any }) =>
+    api.post(`/tasks/${taskId}/refs`, data),
+
+  deleteRef: (taskId: string, refId: string) =>
+    api.delete(`/tasks/${taskId}/refs/${refId}`),
+
+  resolveContext: (taskId: string) =>
+    api.post(`/tasks/${taskId}/context/resolve`),
+
+  createRuns: (taskId: string, agents: Array<{ name: string; type?: string; command?: string }>) =>
+    api.post(`/tasks/${taskId}/runs`, { agents }),
+
+  getRuns: (params?: { task_id?: string; status?: string }) =>
+    api.get('/runs', { params }),
+
+  getReview: (taskId: string) =>
+    api.get(`/reviews/${taskId}`),
+};
+
 export default api;

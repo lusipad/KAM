@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { 
-  BookOpen, Brain, Bot, GitBranch, MessageSquare, 
+  BookOpen, Brain, Bot, ClipboardList, GitBranch, MessageSquare, 
   ChevronLeft, ChevronRight, Settings, User 
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -9,13 +9,19 @@ import { SettingsPanel } from '@/components/Settings/SettingsPanel';
 import { cn } from '@/lib/utils';
 
 interface NavItem {
-  id: 'knowledge' | 'memory' | 'clawteam' | 'azure-devops' | 'chat';
+  id: 'tasks' | 'knowledge' | 'memory' | 'clawteam' | 'azure-devops' | 'chat';
   label: string;
   icon: React.ElementType;
   description: string;
 }
 
 const navItems: NavItem[] = [
+  {
+    id: 'tasks',
+    label: '任务台',
+    icon: ClipboardList,
+    description: '任务、上下文、Agent runs'
+  },
   { 
     id: 'knowledge', 
     label: '知识管理', 

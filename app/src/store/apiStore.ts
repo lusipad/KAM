@@ -108,7 +108,7 @@ interface ChatActions {
 
 // 全局状态
 interface GlobalState {
-  currentView: 'knowledge' | 'memory' | 'clawteam' | 'azure-devops' | 'chat';
+  currentView: 'tasks' | 'knowledge' | 'memory' | 'clawteam' | 'azure-devops' | 'chat';
   sidebarCollapsed: boolean;
   theme: 'light' | 'dark' | 'system';
   
@@ -127,7 +127,7 @@ export const useApiStore = create<GlobalState>()(
   persist(
     (set, get) => ({
       // 全局状态
-      currentView: 'knowledge',
+      currentView: 'tasks',
       sidebarCollapsed: false,
       theme: 'system',
       

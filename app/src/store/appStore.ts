@@ -130,7 +130,7 @@ export const useAppStore = create<GlobalState>()(
   persist(
     (set, get) => ({
       // 初始状态
-      currentView: 'knowledge',
+      currentView: 'tasks',
       sidebarCollapsed: false,
       theme: 'system',
       user: undefined,

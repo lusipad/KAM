@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { MainLayout } from '@/components/Layout/MainLayout';
+import { TasksView } from '@/components/Tasks/TasksView';
 import { KnowledgeView } from '@/components/Knowledge/KnowledgeView';
 import { MemoryView } from '@/components/Memory/MemoryView';
 import { ClawTeamView } from '@/components/ClawTeam/ClawTeamView';
@@ -26,6 +27,8 @@ function App() {
 
   const renderView = () => {
     switch (currentView) {
+      case 'tasks':
+        return <TasksView />;
       case 'knowledge':
         return <KnowledgeView />;
       case 'memory':
@@ -37,7 +40,7 @@ function App() {
       case 'chat':
         return <ChatView />;
       default:
-        return <KnowledgeView />;
+        return <TasksView />;
     }
   };
 

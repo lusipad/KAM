@@ -8,6 +8,7 @@ from app.models.agent import Agent, AgentTeam
 from app.models.task import Task, SubTask
 from app.models.ado_config import ADOConfig
 from app.models.conversation import Conversation, Message
+from app.models.workspace import TaskCard, TaskRef, ContextSnapshot, AgentRun, RunArtifact
 
 __all__ = [
     "Note",
@@ -20,4 +21,9 @@ __all__ = [
     "ADOConfig",
     "Conversation",
     "Message",
+    "TaskCard",
+    "TaskRef",
+    "ContextSnapshot",
+    "AgentRun",
+    "RunArtifact",
 ]
