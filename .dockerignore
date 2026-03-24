@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.venv
+__pycache__
+*.pyc
+storage
+backend/storage
+app/node_modules
+app/dist
+app/playwright-report
+app/test-results

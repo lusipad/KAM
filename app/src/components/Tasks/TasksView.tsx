@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { tasksApi } from '@/lib/api';
+import { toast } from 'sonner';
 import type { AgentRunRecord, WorkspaceTask } from '@/types';
 
 interface ReviewData {
@@ -61,6 +62,8 @@ export function TasksView() {
   const [taskForm, setTaskForm] = useState({ title: '', description: '' });
   const [refForm, setRefForm] = useState({ type: 'url', label: '', value: '' });
   const [runForm, setRunForm] = useState({ name: 'Codex', type: 'codex', command: '' });
+  const [applyingRunId, setApplyingRunId] = useState<string | null>(null);
+  const [patchFeedback, setPatchFeedback] = useState<Record<string, { tone: 'success' | 'error'; message: string }>>({});
 
   const loadTasks = async (selectedId?: string) => {
     setIsLoading(true);
@@ -98,6 +101,8 @@ export function TasksView() {
     [selectedTask, selectedRunId]
   );
 
+  const canApplyPatch = (run: AgentRunRecord) => Boolean(run.metadata?.git?.trackedDiff);
+
   useEffect(() => {
     void loadTasks();
   }, []);
@@ -127,11 +132,51 @@ export function TasksView() {
   useEffect(() => {
     if (!selectedRunId || !selectedRun || !['planned', 'queued', 'running'].includes(selectedRun.status)) return;
 
-    const timer = window.setInterval(() => {
-      void loadRunArtifacts(selectedRunId, true);
-    }, 2000);
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
+      const timer = window.setInterval(() => {
+        void loadRunArtifacts(selectedRunId, true);
+      }, 2000);
 
-    return () => window.clearInterval(timer);
+      return () => window.clearInterval(timer);
+    }
+
+    const eventSource = new EventSource(`/api/runs/${selectedRunId}/events?tail_chars=20000`);
+
+    eventSource.onmessage = (event) => {
+      const payload = JSON.parse(event.data) as {
+        run: AgentRunRecord;
+        artifacts: Array<{
+          id: string;
+          title: string;
+          type: string;
+          content: string;
+          path?: string;
+          truncated?: boolean;
+          size?: number;
+        }>;
+      };
+
+      setSelectedRunArtifacts(payload.artifacts || []);
+      setSelectedTask((prev) => {
+        if (!prev || prev.id !== payload.run.taskId) return prev;
+        return {
+          ...prev,
+          runs: prev.runs?.map((run) => (run.id === payload.run.id ? { ...run, ...payload.run } : run)) || [],
+        };
+      });
+
+      if (['completed', 'failed', 'canceled'].includes(payload.run.status)) {
+        eventSource.close();
+        void loadTaskDetail(payload.run.taskId);
+      }
+    };
+
+    eventSource.onerror = () => {
+      eventSource.close();
+      void loadRunArtifacts(selectedRunId, true);
+    };
+
+    return () => eventSource.close();
   }, [selectedRun?.status, selectedRunId]);
 
   const loadRunArtifacts = async (runId: string, tail = false) => {
@@ -180,6 +225,30 @@ export function TasksView() {
   const handleRetryRun = async (runId: string) => {
     await tasksApi.retryRun(runId);
     if (selectedTask) await loadTaskDetail(selectedTask.id);
+  };
+
+  const handleApplyPatch = async (runId: string) => {
+    setApplyingRunId(runId);
+    setPatchFeedback((prev) => {
+      const next = { ...prev };
+      delete next[runId];
+      return next;
+    });
+
+    try {
+      const result: any = await tasksApi.applyPatch(runId);
+      const message = `Patch 已应用到 ${result.targetRepo}`;
+      setPatchFeedback((prev) => ({ ...prev, [runId]: { tone: 'success', message } }));
+      toast.success(message);
+      if (selectedTask) await loadTaskDetail(selectedTask.id);
+      if (selectedRunId === runId) await loadRunArtifacts(runId, false);
+    } catch (error: any) {
+      const message = error?.response?.data?.detail || error?.message || 'Patch 应用失败';
+      setPatchFeedback((prev) => ({ ...prev, [runId]: { tone: 'error', message } }));
+      toast.error(message);
+    } finally {
+      setApplyingRunId(null);
+    }
   };
 
   const handleCompare = async () => {
@@ -390,7 +459,26 @@ export function TasksView() {
                           重试
                         </Button>
                       )}
+                      {canApplyPatch(run) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={applyingRunId === run.id}
+                          onClick={() => handleApplyPatch(run.id)}
+                        >
+                          {applyingRunId === run.id ? '应用中...' : '应用 Patch'}
+                        </Button>
+                      )}
                     </div>
+                    {patchFeedback[run.id] && (
+                      <div
+                        className={`mt-2 text-xs ${
+                          patchFeedback[run.id].tone === 'success' ? 'text-emerald-600' : 'text-destructive'
+                        }`}
+                      >
+                        {patchFeedback[run.id].message}
+                      </div>
+                    )}
                   </div>
                 ))}
                 {!selectedTask?.runs?.length && (
@@ -460,7 +548,7 @@ export function TasksView() {
               <CardDescription>
                 Run: {selectedRunId}
                 {selectedRun && ` · ${selectedRun.status}`}
-                {selectedRun && ['planned', 'queued', 'running'].includes(selectedRun.status) && ' · 实时 tail 中'}
+                {selectedRun && ['planned', 'queued', 'running'].includes(selectedRun.status) && ' · SSE 实时 tail 中'}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">

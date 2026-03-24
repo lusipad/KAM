@@ -1,16 +1,20 @@
 """
 Lite 任务台 API
 """
+import asyncio
+import json
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.db.base import get_db
+from app.db.base import SessionLocal, get_db
 from app.services.workspace_service import WorkspaceService
 
 router = APIRouter(tags=["workspace"])
+TERMINAL_RUN_STATUSES = {"completed", "failed", "canceled"}
 
 
 class TaskCreate(BaseModel):
@@ -184,6 +188,20 @@ async def retry_run(run_id: str, db: Session = Depends(get_db)):
     return run.to_dict()
 
 
+@router.post("/runs/{run_id}/apply-patch")
+async def apply_run_patch(run_id: str, db: Session = Depends(get_db)):
+    service = WorkspaceService(db)
+    try:
+        result = service.apply_patch_from_run(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="Run 不存在")
+    return result
+
+
 @router.get("/runs/{run_id}/artifacts")
 async def get_run_artifacts(
     run_id: str,
@@ -195,6 +213,64 @@ async def get_run_artifacts(
     if not run:
         raise HTTPException(status_code=404, detail="Run 不存在")
     return {"artifacts": [service.hydrate_artifact(artifact, max_chars=tail_chars) for artifact in run.artifacts]}
+
+
+@router.get("/runs/{run_id}/events")
+async def stream_run_events(
+    run_id: str,
+    request: Request,
+    tail_chars: int = Query(default=20_000, ge=200, le=500_000),
+    db: Session = Depends(get_db),
+):
+    service = WorkspaceService(db)
+    run = service.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run 不存在")
+
+    async def event_stream():
+        last_payload: str | None = None
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            stream_db = SessionLocal()
+            try:
+                stream_service = WorkspaceService(stream_db)
+                current_run = stream_service.get_run(run_id)
+                if not current_run:
+                    break
+
+                payload = {
+                    "run": current_run.to_dict(include_artifacts=False),
+                    "artifacts": [
+                        stream_service.hydrate_artifact(artifact, max_chars=tail_chars)
+                        for artifact in current_run.artifacts
+                    ],
+                }
+                serialized = json.dumps(payload, ensure_ascii=False)
+                if serialized != last_payload:
+                    last_payload = serialized
+                    yield f"data: {serialized}\n\n"
+                else:
+                    yield ": keep-alive\n\n"
+
+                if current_run.status in TERMINAL_RUN_STATUSES:
+                    break
+            finally:
+                stream_db.close()
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/reviews/{task_id}")

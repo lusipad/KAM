@@ -114,8 +114,7 @@ docker-compose up -d --build
 ```
 
 4. 访问应用
-- 前端: `http://localhost`
-- 后端 API: `http://localhost:8000`
+- 应用界面: `http://localhost:8000`
 - Swagger: `http://localhost:8000/docs`
 
 ### 方式二：本地开发

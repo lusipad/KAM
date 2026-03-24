@@ -2,7 +2,7 @@
 import axios from 'axios';
 
 // API基础URL
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 // 获取用户API配置
 function getUserApiConfig() {
@@ -220,35 +220,78 @@ export const tasksApi = {
     status?: string;
     priority?: string;
     tags?: string[];
-    metadata?: any;
+    metadata?: Record<string, any>;
   }) => api.post('/tasks', data),
 
-  getById: (id: string) =>
-    api.get(`/tasks/${id}`),
+  getById: (taskId: string) =>
+    api.get(`/tasks/${taskId}`),
 
-  update: (id: string, data: any) =>
-    api.put(`/tasks/${id}`, data),
+  update: (
+    taskId: string,
+    data: {
+      title?: string;
+      description?: string;
+      status?: string;
+      priority?: string;
+      tags?: string[];
+      metadata?: Record<string, any>;
+    }
+  ) => api.put(`/tasks/${taskId}`, data),
 
-  archive: (id: string) =>
-    api.post(`/tasks/${id}/archive`),
+  archive: (taskId: string) =>
+    api.post(`/tasks/${taskId}/archive`),
 
-  addRef: (taskId: string, data: { type: string; label: string; value: string; metadata?: any }) =>
-    api.post(`/tasks/${taskId}/refs`, data),
+  addRef: (
+    taskId: string,
+    data:
+      | {
+          ref_type: string;
+          ref: string;
+          title?: string;
+          metadata?: Record<string, any>;
+        }
+      | {
+          type: string;
+          label: string;
+          value: string;
+          metadata?: Record<string, any>;
+        }
+  ) => {
+    const payload = 'ref_type' in data
+      ? {
+          type: data.ref_type,
+          label: data.title || data.ref,
+          value: data.ref,
+          metadata: data.metadata,
+        }
+      : data;
 
-  deleteRef: (taskId: string, refId: string) =>
-    api.delete(`/tasks/${taskId}/refs/${refId}`),
+    return api.post(`/tasks/${taskId}/refs`, payload);
+  },
 
-  resolveContext: (taskId: string) =>
-    api.post(`/tasks/${taskId}/context/resolve`),
+  resolveContext: (
+    taskId: string,
+    data?: {
+      include_refs?: boolean;
+      include_history?: boolean;
+      include_memory?: boolean;
+    }
+  ) => api.post(`/tasks/${taskId}/context/resolve`, data || {}),
 
-  createRuns: (taskId: string, agents: Array<{ name: string; type?: string; command?: string }>) =>
-    api.post(`/tasks/${taskId}/runs`, { agents }),
+  getReview: (taskId: string) =>
+    api.get(`/reviews/${taskId}`),
 
-  getRuns: (params?: { task_id?: string; status?: string }) =>
-    api.get('/runs', { params }),
+  compareReview: (taskId: string, data: { run_ids?: string[] } = {}) =>
+    api.post(`/reviews/${taskId}/compare`, data),
 
-  getRun: (runId: string) =>
-    api.get(`/runs/${runId}`),
+  createRuns: (
+    taskId: string,
+    agents: Array<{
+      name: string;
+      type: string;
+      command?: string;
+    }>
+  ) => api.post(`/tasks/${taskId}/runs`, { agents }),
 
   startRun: (runId: string) =>
     api.post(`/runs/${runId}/start`),
@@ -259,14 +302,53 @@ export const tasksApi = {
   retryRun: (runId: string) =>
     api.post(`/runs/${runId}/retry`),
 
+  applyPatch: (runId: string) =>
+    api.post(`/runs/${runId}/apply-patch`),
+
   getRunArtifacts: (runId: string, params?: { tail_chars?: number }) =>
     api.get(`/runs/${runId}/artifacts`, { params }),
+};
 
-  getReview: (taskId: string) =>
+export const runsApi = {
+  create: (
+    taskId: string,
+    data: {
+      agent_type: string;
+      agent_name?: string;
+      instruction?: string;
+      model?: string;
+      command_template?: string;
+      metadata?: Record<string, any>;
+    }
+  ) => api.post(`/tasks/${taskId}/runs`, data),
+
+  list: (params?: { task_id?: string; status?: string }) =>
+    api.get('/runs', { params }),
+
+  getById: (runId: string) =>
+    api.get(`/runs/${runId}`),
+
+  start: (runId: string) =>
+    api.post(`/runs/${runId}/start`),
+
+  cancel: (runId: string) =>
+    api.post(`/runs/${runId}/cancel`),
+
+  retry: (runId: string) =>
+    api.post(`/runs/${runId}/retry`),
+
+  artifacts: (runId: string, params?: { tail_chars?: number }) =>
+    api.get(`/runs/${runId}/artifacts`, { params }),
+};
+
+export const reviewsApi = {
+  getByTaskId: (taskId: string) =>
     api.get(`/reviews/${taskId}`),
 
-  compareReview: (taskId: string) =>
-    api.post(`/reviews/${taskId}/compare`),
+  compare: (
+    taskId: string,
+    data: { run_ids?: string[] }
+  ) => api.post(`/reviews/${taskId}/compare`, data),
 };
 
 export default api;

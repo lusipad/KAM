@@ -373,9 +373,10 @@ class ClawTeamService:
     
     async def _synthesize_results(self, synthesizer: Agent, results: List[str]) -> str:
         """综合者整合结果"""
+        results_text = "\n".join([f"结果 {i+1}:\n{r}\n" for i, r in enumerate(results)])
         prompt = f"""请将以下结果整合为一份完整的报告:
 
-{chr(10).join([f"结果 {i+1}:\n{r}\n" for i, r in enumerate(results)])}"""
+{results_text}"""
 
         response = await llm_service.chat_completion(
             messages=[
