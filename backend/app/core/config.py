@@ -1,5 +1,5 @@
 """
-KAM Lite 应用配置
+KAM Lite / v2 预览应用配置
 """
 import json
 from pathlib import Path
@@ -13,7 +13,7 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 
 class Settings(BaseSettings):
     APP_NAME: str = "KAM Lite"
-    APP_VERSION: str = "1.2.0"
+    APP_VERSION: str = "1.3.0"
     APP_DEBUG: bool = False
     APP_CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000,http://localhost:8000"
 
@@ -24,9 +24,19 @@ class Settings(BaseSettings):
     CODEX_CLI_PATH: str = "codex"
     CLAUDE_CODE_CLI_PATH: str = "claude"
 
+    DEFAULT_RUN_AGENT: str = "codex"
+    ROUTER_MODEL: str = "gpt-5.4"
+    ROUTER_REASONING_EFFORT: str = "xhigh"
+    CODEX_MODEL: str = "gpt-5.4"
+    CODEX_REASONING_EFFORT: str = "xhigh"
+
+    OPENAI_API_KEY: str = ""
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",
         case_sensitive=True,
+        extra="ignore",
     )
 
     @property

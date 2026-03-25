@@ -188,6 +188,14 @@ class WorkspaceService:
                     "snapshotId": str(snapshot.id) if snapshot else None,
                     "launchPlan": launch_plan,
                     "promptAppendix": prompt_appendix,
+                    **(
+                        {
+                            "model": settings.CODEX_MODEL,
+                            "reasoningEffort": settings.CODEX_REASONING_EFFORT,
+                        }
+                        if agent_type == "codex"
+                        else {}
+                    ),
                 },
             )
             self.db.add(run)
@@ -462,6 +470,8 @@ class WorkspaceService:
         if agent_type == "codex":
             command_line = (
                 f"{settings.CODEX_CLI_PATH} exec --skip-git-repo-check --full-auto "
+                f"-m {settings.CODEX_MODEL} "
+                f"-c model_reasoning_effort=\"{settings.CODEX_REASONING_EFFORT}\" "
                 f"--output-last-message {workdir / 'final.md'} -C <execution_cwd> <prompt>"
             )
         elif agent_type in {"claude", "claude-code"}:

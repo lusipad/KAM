@@ -105,6 +105,23 @@ python scripts/reset_lite_core_schema.py
 - `autonomy_sessions`
 - `autonomy_cycles`
 
+## v2 Preview
+
+当前仓库已并行挂出一组 `v2 Preview` 后端接口，统一放在 `/api/v2` 下，用于逐步迁移到 `Project / Thread / Run / Memory` 心智模型。
+
+当前已提供：
+
+- `projects / project_resources`
+- `threads / messages`
+- `runs / artifacts`（支持创建 / 重试 / 采纳，当前仍以预览骨架流转为主）
+- `conversation router / context assembler`（已接到消息入口；有 `OPENAI_API_KEY` 时优先走 LLM，失败自动降级）
+- `memory preferences / decisions / learnings / search`
+
+默认 Codex 执行模型已切到：
+
+- `gpt-5.4`
+- `xhigh`
+
 ## 文档
 
 - 主文档：

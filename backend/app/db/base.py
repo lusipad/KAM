@@ -27,6 +27,8 @@ engine = create_engine(settings.DATABASE_URL, **engine_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+from app import models as _models  # noqa: E402,F401
+
 
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
@@ -37,6 +39,4 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db():
-    from app.models import workspace  # noqa: F401
-
     Base.metadata.create_all(bind=engine)
