@@ -9,7 +9,7 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
 - 前端默认直接进入 v2 工作区
 - 后端默认以 `/api/v2` 作为主工作流接口
 - Codex 默认模型已切到 `gpt-5.4` + `xhigh`
-- Legacy Lite 能力仍保留在仓库中，作为迁移兼容与历史参考，不再是默认 UI
+- 旧 Lite / Autonomy 运行时入口已移除，仓库只保留 v2 主链路
 
 ## v2 核心能力
 
@@ -48,6 +48,7 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
 - `POST /api/v2/threads/:id/compare`
 - `GET /api/v2/runs/:id`
 - `GET /api/v2/runs/:id/artifacts`
+- `GET /api/v2/runs/:id/events`
 - `POST /api/v2/runs/:id/cancel|retry|adopt`
 - `GET/POST/PUT /api/v2/memory/preferences`
 - `GET/POST /api/v2/memory/decisions`

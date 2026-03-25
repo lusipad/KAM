@@ -1,27 +1,11 @@
 """
-KAM 模型模块：v2 为主，兼容 legacy 模型
+KAM 模型模块：当前仅保留 v2 主链路模型。
 """
 from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.models.memory import DecisionLog, ProjectLearning, UserPreference
 from app.models.project import Project, ProjectResource
-from app.models.workspace import (
-    AgentRun,
-    AutonomyCycle,
-    AutonomySession,
-    ContextSnapshot,
-    RunArtifact,
-    TaskCard,
-    TaskRef,
-)
 
 __all__ = [
-    "TaskCard",
-    "TaskRef",
-    "ContextSnapshot",
-    "AgentRun",
-    "RunArtifact",
-    "AutonomySession",
-    "AutonomyCycle",
     "Project",
     "ProjectResource",
     "Thread",
