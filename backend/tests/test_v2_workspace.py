@@ -1,5 +1,6 @@
 import os
 import shutil
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -54,7 +55,7 @@ class V2WorkspaceApiTests(unittest.TestCase):
                 "/api/v2/projects",
                 json={
                     "title": "KAM v2",
-                    "description": "preview project",
+                    "description": "workspace project",
                     "checkCommands": ["test -f '{run_dir}/done.txt'" if os.name != "nt" else "if (!(Test-Path -LiteralPath (Join-Path '{run_dir}' 'done.txt'))) { throw 'missing done.txt'; }"],
                 },
             )
@@ -101,6 +102,51 @@ class V2WorkspaceApiTests(unittest.TestCase):
             thread_detail = client.get(f"/api/v2/threads/{thread_payload['id']}")
             self.assertEqual(thread_detail.status_code, 200)
             self.assertGreaterEqual(len(thread_detail.json()["runs"]), 1)
+
+    def test_project_file_tree_endpoint(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            repo_root = Path(repo_dir)
+            (repo_root / 'src').mkdir(parents=True, exist_ok=True)
+            (repo_root / 'docs').mkdir(parents=True, exist_ok=True)
+            (repo_root / 'src' / 'main.ts').write_text('console.log("kam")', encoding='utf-8')
+            (repo_root / 'docs' / 'notes.md').write_text('# notes', encoding='utf-8')
+            (repo_root / '.secret').write_text('hidden', encoding='utf-8')
+
+            with TestClient(app) as client:
+                project = client.post(
+                    '/api/v2/projects',
+                    json={
+                        'title': 'Files project',
+                        'repoPath': str(repo_root),
+                    },
+                ).json()
+
+                root_listing = client.get(f"/api/v2/projects/{project['id']}/files")
+                self.assertEqual(root_listing.status_code, 200)
+                payload = root_listing.json()
+                self.assertEqual(payload['currentPath'], '')
+                names = [item['name'] for item in payload['entries']]
+                self.assertIn('src', names)
+                self.assertIn('docs', names)
+                self.assertNotIn('.secret', names)
+
+                nested_listing = client.get(
+                    f"/api/v2/projects/{project['id']}/files",
+                    params={'path': 'src'},
+                )
+                self.assertEqual(nested_listing.status_code, 200)
+                nested_payload = nested_listing.json()
+                self.assertEqual(nested_payload['currentPath'], 'src')
+                self.assertEqual(nested_payload['parentPath'], '')
+                self.assertEqual(nested_payload['entries'][0]['name'], 'main.ts')
+
+                hidden_listing = client.get(
+                    f"/api/v2/projects/{project['id']}/files",
+                    params={'include_hidden': 'true'},
+                )
+                self.assertEqual(hidden_listing.status_code, 200)
+                hidden_names = [item['name'] for item in hidden_listing.json()['entries']]
+                self.assertIn('.secret', hidden_names)
 
     def test_memory_endpoints(self):
         with TestClient(app) as client:

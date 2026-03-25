@@ -3,7 +3,10 @@ import {
   Archive,
   Bot,
   Brain,
+  ChevronRight,
+  File,
   FileText,
+  Folder,
   FolderKanban,
   GitCompareArrows,
   MessageSquare,
@@ -16,12 +19,14 @@ import {
   Sparkles,
   Square,
   Trash2,
+  Undo2,
 } from 'lucide-react';
 import { v2MemoryApi, v2ProjectsApi, v2RunsApi, v2ThreadsApi } from '@/lib/api-v2';
 import type {
   CompareAgentSpec,
   ConversationRun,
   DecisionRecord,
+  ProjectFileTreeRecord,
   ProjectLearningRecord,
   ProjectRecord,
   ProjectThread,
@@ -150,6 +155,8 @@ export function WorkspaceView() {
   const [preferenceDrafts, setPreferenceDrafts] = useState<Record<string, string>>({});
 
   const [comparePrompt, setComparePrompt] = useState('');
+  const [fileTreePath, setFileTreePath] = useState('');
+  const [fileTree, setFileTree] = useState<ProjectFileTreeRecord | null>(null);
   const [compareAgents, setCompareAgents] = useState({ codex: true, claude: true, custom: false });
   const [compareCustomLabel, setCompareCustomLabel] = useState('Custom Command');
   const [compareCustomCommand, setCompareCustomCommand] = useState('');
@@ -157,6 +164,7 @@ export function WorkspaceView() {
   const [isLoading, setIsLoading] = useState(true);
   const [isMutating, setIsMutating] = useState(false);
   const [isMemoryLoading, setIsMemoryLoading] = useState(false);
+  const [isFilesLoading, setIsFilesLoading] = useState(false);
   const [isRunLoading, setIsRunLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -166,7 +174,7 @@ export function WorkspaceView() {
 
   useEffect(() => {
     if (!selectedProjectId) return;
-    void loadProject(selectedProjectId);
+    void loadProject(selectedProjectId, '');
     void loadMemory(selectedProjectId, memoryQuery);
   }, [selectedProjectId]);
 
@@ -332,6 +340,8 @@ export function WorkspaceView() {
         setThreads([]);
         setSelectedThreadId(null);
         setSelectedThread(null);
+        setFileTree(null);
+        setFileTreePath('');
       }
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
@@ -340,7 +350,7 @@ export function WorkspaceView() {
     }
   }
 
-  async function loadProject(projectId: string) {
+  async function loadProject(projectId: string, nextFilePath: string | null = null) {
     try {
       setErrorMessage(null);
       const project = await v2ProjectsApi.getById(projectId);
@@ -355,6 +365,12 @@ export function WorkspaceView() {
         setSelectedThread(null);
       }
       setProjects((current) => current.map((item) => (item.id === project.id ? { ...item, ...project } : item)));
+      if (project.repoPath) {
+        await loadProjectFiles(project.id, nextFilePath ?? fileTreePath);
+      } else {
+        setFileTree(null);
+        setFileTreePath('');
+      }
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     }
@@ -408,6 +424,22 @@ export function WorkspaceView() {
     }
   }
 
+  async function loadProjectFiles(projectId: string, path = '') {
+    setIsFilesLoading(true);
+    try {
+      setErrorMessage(null);
+      const tree = await v2ProjectsApi.listFiles(projectId, { path });
+      setFileTree(tree);
+      setFileTreePath(tree.currentPath || '');
+    } catch (error) {
+      setFileTree(null);
+      setFileTreePath('');
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsFilesLoading(false);
+    }
+  }
+
   async function loadRunDetail(runId: string) {
     setIsRunLoading(true);
     try {
@@ -450,7 +482,7 @@ export function WorkspaceView() {
         title: threadTitle.trim() || '新对话',
       });
       setThreadTitle('');
-      await loadProject(selectedProjectId);
+      await loadProject(selectedProjectId, '');
       setSelectedThreadId(created.id);
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
@@ -486,7 +518,7 @@ export function WorkspaceView() {
       }
       await loadThread(selectedThreadId);
       if (selectedProjectId) {
-        await loadProject(selectedProjectId);
+        await loadProject(selectedProjectId, fileTreePath);
         await loadMemory(selectedProjectId, memoryQuery);
       }
     } catch (error) {
@@ -508,7 +540,7 @@ export function WorkspaceView() {
         status: projectForm.status,
         checkCommands: splitCommands(projectForm.checkCommands),
       });
-      await loadProject(selectedProjectId);
+      await loadProject(selectedProjectId, fileTreePath);
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -542,7 +574,7 @@ export function WorkspaceView() {
         pinned: resourceForm.pinned,
       });
       setResourceForm({ type: 'note', title: '', uri: '', pinned: true });
-      await loadProject(selectedProjectId);
+      await loadProject(selectedProjectId, fileTreePath);
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -556,7 +588,27 @@ export function WorkspaceView() {
     try {
       setErrorMessage(null);
       await v2ProjectsApi.deleteResource(selectedProjectId, resourceId);
-      await loadProject(selectedProjectId);
+      await loadProject(selectedProjectId, fileTreePath);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handlePinRepoEntry(relativePath: string, entryName: string) {
+    if (!selectedProjectId || !selectedProject?.repoPath) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      const fullPath = relativePath ? `${selectedProject.repoPath}/${relativePath}` : selectedProject.repoPath;
+      await v2ProjectsApi.addResource(selectedProjectId, {
+        type: 'repo-path',
+        title: entryName,
+        uri: fullPath,
+        pinned: true,
+      });
+      await loadProject(selectedProjectId, fileTreePath);
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -705,7 +757,7 @@ export function WorkspaceView() {
       setActivePanel('compare');
       await loadThread(selectedThreadId);
       if (selectedProjectId) {
-        await loadProject(selectedProjectId);
+        await loadProject(selectedProjectId, fileTreePath);
       }
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
@@ -1093,7 +1145,7 @@ export function WorkspaceView() {
                         <Save className="mr-2 h-4 w-4" />
                         保存项目设置
                       </Button>
-                      <Button variant="outline" className="rounded-xl" onClick={() => void loadProject(selectedProject.id)} disabled={isMutating}>
+                      <Button variant="outline" className="rounded-xl" onClick={() => void loadProject(selectedProject.id, fileTreePath)} disabled={isMutating}>
                         <RefreshCcw className="mr-2 h-4 w-4" />
                         刷新
                       </Button>
@@ -1159,6 +1211,77 @@ export function WorkspaceView() {
                     ))}
                     {!allResources.length && <div className="text-xs text-muted-foreground">还没有资源。</div>}
                   </div>
+                </section>
+
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">File Tree</div>
+                      <div className="mt-1 text-xs text-muted-foreground">项目 repoPath 对应的文件上下文浏览器。</div>
+                    </div>
+                    {isFilesLoading ? <Badge variant="secondary">加载中</Badge> : <Badge variant="secondary">{fileTree?.entries.length || 0}</Badge>}
+                  </div>
+                  {!selectedProject.repoPath ? (
+                    <div className="mt-4 rounded-2xl border border-dashed border-border/60 px-3 py-5 text-xs text-muted-foreground">
+                      先给项目配置 repoPath，文件树就会在这里展示。
+                    </div>
+                  ) : (
+                    <>
+                      <div className="mt-4 rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+                        <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Repo Root</div>
+                        <div className="mt-2 break-all text-xs text-muted-foreground">{selectedProject.repoPath}</div>
+                        <div className="mt-3 flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void loadProjectFiles(selectedProject.id, fileTree?.parentPath || '')}
+                            disabled={!fileTree?.parentPath && fileTree?.parentPath !== ''}
+                          >
+                            <Undo2 className="mr-1 h-3.5 w-3.5" />
+                            上一级
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => void loadProjectFiles(selectedProject.id, fileTreePath)} disabled={isFilesLoading}>
+                            <RefreshCcw className="mr-1 h-3.5 w-3.5" />
+                            刷新
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-border/60 bg-background/70">
+                        <div className="border-b border-border/60 px-3 py-2 text-xs text-muted-foreground">
+                          当前路径：/{fileTree?.currentPath || ''}
+                        </div>
+                        <div className="divide-y divide-border/50">
+                          {fileTree?.entries.map((entry) => (
+                            <div key={entry.path || entry.name} className="flex items-center justify-between gap-2 px-3 py-2">
+                              <button
+                                type="button"
+                                onClick={() => entry.type === 'dir' ? void loadProjectFiles(selectedProject.id, entry.path) : undefined}
+                                className={`flex min-w-0 flex-1 items-center gap-2 text-left ${entry.type === 'dir' ? 'hover:text-primary' : ''}`}
+                              >
+                                {entry.type === 'dir' ? <Folder className="h-4 w-4 shrink-0 text-primary" /> : <File className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate text-sm">{entry.name}</div>
+                                  <div className="truncate text-[11px] text-muted-foreground">{entry.path}</div>
+                                </div>
+                                {entry.type === 'dir' ? <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" /> : null}
+                              </button>
+                              <div className="flex shrink-0 items-center gap-2">
+                                <Badge variant="outline">{entry.type}</Badge>
+                                <Button size="sm" variant="outline" onClick={() => void handlePinRepoEntry(entry.path, entry.name)} disabled={isMutating}>
+                                  <Pin className="mr-1 h-3.5 w-3.5" />
+                                  钉住
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                          {!fileTree?.entries.length && (
+                            <div className="px-3 py-5 text-xs text-muted-foreground">当前目录下没有可显示的文件。</div>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </section>
               </div>
             )}

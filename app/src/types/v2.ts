@@ -109,6 +109,20 @@ export interface ProjectLearningRecord {
   createdAt: Date | string;
 }
 
+export interface ProjectFileEntryRecord {
+  name: string;
+  path: string;
+  type: 'dir' | 'file' | string;
+  size?: number | null;
+}
+
+export interface ProjectFileTreeRecord {
+  rootPath: string;
+  currentPath: string;
+  parentPath?: string | null;
+  entries: ProjectFileEntryRecord[];
+}
+
 export interface CompareAgentSpec {
   agent: string;
   label?: string | null;

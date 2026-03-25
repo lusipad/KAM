@@ -4,7 +4,7 @@
 
 - 用 SSE 替换部分高频轮询，补齐 Run / Thread 实时事件流
 - 给 Compare 面板增加更细的差异摘要与 artifacts 横向对照
-- 补充 Project file tree 与 pinned resources 的文件侧导航体验
+- 给 Project file tree 增加搜索、过滤和更细的 pinned 入口
 - 让 Router 的 LLM 路由从 JSON 分类继续演进到更稳定的 function calling
 
 ## Next

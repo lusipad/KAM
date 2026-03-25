@@ -29,7 +29,7 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
 
 右侧主工作区已经补齐四块核心面板：
 
-- `Project`：项目设置、资源管理、检查命令
+- `Project`：项目设置、资源管理、检查命令、repo 文件树
 - `Memory`：偏好、决策、项目 learnings、搜索
 - `Detail`：Run artifacts、checks、命令与摘要
 - `Compare`：多 Agent / custom command 并发对比

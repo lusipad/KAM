@@ -105,4 +105,21 @@ async def delete_resource(project_id: str, resource_id: str, db: Session = Depen
     deleted = service.delete_resource(project_id, resource_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="资源不存在")
-    return {"message": "资源已删除"}
+    return {"message": "删除成功"}
+
+
+@router.get("/projects/{project_id}/files")
+async def list_project_files(
+    project_id: str,
+    path: str = Query(default=""),
+    include_hidden: bool = Query(default=False),
+    db: Session = Depends(get_db),
+):
+    service = ProjectService(db)
+    try:
+        tree = service.list_files(project_id, relative_path=path, include_hidden=include_hidden)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if not tree:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return tree

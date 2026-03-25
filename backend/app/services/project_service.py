@@ -4,6 +4,7 @@ KAM v2 项目服务
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -115,3 +116,71 @@ class ProjectService:
         self.db.delete(resource)
         self.db.commit()
         return True
+
+    def list_files(self, project_id: str, relative_path: str = "", include_hidden: bool = False) -> dict[str, Any] | None:
+        project = self.get_project(project_id)
+        if not project:
+            return None
+
+        repo_root = self._resolve_repo_root(project)
+        target_dir = self._resolve_repo_target(repo_root, relative_path)
+        if not target_dir.exists():
+            raise ValueError("指定路径不存在")
+        if not target_dir.is_dir():
+            raise ValueError("指定路径不是目录")
+
+        current_path = self._relative(repo_root, target_dir)
+        parent_path = None
+        if target_dir != repo_root:
+            parent_path = self._relative(repo_root, target_dir.parent)
+
+        entries: list[dict[str, Any]] = []
+        for child in sorted(target_dir.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+            if not include_hidden and child.name.startswith('.'):
+                continue
+            child_path = self._relative(repo_root, child)
+            try:
+                stat = child.stat()
+                size = stat.st_size if child.is_file() else None
+            except OSError:
+                size = None
+            entries.append(
+                {
+                    "name": child.name,
+                    "path": child_path,
+                    "type": "dir" if child.is_dir() else "file",
+                    "size": size,
+                }
+            )
+
+        return {
+            "rootPath": str(repo_root),
+            "currentPath": current_path,
+            "parentPath": parent_path,
+            "entries": entries,
+        }
+
+    def _resolve_repo_root(self, project: Project) -> Path:
+        repo_path = (project.repo_path or "").strip()
+        if not repo_path:
+            raise ValueError("项目尚未配置 repoPath")
+
+        repo_root = Path(repo_path).expanduser().resolve()
+        if not repo_root.exists():
+            raise ValueError("repoPath 不存在")
+        if not repo_root.is_dir():
+            raise ValueError("repoPath 不是目录")
+        return repo_root
+
+    def _resolve_repo_target(self, repo_root: Path, relative_path: str) -> Path:
+        normalized = (relative_path or "").strip().lstrip("/")
+        target = (repo_root / normalized).resolve()
+        try:
+            target.relative_to(repo_root)
+        except ValueError as error:
+            raise ValueError("非法路径") from error
+        return target
+
+    def _relative(self, repo_root: Path, target: Path) -> str:
+        value = str(target.relative_to(repo_root)).replace("\\", "/")
+        return "" if value == "." else value
