@@ -8,6 +8,7 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
 
 - 前端默认直接进入 v2 工作区
 - 后端默认以 `/api/v2` 作为主工作流接口
+- 对话路由已支持基于 OpenAI function calling 的结构化编排，失败时自动回退规则路由
 - Codex 默认模型已切到 `gpt-5.4` + `xhigh`
 - 旧 Lite / Autonomy 运行时入口已移除，仓库只保留 v2 主链路
 
@@ -44,6 +45,7 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
 - `GET/POST /api/v2/projects/:id/threads`
 - `GET /api/v2/threads/:id`
 - `POST /api/v2/threads/:id/messages`
+- `POST /api/v2/threads/:id/messages/stream`
 - `GET/POST /api/v2/threads/:id/runs`
 - `POST /api/v2/threads/:id/compare`
 - `GET /api/v2/runs/:id`

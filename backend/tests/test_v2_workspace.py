@@ -4,6 +4,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,7 @@ os.environ["AGENT_WORKROOT"] = "./storage/test-v2-runs"
 os.environ["OPENAI_API_KEY"] = ""
 
 from app.main import app
+from app.core.config import settings
 from app.db.base import Base, engine
 
 
@@ -531,6 +533,106 @@ class V2WorkspaceApiTests(unittest.TestCase):
             self.assertIn('data: ', body)
             self.assertIn('"thread"', body)
             self.assertIn('"runs"', body)
+
+    def test_message_stream_endpoint_streams_reply_and_result(self):
+        with TestClient(app) as client:
+            project = client.post(
+                '/api/v2/projects',
+                json={'title': 'Message stream project'},
+            ).json()
+            thread = client.post(
+                f"/api/v2/projects/{project['id']}/threads",
+                json={'title': 'SSE 消息线程'},
+            ).json()
+
+            with client.stream(
+                'POST',
+                f"/api/v2/threads/{thread['id']}/messages/stream",
+                json={
+                    'content': '先聊聊这个项目下一步',
+                    'createRun': False,
+                },
+            ) as response:
+                self.assertEqual(response.status_code, 200)
+                body = ''.join(response.iter_text())
+
+            self.assertIn('event: message-saved', body)
+            self.assertIn('event: assistant-reply-delta', body)
+            self.assertIn('event: assistant-reply-complete', body)
+            self.assertIn('event: result', body)
+            self.assertIn('event: done', body)
+            self.assertIn('我已把这条消息记入当前 Thread', body)
+
+    def test_llm_router_function_call_records_decision_without_run(self):
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    'choices': [
+                        {
+                            'message': {
+                                'tool_calls': [
+                                    {
+                                        'type': 'function',
+                                        'function': {
+                                            'name': 'plan_kam_response',
+                                            'arguments': (
+                                                '{'
+                                                '"should_run": false, '
+                                                '"mode": "chat", '
+                                                '"agents": [], '
+                                                '"preferences": [], '
+                                                '"decisions": ['
+                                                '{"question": "状态管理方案选哪个？", "decision": "Zustand", "reasoning": "足够轻量"}'
+                                                '], '
+                                                '"learnings": [], '
+                                                '"summary": "已记录你的决策，本轮先不执行。"}'
+                                            ),
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                }
+
+        previous_key = settings.OPENAI_API_KEY
+        settings.OPENAI_API_KEY = 'test-key'
+        try:
+            with patch('app.services.conversation_router.httpx.post', return_value=FakeResponse()):
+                with TestClient(app) as client:
+                    project = client.post(
+                        '/api/v2/projects',
+                        json={'title': 'LLM router project'},
+                    ).json()
+                    thread = client.post(
+                        f"/api/v2/projects/{project['id']}/threads",
+                        json={'title': 'LLM router thread'},
+                    ).json()
+
+                    posted = client.post(
+                        f"/api/v2/threads/{thread['id']}/messages",
+                        json={
+                            'content': '状态管理就定 Zustand，先不要执行。',
+                        },
+                    )
+                    self.assertEqual(posted.status_code, 200)
+                    payload = posted.json()
+                    self.assertEqual(payload['routerMode'], 'llm')
+                    self.assertEqual(payload['runs'], [])
+                    self.assertIn('已记录你的决策', payload['reply']['content'])
+
+                    decisions = client.get(
+                        '/api/v2/memory/decisions',
+                        params={'project_id': project['id']},
+                    )
+                    self.assertEqual(decisions.status_code, 200)
+                    self.assertEqual(len(decisions.json()['decisions']), 1)
+                    self.assertEqual(decisions.json()['decisions'][0]['decision'], 'Zustand')
+        finally:
+            settings.OPENAI_API_KEY = previous_key
 
     def test_passed_run_auto_creates_project_learning(self):
         with TestClient(app) as client:

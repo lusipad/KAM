@@ -35,6 +35,151 @@ const post = <TResponse, TBody = undefined>(url: string, data?: TBody) => api.po
 const put = <TResponse, TBody>(url: string, data: TBody) => api.put<TResponse, TResponse, TBody>(url, data);
 const del = <T>(url: string) => api.delete<T, T>(url);
 
+export type ThreadMessageStreamEvent = {
+  event: string;
+  data: unknown;
+};
+
+function streamEventErrorMessage(data: unknown) {
+  if (data && typeof data === 'object' && 'message' in data && typeof data.message === 'string') {
+    return data.message;
+  }
+  return '';
+}
+
+async function streamJsonPost<TDone>(
+  url: string,
+  data: unknown,
+  options?: {
+    signal?: AbortSignal;
+    onEvent?: (event: ThreadMessageStreamEvent) => void;
+  },
+): Promise<TDone | null> {
+  const response = await fetch(`${API_BASE_URL}${url}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify(data),
+    signal: options?.signal,
+  });
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => '');
+    throw new Error(message || `流式请求失败: ${response.status}`);
+  }
+
+  if (!response.body) {
+    return null;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalPayload: TDone | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    let separatorIndex = buffer.indexOf('\n\n');
+    while (separatorIndex >= 0) {
+      const block = buffer.slice(0, separatorIndex);
+      buffer = buffer.slice(separatorIndex + 2);
+      separatorIndex = buffer.indexOf('\n\n');
+
+      if (!block.trim()) {
+        continue;
+      }
+
+      const lines = block.split('\n');
+      let eventName = 'message';
+      const dataLines: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          eventName = line.slice(6).trim() || 'message';
+          continue;
+        }
+        if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+      }
+      if (!dataLines.length) {
+        continue;
+      }
+
+      const rawData = dataLines.join('\n');
+      let parsed: unknown = rawData;
+      try {
+        parsed = JSON.parse(rawData);
+      } catch {
+        parsed = rawData;
+      }
+
+      options?.onEvent?.({
+        event: eventName,
+        data: parsed,
+      });
+
+      if (eventName === 'error') {
+        throw new Error(streamEventErrorMessage(parsed) || '流式请求失败');
+      }
+
+      if (eventName === 'result') {
+        finalPayload = parsed as TDone;
+      }
+
+      if (eventName === 'done') {
+        finalPayload = parsed as TDone;
+      }
+    }
+  }
+
+  if (!buffer.trim()) {
+    return finalPayload;
+  }
+
+  const lines = buffer.split('\n');
+  let eventName = 'message';
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim() || 'message';
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (!dataLines.length) {
+    return finalPayload;
+  }
+
+  const rawData = dataLines.join('\n');
+  let parsed: unknown = rawData;
+  try {
+    parsed = JSON.parse(rawData);
+  } catch {
+    parsed = rawData;
+  }
+  options?.onEvent?.({
+    event: eventName,
+    data: parsed,
+  });
+  if (eventName === 'error') {
+    throw new Error(streamEventErrorMessage(parsed) || '流式请求失败');
+  }
+  if (eventName === 'result') {
+    finalPayload = parsed as TDone;
+  }
+  if (eventName === 'done') {
+    finalPayload = parsed as TDone;
+  }
+  return finalPayload;
+}
+
 export const v2ProjectsApi = {
   list: (params?: { status?: string }) => get<{ projects: ProjectRecord[] }>('/v2/projects', params),
   create: (data: Partial<ProjectRecord> & { title: string }) => post<ProjectRecord, typeof data>('/v2/projects', data),
@@ -68,6 +213,22 @@ export const v2ThreadsApi = {
       reasoningEffort?: string;
     },
   ) => post<PostThreadMessageResponse, typeof data>(`/v2/threads/${threadId}/messages`, data),
+  postMessageStream: (
+    threadId: string,
+    data: {
+      content: string;
+      metadata?: Record<string, unknown>;
+      createRun?: boolean;
+      agent?: string;
+      command?: string;
+      model?: string;
+      reasoningEffort?: string;
+    },
+    options?: {
+      signal?: AbortSignal;
+      onEvent?: (event: ThreadMessageStreamEvent) => void;
+    },
+  ) => streamJsonPost<PostThreadMessageResponse>(`/v2/threads/${threadId}/messages/stream`, data, options),
   bootstrapMessage: (data: {
     content: string;
     metadata?: Record<string, unknown>;

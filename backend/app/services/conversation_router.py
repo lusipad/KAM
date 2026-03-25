@@ -56,6 +56,9 @@ class ConversationRouter:
         llm_plan = self._route_with_llm(user_message, context)
         heuristic_preferences = self._extract_preferences(user_message, thread_id)
         llm_preferences = self._persist_llm_preferences(llm_plan.get("preferences") or [], thread_id)
+        project_id = str((context.get("project") or {}).get("id") or "").strip() or None
+        llm_decisions = self._persist_llm_decisions(llm_plan.get("decisions") or [], project_id, thread_id)
+        llm_learnings = self._persist_llm_learnings(llm_plan.get("learnings") or [], project_id, thread_id)
         recorded_preferences = self._merge_preferences(heuristic_preferences, llm_preferences)
 
         should_run = self._resolve_should_run(user_message, create_run, llm_plan)
@@ -98,12 +101,17 @@ class ConversationRouter:
             context=context,
             runs=runs,
             recorded_preferences=recorded_preferences,
+            recorded_decisions=llm_decisions,
+            recorded_learnings=llm_learnings,
+            planner_summary=llm_plan.get("summary") or "",
             router_mode=llm_plan.get("mode") or "heuristic",
         )
         return {
             "reply": reply,
             "runs": [run.to_dict(include_artifacts=False) for run in runs],
             "preferences": recorded_preferences,
+            "decisions": llm_decisions,
+            "learnings": llm_learnings,
             "context": context,
             "routerMode": llm_plan.get("mode") or "heuristic",
             "compareId": compare_group_id,
@@ -119,13 +127,12 @@ class ConversationRouter:
                 {
                     "role": "system",
                     "content": (
-                        "你是 KAM v2 的对话路由器。请严格只输出 JSON，不要输出 markdown。"
-                        "JSON 结构："
-                        '{"should_run": boolean, "agents": [{"agent": "codex|claude-code|custom", '
-                        '"command": string|null, "model": string|null, "reasoningEffort": string|null}], '
-                        '"preferences": [{"category": string, "key": string, "value": string}], '
-                        '"summary": string}. '
-                        "如果无需执行，should_run=false 且 agents=[]。"
+                        "你是 KAM v2 的对话路由器。"
+                        "你必须调用函数 plan_kam_response 来输出结构化计划，不要输出 markdown。"
+                        "只有在用户明确表达长期偏好时才写 preferences。"
+                        "只有在用户明确做出方案选择、结论确认时才写 decisions。"
+                        "只有在用户陈述稳定、可复用的项目经验时才写 learnings。"
+                        "如果用户想比较多个 agent，请把 mode 设为 compare 并返回多个 agents。"
                     ),
                 },
                 {
@@ -143,7 +150,13 @@ class ConversationRouter:
                     ),
                 },
             ],
-            "response_format": {"type": "json_object"},
+            "tools": [self._planner_tool()],
+            "tool_choice": {
+                "type": "function",
+                "function": {
+                    "name": "plan_kam_response",
+                },
+            },
         }
         headers = {
             "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
@@ -157,17 +170,133 @@ class ConversationRouter:
                 timeout=20,
             )
             response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            parsed = self._parse_json_text(content)
+            message = response.json()["choices"][0]["message"]
+            parsed = self._extract_llm_plan(message)
             return {
                 "mode": "llm",
                 "should_run": bool(parsed.get("should_run", False)),
                 "agents": parsed.get("agents") or [],
                 "preferences": parsed.get("preferences") or [],
+                "decisions": parsed.get("decisions") or [],
+                "learnings": parsed.get("learnings") or [],
                 "summary": parsed.get("summary") or "",
             }
         except Exception:
             return {"mode": "heuristic"}
+
+    def _planner_tool(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": "plan_kam_response",
+                "description": "Plan whether KAM should reply only, create one run, or create a compare run group.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "should_run": {
+                            "type": "boolean",
+                            "description": "Whether KAM should create runs for this message.",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["chat", "single_run", "compare"],
+                            "description": "Routing mode for this message.",
+                        },
+                        "agents": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "agent": {
+                                        "type": "string",
+                                        "enum": ["codex", "claude-code", "custom"],
+                                    },
+                                    "label": {"type": ["string", "null"]},
+                                    "command": {"type": ["string", "null"]},
+                                    "model": {"type": ["string", "null"]},
+                                    "reasoningEffort": {"type": ["string", "null"]},
+                                },
+                                "required": ["agent"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "preferences": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "category": {"type": "string"},
+                                    "key": {"type": "string"},
+                                    "value": {"type": "string"},
+                                },
+                                "required": ["key", "value"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "decisions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question": {"type": "string"},
+                                    "decision": {"type": "string"},
+                                    "reasoning": {"type": ["string", "null"]},
+                                },
+                                "required": ["decision"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "learnings": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": {"type": "string"},
+                                },
+                                "required": ["content"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "A concise assistant-facing summary of what KAM understood or will do.",
+                        },
+                    },
+                    "required": ["should_run", "mode", "agents", "preferences", "decisions", "learnings", "summary"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+    def _extract_llm_plan(self, message: dict[str, Any]) -> dict[str, Any]:
+        tool_calls = message.get("tool_calls") or []
+        for tool_call in tool_calls:
+            function_payload = tool_call.get("function") or {}
+            if function_payload.get("name") != "plan_kam_response":
+                continue
+            arguments = function_payload.get("arguments") or "{}"
+            parsed = self._parse_json_text(arguments)
+            return {
+                "should_run": bool(parsed.get("should_run", False)),
+                "mode": str(parsed.get("mode") or "chat"),
+                "agents": parsed.get("agents") or [],
+                "preferences": parsed.get("preferences") or [],
+                "decisions": parsed.get("decisions") or [],
+                "learnings": parsed.get("learnings") or [],
+                "summary": str(parsed.get("summary") or "").strip(),
+            }
+
+        content = message.get("content") or ""
+        parsed = self._parse_json_text(content) if content else {}
+        return {
+            "should_run": bool(parsed.get("should_run", False)),
+            "mode": str(parsed.get("mode") or "chat"),
+            "agents": parsed.get("agents") or [],
+            "preferences": parsed.get("preferences") or [],
+            "decisions": parsed.get("decisions") or [],
+            "learnings": parsed.get("learnings") or [],
+            "summary": str(parsed.get("summary") or "").strip(),
+        }
 
     def _parse_json_text(self, content: str) -> dict[str, Any]:
         text = content.strip()
@@ -289,6 +418,58 @@ class ConversationRouter:
             recorded.append(preference.to_dict())
         return recorded
 
+    def _persist_llm_decisions(
+        self,
+        decisions: list[dict[str, Any]],
+        project_id: str | None,
+        thread_id: str,
+    ) -> list[dict[str, Any]]:
+        if not project_id:
+            return []
+
+        recorded = []
+        for item in decisions:
+            decision_value = str(item.get("decision") or "").strip()
+            question = str(item.get("question") or "").strip() or "本轮确认的方案"
+            if not decision_value:
+                continue
+            decision = self.memory_service.ensure_decision(
+                {
+                    "projectId": project_id,
+                    "question": question,
+                    "decision": decision_value,
+                    "reasoning": str(item.get("reasoning") or "").strip(),
+                    "sourceThreadId": thread_id,
+                }
+            )
+            recorded.append(decision.to_dict())
+        return recorded
+
+    def _persist_llm_learnings(
+        self,
+        learnings: list[dict[str, Any]],
+        project_id: str | None,
+        thread_id: str,
+    ) -> list[dict[str, Any]]:
+        if not project_id:
+            return []
+
+        recorded = []
+        for item in learnings:
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            learning = self.memory_service.ensure_learning(
+                {
+                    "projectId": project_id,
+                    "content": content,
+                    "sourceThreadId": thread_id,
+                }
+            )
+            if learning:
+                recorded.append(learning.to_dict())
+        return recorded
+
     def _merge_preferences(self, left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
@@ -364,12 +545,29 @@ class ConversationRouter:
         context: dict[str, Any],
         runs: list[Any],
         recorded_preferences: list[dict[str, Any]],
+        recorded_decisions: list[dict[str, Any]],
+        recorded_learnings: list[dict[str, Any]],
+        planner_summary: str,
         router_mode: str,
     ) -> str:
         reply_lines = []
+        if planner_summary:
+            reply_lines.append(planner_summary)
+
         if recorded_preferences:
             memory_text = "，".join(f"{item['key']}={item['value']}" for item in recorded_preferences)
             reply_lines.append(f"我记住了这些偏好：{memory_text}。")
+
+        if recorded_decisions:
+            decision_text = "；".join(
+                f"{item.get('question') or '本轮决策'} → {item['decision']}"
+                for item in recorded_decisions[:2]
+            )
+            reply_lines.append(f"我已记录这次决策：{decision_text}。")
+
+        if recorded_learnings:
+            learning_text = "；".join(str(item.get("content") or "")[:72] for item in recorded_learnings[:2])
+            reply_lines.append(f"我也把这些项目经验沉淀进记忆：{learning_text}。")
 
         context_preferences = self._format_context_preferences(context.get("preferences") or [], recorded_preferences)
         if context_preferences:

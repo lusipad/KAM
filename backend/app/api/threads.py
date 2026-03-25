@@ -85,6 +85,60 @@ def _build_message_response(
     return payload
 
 
+def _encode_sse_event(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _chunk_text(content: str, chunk_size: int = 36) -> list[str]:
+    text = content or ""
+    if not text:
+        return []
+    return [text[index:index + chunk_size] for index in range(0, len(text), chunk_size)]
+
+
+def _process_thread_message(
+    *,
+    thread_id: str,
+    data: MessageCreate,
+    thread_service: ThreadService,
+    conversation_router: ConversationRouter,
+) -> tuple[Any, Any, dict[str, Any]]:
+    message = thread_service.create_message(
+        thread_id,
+        {
+            "role": "user",
+            "content": data.content,
+            "metadata": data.metadata,
+        },
+    )
+    if not message:
+        raise HTTPException(status_code=404, detail="线程不存在")
+
+    routed = conversation_router.route(
+        thread_id=thread_id,
+        message_id=str(message.id),
+        user_message=data.content,
+        create_run=data.createRun,
+        agent=data.agent,
+        command=data.command,
+        model=data.model,
+        reasoning_effort=data.reasoningEffort,
+        metadata=data.metadata,
+    )
+    reply = None
+    if routed.get("reply"):
+        reply = thread_service.create_message(
+            thread_id,
+            {
+                "role": "assistant",
+                "content": routed["reply"],
+                "metadata": {"generatedBy": "conversation-router"},
+            },
+        )
+
+    return message, reply, routed
+
+
 @router.get("/projects/{project_id}/threads")
 async def list_threads(
     project_id: str,
@@ -239,38 +293,12 @@ async def create_message(thread_id: str, data: MessageCreate, db: Session = Depe
     thread_service = ThreadService(db)
     conversation_router = ConversationRouter(db)
 
-    message = thread_service.create_message(
-        thread_id,
-        {
-            "role": "user",
-            "content": data.content,
-            "metadata": data.metadata,
-        },
-    )
-    if not message:
-        raise HTTPException(status_code=404, detail="线程不存在")
-
-    routed = conversation_router.route(
+    message, reply, routed = _process_thread_message(
         thread_id=thread_id,
-        message_id=str(message.id),
-        user_message=data.content,
-        create_run=data.createRun,
-        agent=data.agent,
-        command=data.command,
-        model=data.model,
-        reasoning_effort=data.reasoningEffort,
-        metadata=data.metadata,
+        data=data,
+        thread_service=thread_service,
+        conversation_router=conversation_router,
     )
-    reply = None
-    if routed.get("reply"):
-        reply = thread_service.create_message(
-            thread_id,
-            {
-                "role": "assistant",
-                "content": routed["reply"],
-                "metadata": {"generatedBy": "conversation-router"},
-            },
-        )
 
     return _build_message_response(
         thread_service=thread_service,
@@ -278,4 +306,100 @@ async def create_message(thread_id: str, data: MessageCreate, db: Session = Depe
         message=message,
         reply=reply,
         routed=routed,
+    )
+
+
+@router.post("/threads/{thread_id}/messages/stream")
+async def create_message_stream(thread_id: str, data: MessageCreate, request: Request, db: Session = Depends(get_db)):
+    thread_service = ThreadService(db)
+    thread = thread_service.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="线程不存在")
+
+    async def event_stream():
+        stream_db = SessionLocal()
+        try:
+            stream_thread_service = ThreadService(stream_db)
+            stream_conversation_router = ConversationRouter(stream_db)
+            message, reply, routed = _process_thread_message(
+                thread_id=thread_id,
+                data=data,
+                thread_service=stream_thread_service,
+                conversation_router=stream_conversation_router,
+            )
+
+            yield _encode_sse_event(
+                "message-saved",
+                {
+                    "message": message.to_dict(include_runs=True),
+                },
+            )
+
+            if reply:
+                accumulated = ""
+                for chunk in _chunk_text(reply.content):
+                    if await request.is_disconnected():
+                        return
+                    accumulated += chunk
+                    yield _encode_sse_event(
+                        "assistant-reply-delta",
+                        {
+                            "delta": chunk,
+                            "content": accumulated,
+                        },
+                    )
+                    await asyncio.sleep(0)
+
+                yield _encode_sse_event(
+                    "assistant-reply-complete",
+                    {
+                        "reply": reply.to_dict(include_runs=True),
+                    },
+                )
+
+            if routed.get("runs"):
+                yield _encode_sse_event(
+                    "runs-created",
+                    {
+                        "runs": routed.get("runs") or [],
+                        "compareId": routed.get("compareId"),
+                        "routerMode": routed.get("routerMode") or "heuristic",
+                    },
+                )
+
+            final_payload = _build_message_response(
+                thread_service=stream_thread_service,
+                thread_id=thread_id,
+                message=message,
+                reply=reply,
+                routed=routed,
+            )
+            yield _encode_sse_event("result", final_payload)
+            yield _encode_sse_event("done", final_payload)
+        except HTTPException as error:
+            yield _encode_sse_event(
+                "error",
+                {
+                    "message": error.detail,
+                    "statusCode": error.status_code,
+                },
+            )
+        except Exception as error:
+            yield _encode_sse_event(
+                "error",
+                {
+                    "message": str(error),
+                },
+            )
+        finally:
+            stream_db.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )

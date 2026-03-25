@@ -64,7 +64,7 @@ Frontend KAM Workspace
   - 线程 CRUD、消息落库
 - `conversation_router.py`
   - 用户消息意图判断
-  - 调用 LLM 路由或规则路由
+  - 调用 LLM function calling 路由或规则路由
   - 自动创建单 Run 或多 Run compare
 - `context_assembler.py`
   - 聚合最近对话、资源、决策、偏好、learnings、最近 runs
@@ -108,7 +108,7 @@ Frontend KAM Workspace
 - Context Assembler 自动拼装上下文
 - RunService 创建 Run
 - RunEngine 执行并采集产物
-- 前端轮询展示最新状态
+- 前端通过消息 / Thread / Run SSE 更新最新状态
 
 ### 6.2 Run Check Loop
 

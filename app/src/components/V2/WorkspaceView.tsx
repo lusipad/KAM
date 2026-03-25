@@ -21,7 +21,15 @@ import {
   Trash2,
   Undo2,
 } from 'lucide-react';
-import { getV2RunEventsUrl, getV2ThreadEventsUrl, v2MemoryApi, v2ProjectsApi, v2RunsApi, v2ThreadsApi } from '@/lib/api-v2';
+import {
+  getV2RunEventsUrl,
+  getV2ThreadEventsUrl,
+  type ThreadMessageStreamEvent,
+  v2MemoryApi,
+  v2ProjectsApi,
+  v2RunsApi,
+  v2ThreadsApi,
+} from '@/lib/api-v2';
 import type {
   BootstrapThreadMessageResponse,
   CompareAgentSpec,
@@ -105,6 +113,21 @@ function isActiveRun(run?: ConversationRun | null) {
 
 function asString(value: unknown) {
   return typeof value === 'string' ? value : '';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object';
+}
+
+function asRunList(value: unknown): ConversationRun[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is ConversationRun => isRecord(item) && typeof item.id === 'string');
+}
+
+function asThreadMessage(value: unknown): ThreadMessageRecord | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.id !== 'string' || typeof value.content !== 'string') return null;
+  return value as unknown as ThreadMessageRecord;
 }
 
 function splitCommands(value: string) {
@@ -263,6 +286,8 @@ export function WorkspaceView() {
   const [isMemoryLoading, setIsMemoryLoading] = useState(false);
   const [isFilesLoading, setIsFilesLoading] = useState(false);
   const [isRunLoading, setIsRunLoading] = useState(false);
+  const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [streamingReplyText, setStreamingReplyText] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -690,6 +715,47 @@ export function WorkspaceView() {
     }
   }
 
+  function applyThreadMessageStreamEvent(event: ThreadMessageStreamEvent) {
+    const payload = event.data;
+    if (!isRecord(payload)) {
+      return;
+    }
+
+    const delta = asString(payload.replyDelta) || asString(payload.delta);
+    if (delta) {
+      setStreamingReplyText((current) => current + delta);
+    }
+
+    const reply = asThreadMessage(payload.reply);
+    if (reply?.content) {
+      setStreamingReplyText(reply.content);
+    }
+
+    const streamThread = payload.thread;
+    if (isRecord(streamThread) && typeof streamThread.id === 'string') {
+      const nextThread = streamThread as unknown as ProjectThread;
+      setSelectedThread(nextThread);
+      setThreads((current) => {
+        if (current.some((item) => item.id === nextThread.id)) {
+          return current.map((item) => (item.id === nextThread.id ? { ...item, ...nextThread } : item));
+        }
+        return [nextThread, ...current];
+      });
+    }
+
+    const runs = asRunList(payload.runs);
+    if (runs.length) {
+      setSelectedRunId(runs[0].id);
+      const nextCompareId = asString(payload.compareId) || asString(runs[0].metadata?.compareGroupId);
+      if (nextCompareId) {
+        setSelectedCompareId(nextCompareId);
+        setActivePanel('compare');
+      } else {
+        setActivePanel('detail');
+      }
+    }
+  }
+
   async function handleCreateProject() {
     if (!projectTitle.trim()) return;
     setIsMutating(true);
@@ -729,10 +795,13 @@ export function WorkspaceView() {
   }
 
   async function handleSendMessage() {
-    if (!messageText.trim()) return;
+    const draftMessage = messageText.trim();
+    if (!draftMessage) return;
     setIsMutating(true);
+    setIsSendingMessage(true);
     try {
       setErrorMessage(null);
+      setStreamingReplyText('');
 
       const command = agent === 'custom' ? customCommand.trim() || undefined : undefined;
       const model = agent === 'codex' ? 'gpt-5.4' : undefined;
@@ -744,7 +813,7 @@ export function WorkspaceView() {
 
       if (!selectedProjectId) {
         const bootstrapResponse = await v2ThreadsApi.bootstrapMessage({
-          content: messageText.trim(),
+          content: draftMessage,
           createRun: autoRun,
           agent,
           command,
@@ -770,8 +839,18 @@ export function WorkspaceView() {
           setThreadTitle('');
         }
 
-        response = await v2ThreadsApi.postMessage(nextThreadId as string, {
-          content: messageText.trim(),
+        const streamedResponse = await v2ThreadsApi.postMessageStream(nextThreadId as string, {
+          content: draftMessage,
+          createRun: autoRun,
+          agent,
+          command,
+          model,
+          reasoningEffort,
+        }, {
+          onEvent: applyThreadMessageStreamEvent,
+        });
+        response = streamedResponse || await v2ThreadsApi.postMessage(nextThreadId as string, {
+          content: draftMessage,
           createRun: autoRun,
           agent,
           command,
@@ -799,9 +878,12 @@ export function WorkspaceView() {
         await loadProject(nextProjectId, fileTreePath);
         await loadMemory(nextProjectId, memoryQuery);
       }
+      setStreamingReplyText('');
     } catch (error) {
+      setMessageText(draftMessage);
       setErrorMessage(getErrorMessage(error));
     } finally {
+      setIsSendingMessage(false);
       setIsMutating(false);
     }
   }
@@ -1368,6 +1450,15 @@ export function WorkspaceView() {
               </div>
             );
           })}
+          {isSendingMessage && streamingReplyText ? (
+            <div className="flex justify-start">
+              <div className="max-w-[82%] rounded-[1.6rem] border border-border/60 bg-background/70 px-4 py-3">
+                <div className="text-[11px] uppercase tracking-[0.22em] opacity-70">assistant</div>
+                <div className="mt-2 whitespace-pre-wrap text-sm leading-6">{streamingReplyText}</div>
+                <div className="mt-2 text-[11px] text-muted-foreground">流式生成中...</div>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="border-t border-border/60 px-5 py-4">
@@ -1376,6 +1467,13 @@ export function WorkspaceView() {
               <Textarea
                 value={messageText}
                 onChange={(event) => setMessageText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return;
+                  if (!event.metaKey && !event.ctrlKey) return;
+                  event.preventDefault();
+                  if (isMutating || (agent === 'custom' && !customCommand.trim())) return;
+                  void handleSendMessage();
+                }}
                 placeholder={!selectedProjectId
                   ? "直接描述你的目标，我会先为你创建 Project 和 Thread。"
                   : !selectedThreadId
@@ -1385,7 +1483,11 @@ export function WorkspaceView() {
                 disabled={isMutating}
               />
               <div className="flex items-center justify-between gap-3 rounded-[1.2rem] border border-border/60 bg-background/50 px-3 py-2 text-xs text-muted-foreground">
-                <div>这里既能继续当前 Thread，也能在空白状态下直接启动新的 Project / Thread。</div>
+                <div>
+                  {isSendingMessage
+                    ? '消息发送中，正在接收流式回复...'
+                    : '这里既能继续当前 Thread，也能在空白状态下直接启动新的 Project / Thread。'}
+                </div>
                 <Button
                   type="button"
                   size="sm"
@@ -1394,7 +1496,7 @@ export function WorkspaceView() {
                     setComparePrompt(messageText);
                     setActivePanel('compare');
                   }}
-                  disabled={!messageText.trim()}
+                  disabled={!messageText.trim() || isSendingMessage}
                 >
                   <GitCompareArrows className="mr-1 h-3.5 w-3.5" />
                   带去对比
@@ -1436,8 +1538,9 @@ export function WorkspaceView() {
                 disabled={!messageText.trim() || isMutating || (agent === 'custom' && !customCommand.trim())}
               >
                 <Send className="mr-2 h-4 w-4" />
-                {!selectedProjectId ? '开始新项目' : !selectedThreadId ? '开始新线程' : '发送到 Thread'}
+                {isSendingMessage ? '发送中...' : !selectedProjectId ? '开始新项目' : !selectedThreadId ? '开始新线程' : '发送到 Thread'}
               </Button>
+              <div className="text-[11px] text-muted-foreground">快捷键：Cmd/Ctrl + Enter 发送</div>
             </div>
           </div>
         </div>
