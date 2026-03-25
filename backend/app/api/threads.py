@@ -409,12 +409,3 @@ async def create_message(thread_id: str, data: MessageCreate, request: Request, 
         reply=reply,
         routed=routed,
     )
-
-
-@router.post("/threads/{thread_id}/messages/stream")
-async def create_message_stream(thread_id: str, data: MessageCreate, request: Request, db: Session = Depends(get_db)):
-    thread_service = ThreadService(db)
-    thread = thread_service.get_thread(thread_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="线程不存在")
-    return _message_streaming_response(thread_id=thread_id, data=data, request=request)

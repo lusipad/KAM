@@ -829,35 +829,6 @@ class V2WorkspaceApiTests(unittest.TestCase):
             self.assertIn('"thread"', body)
             self.assertIn('"runs"', body)
 
-    def test_message_stream_endpoint_streams_reply_and_result(self):
-        with TestClient(app) as client:
-            project = client.post(
-                '/api/v2/projects',
-                json={'title': 'Message stream project'},
-            ).json()
-            thread = client.post(
-                f"/api/v2/projects/{project['id']}/threads",
-                json={'title': 'SSE 消息线程'},
-            ).json()
-
-            with client.stream(
-                'POST',
-                f"/api/v2/threads/{thread['id']}/messages/stream",
-                json={
-                    'content': '先聊聊这个项目下一步',
-                    'createRun': False,
-                },
-            ) as response:
-                self.assertEqual(response.status_code, 200)
-                body = ''.join(response.iter_text())
-
-            self.assertIn('event: message-saved', body)
-            self.assertIn('event: assistant-reply-delta', body)
-            self.assertIn('event: assistant-reply-complete', body)
-            self.assertIn('event: result', body)
-            self.assertIn('event: done', body)
-            self.assertIn('我已把这条消息记入当前 Thread', body)
-
     def test_message_endpoint_supports_sse_via_accept_header(self):
         with TestClient(app) as client:
             project = client.post(
@@ -882,8 +853,11 @@ class V2WorkspaceApiTests(unittest.TestCase):
                 body = ''.join(response.iter_text())
 
             self.assertIn('event: message-saved', body)
+            self.assertIn('event: assistant-reply-delta', body)
+            self.assertIn('event: assistant-reply-complete', body)
             self.assertIn('event: result', body)
             self.assertIn('event: done', body)
+            self.assertIn('我已把这条消息记入当前 Thread', body)
 
     def test_llm_router_function_call_records_decision_without_run(self):
         class FakeResponse:

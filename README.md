@@ -23,9 +23,11 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
   - 内置 artifacts、检查结果、失败反馈、重试、取消、采纳
 - `Memory`
   - preferences / decisions / learnings / search
-  - learning 在配置 `OPENAI_API_KEY` 时可自动生成 embedding，并在搜索时优先做语义召回
+  - 在配置 `OPENAI_API_KEY` 时，preferences / decisions / learnings 都会参与 embedding 检索
+  - search 会优先返回语义相关的历史偏好、决策和项目 learnings
 - `Compare`
   - 在同一 Thread 中并发发起多 Agent 对比
+  - 支持按文件查看 changes / patch，并在 compare 中按同一文件横向对照
 
 ## 当前 UI
 
@@ -33,8 +35,8 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
 
 - `Project`：项目设置、资源管理、检查命令、repo 文件树
 - `Memory`：偏好、决策、项目 learnings、搜索
-- `Detail`：Run artifacts、checks、命令与摘要
-- `Compare`：多 Agent / custom command 并发对比
+- `Detail`：Run artifacts、checks、命令、摘要与文件级 diff 预览
+- `Compare`：多 Agent / custom command 并发对比、按文件查看 patch 差异
 
 ## API
 
@@ -48,8 +50,6 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
 - `POST /api/v2/threads/:id/messages`
   - 默认返回 JSON
   - 当 `Accept: text/event-stream` 时返回 SSE
-- `POST /api/v2/threads/:id/messages/stream`
-  - SSE 兼容入口
 - `GET/POST /api/v2/threads/:id/runs`
 - `POST /api/v2/threads/:id/compare`
 - `GET /api/v2/runs/:id`
