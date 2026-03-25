@@ -154,12 +154,70 @@ class V2PreviewApiTests(unittest.TestCase):
             )
             self.assertEqual(learning.status_code, 200)
 
+            listing = client.get(
+                "/api/v2/memory/learnings",
+                params={"project_id": project["id"]},
+            )
+            self.assertEqual(listing.status_code, 200)
+            self.assertEqual(len(listing.json()["learnings"]), 1)
+
             search = client.get(
                 "/api/v2/memory/search",
                 params={"query": "race", "project_id": project["id"]},
             )
             self.assertEqual(search.status_code, 200)
             self.assertEqual(len(search.json()["learnings"]), 1)
+
+    def test_compare_endpoint_creates_grouped_runs(self):
+        with TestClient(app) as client:
+            project = client.post(
+                "/api/v2/projects",
+                json={"title": "Compare project"},
+            ).json()
+            thread = client.post(
+                f"/api/v2/projects/{project['id']}/threads",
+                json={"title": "并发对比"},
+            ).json()
+
+            command_a = (
+                "printf '%s' 'A done' > '{summary_file}'"
+                if os.name != "nt"
+                else "Set-Content -Path '{summary_file}' -Value 'A done'"
+            )
+            command_b = (
+                "printf '%s' 'B done' > '{summary_file}'"
+                if os.name != "nt"
+                else "Set-Content -Path '{summary_file}' -Value 'B done'"
+            )
+            created = client.post(
+                f"/api/v2/threads/{thread['id']}/compare",
+                json={
+                    "prompt": "分别实现 refresh token 流程并对比",
+                    "agents": [
+                        {"agent": "custom", "label": "方案 A", "command": command_a},
+                        {"agent": "custom", "label": "方案 B", "command": command_b},
+                    ],
+                    "autoStart": True,
+                },
+            )
+            self.assertEqual(created.status_code, 200)
+            payload = created.json()
+            self.assertTrue(payload["compareId"])
+            self.assertEqual(len(payload["runs"]), 2)
+            self.assertEqual(payload["message"]["role"], "system")
+
+            first = self._wait_run(client, payload["runs"][0]["id"])
+            second = self._wait_run(client, payload["runs"][1]["id"])
+            self.assertEqual(first["status"], "passed")
+            self.assertEqual(second["status"], "passed")
+            self.assertEqual(first["metadata"]["compareGroupId"], payload["compareId"])
+            self.assertEqual(second["metadata"]["compareGroupId"], payload["compareId"])
+
+            thread_detail = client.get(f"/api/v2/threads/{thread['id']}")
+            self.assertEqual(thread_detail.status_code, 200)
+            runs = thread_detail.json()["runs"]
+            compare_runs = [item for item in runs if item["metadata"].get("compareGroupId") == payload["compareId"]]
+            self.assertEqual(len(compare_runs), 2)
 
     def test_message_router_auto_creates_run_and_extracts_preference(self):
         with TestClient(app) as client:

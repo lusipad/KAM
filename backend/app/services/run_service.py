@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -90,6 +91,87 @@ class RunService:
             self.db.expire(run)
             self.db.refresh(run)
         return run
+
+    def compare_runs(self, thread_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        thread = self.db.query(Thread).filter(Thread.id == thread_id).first()
+        if not thread:
+            return None
+
+        prompt = str(data.get("prompt") or "").strip()
+        raw_agents = data.get("agents") or []
+        if not prompt or len(raw_agents) < 2:
+            return None
+
+        compare_id = str(data.get("compareId") or uuid4())
+        auto_start = bool(data.get("autoStart", True))
+        max_rounds = data.get("maxRounds") or data.get("max_rounds") or 5
+        prepared_agents: list[dict[str, Any]] = []
+        for index, agent_spec in enumerate(raw_agents, start=1):
+            resolved_agent = agent_spec.get("agent") or settings.DEFAULT_RUN_AGENT
+            label = str(agent_spec.get("label") or resolved_agent).strip() or f"方案 {index}"
+            prepared_agents.append(
+                {
+                    "agent": resolved_agent,
+                    "label": label,
+                    "command": agent_spec.get("command"),
+                    "model": agent_spec.get("model"),
+                    "reasoningEffort": agent_spec.get("reasoningEffort") or agent_spec.get("reasoning_effort"),
+                    "metadata": agent_spec.get("metadata") or {},
+                }
+            )
+
+        message = Message(
+            thread_id=thread.id,
+            role="system",
+            content=f"并发对比：{prompt}",
+            metadata_={
+                "compareGroupId": compare_id,
+                "requestedAgents": prepared_agents,
+            },
+        )
+        self.db.add(message)
+        self.db.flush()
+
+        runs: list[Run] = []
+        for index, agent_spec in enumerate(prepared_agents, start=1):
+            run = self.create_run(
+                thread_id,
+                {
+                    "agent": agent_spec["agent"],
+                    "command": agent_spec.get("command"),
+                    "prompt": prompt,
+                    "model": agent_spec.get("model"),
+                    "reasoningEffort": agent_spec.get("reasoningEffort"),
+                    "maxRounds": max_rounds,
+                    "metadata": {
+                        **(data.get("metadata") or {}),
+                        **(agent_spec.get("metadata") or {}),
+                        "compareGroupId": compare_id,
+                        "compareLabel": agent_spec["label"],
+                        "compareIndex": index,
+                        "comparePrompt": prompt,
+                        "compareRequestedAgents": prepared_agents,
+                    },
+                },
+                message_id=str(message.id),
+                auto_start=auto_start,
+            )
+            if run:
+                runs.append(run)
+
+        thread.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.expire(message)
+        self.db.refresh(message)
+
+        return {
+            "compareId": compare_id,
+            "threadId": str(thread.id),
+            "prompt": prompt,
+            "message": message.to_dict(include_runs=True),
+            "requestedAgents": prepared_agents,
+            "runs": [run.to_dict(include_artifacts=False) for run in runs],
+        }
 
     def start_run(self, run_id: str) -> Run | None:
         run = self.get_run(run_id)

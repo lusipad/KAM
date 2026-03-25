@@ -3,7 +3,7 @@ KAM v2 记忆 API（预览）
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -73,6 +73,16 @@ async def list_decisions(project_id: Optional[str] = Query(default=None), db: Se
 async def create_decision(data: DecisionCreate, db: Session = Depends(get_db)):
     service = MemoryService(db)
     return service.create_decision(data.model_dump()).to_dict()
+
+
+@router.get("/memory/learnings")
+async def list_learnings(
+    project_id: Optional[str] = Query(default=None),
+    query: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    service = MemoryService(db)
+    return {"learnings": [item.to_dict() for item in service.list_learnings(project_id=project_id, query=query)]}
 
 
 @router.post("/memory/learnings")

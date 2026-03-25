@@ -1,12 +1,14 @@
 import axios from 'axios';
 import type {
+  CompareAgentSpec,
   ConversationRun,
   DecisionRecord,
+  PostThreadMessageResponse,
   ProjectLearningRecord,
   ProjectRecord,
   ProjectResourceRecord,
   ProjectThread,
-  ThreadMessageRecord,
+  RunCompareResponse,
   ThreadRunArtifactRecord,
   UserPreferenceRecord,
 } from '@/types/v2';
@@ -61,15 +63,7 @@ export const v2ThreadsApi = {
       model?: string;
       reasoningEffort?: string;
     },
-  ) =>
-    post<
-      {
-        message: ThreadMessageRecord;
-        reply?: ThreadMessageRecord | null;
-        runs: ConversationRun[];
-      },
-      typeof data
-    >(`/v2/threads/${threadId}/messages`, data),
+  ) => post<PostThreadMessageResponse, typeof data>(`/v2/threads/${threadId}/messages`, data),
 };
 
 export const v2RunsApi = {
@@ -87,6 +81,16 @@ export const v2RunsApi = {
       metadata?: Record<string, unknown>;
     },
   ) => post<ConversationRun, typeof data>(`/v2/threads/${threadId}/runs`, data),
+  compare: (
+    threadId: string,
+    data: {
+      prompt: string;
+      agents: CompareAgentSpec[];
+      maxRounds?: number;
+      autoStart?: boolean;
+      metadata?: Record<string, unknown>;
+    },
+  ) => post<RunCompareResponse, typeof data>(`/v2/threads/${threadId}/compare`, data),
   getById: (runId: string) => get<ConversationRun>(`/v2/runs/${runId}`),
   start: (runId: string) => post<ConversationRun>(`/v2/runs/${runId}/start`),
   getArtifacts: (runId: string) => get<{ artifacts: ThreadRunArtifactRecord[] }>(`/v2/runs/${runId}/artifacts`),
@@ -110,6 +114,8 @@ export const v2MemoryApi = {
     reasoning?: string;
     sourceThreadId?: string;
   }) => post<DecisionRecord, typeof data>('/v2/memory/decisions', data),
+  listLearnings: (params?: { project_id?: string; query?: string }) =>
+    get<{ learnings: ProjectLearningRecord[] }>('/v2/memory/learnings', params),
   createLearning: (data: {
     projectId: string;
     content: string;

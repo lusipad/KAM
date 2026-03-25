@@ -1,11 +1,47 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Bot, FolderKanban, MessageSquare, Plus, RefreshCcw, Send, Sparkles, Square } from 'lucide-react';
-import { v2ProjectsApi, v2RunsApi, v2ThreadsApi } from '@/lib/api-v2';
-import type { ConversationRun, ProjectRecord, ProjectThread } from '@/types/v2';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  Archive,
+  Bot,
+  Brain,
+  FileText,
+  FolderKanban,
+  GitCompareArrows,
+  MessageSquare,
+  Pin,
+  Plus,
+  RefreshCcw,
+  Save,
+  Search,
+  Send,
+  Sparkles,
+  Square,
+  Trash2,
+} from 'lucide-react';
+import { v2MemoryApi, v2ProjectsApi, v2RunsApi, v2ThreadsApi } from '@/lib/api-v2';
+import type {
+  CompareAgentSpec,
+  ConversationRun,
+  DecisionRecord,
+  ProjectLearningRecord,
+  ProjectRecord,
+  ProjectThread,
+  ThreadRunArtifactRecord,
+  UserPreferenceRecord,
+} from '@/types/v2';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+
+type PanelTab = 'project' | 'memory' | 'detail' | 'compare';
+
+type CompareGroup = {
+  compareId: string;
+  prompt: string;
+  createdAt?: string | Date;
+  runs: ConversationRun[];
+};
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error && error.message ? error.message : '请求失败，请稍后再试。';
@@ -29,6 +65,47 @@ function runTone(status: string) {
   return 'secondary';
 }
 
+function isActiveRun(run?: ConversationRun | null) {
+  return !!run && ['pending', 'running', 'checking'].includes(run.status);
+}
+
+function asString(value: unknown) {
+  return typeof value === 'string' ? value : '';
+}
+
+function splitCommands(value: string) {
+  return value
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildArtifactIndex(artifacts?: ThreadRunArtifactRecord[]) {
+  const index: Record<string, ThreadRunArtifactRecord> = {};
+  for (const artifact of artifacts || []) {
+    index[artifact.type] = artifact;
+  }
+  return index;
+}
+
+function parseCheckResults(content?: string) {
+  try {
+    const parsed = JSON.parse(content || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function summaryText(run?: ConversationRun | null) {
+  const artifacts = buildArtifactIndex(run?.artifacts);
+  return artifacts.summary?.content?.trim() || run?.error || '暂无摘要';
+}
+
+function commandLine(run?: ConversationRun | null) {
+  return asString(run?.metadata?.commandLine) || run?.command || '未记录命令';
+}
+
 export function V2PreviewView() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -42,8 +119,45 @@ export function V2PreviewView() {
   const [autoRun, setAutoRun] = useState(true);
   const [agent, setAgent] = useState('codex');
   const [customCommand, setCustomCommand] = useState('');
+  const [activePanel, setActivePanel] = useState<PanelTab>('project');
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunDetail, setSelectedRunDetail] = useState<ConversationRun | null>(null);
+  const [detailArtifactType, setDetailArtifactType] = useState('summary');
+  const [selectedCompareId, setSelectedCompareId] = useState<string | null>(null);
+  const [compareRunDetails, setCompareRunDetails] = useState<Record<string, ConversationRun>>({});
+
+  const [projectForm, setProjectForm] = useState({
+    title: '',
+    description: '',
+    repoPath: '',
+    status: 'active',
+    checkCommands: '',
+  });
+  const [resourceForm, setResourceForm] = useState({
+    type: 'note',
+    title: '',
+    uri: '',
+    pinned: true,
+  });
+
+  const [memoryQuery, setMemoryQuery] = useState('');
+  const [preferences, setPreferences] = useState<UserPreferenceRecord[]>([]);
+  const [decisions, setDecisions] = useState<DecisionRecord[]>([]);
+  const [learnings, setLearnings] = useState<ProjectLearningRecord[]>([]);
+  const [preferenceForm, setPreferenceForm] = useState({ category: 'general', key: '', value: '' });
+  const [decisionForm, setDecisionForm] = useState({ question: '', decision: '', reasoning: '' });
+  const [learningForm, setLearningForm] = useState({ content: '' });
+  const [preferenceDrafts, setPreferenceDrafts] = useState<Record<string, string>>({});
+
+  const [comparePrompt, setComparePrompt] = useState('');
+  const [compareAgents, setCompareAgents] = useState({ codex: true, claude: true, custom: false });
+  const [compareCustomLabel, setCompareCustomLabel] = useState('Custom Command');
+  const [compareCustomCommand, setCompareCustomCommand] = useState('');
+
   const [isLoading, setIsLoading] = useState(true);
   const [isMutating, setIsMutating] = useState(false);
+  const [isMemoryLoading, setIsMemoryLoading] = useState(false);
+  const [isRunLoading, setIsRunLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -53,6 +167,7 @@ export function V2PreviewView() {
   useEffect(() => {
     if (!selectedProjectId) return;
     void loadProject(selectedProjectId);
+    void loadMemory(selectedProjectId, memoryQuery);
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -61,7 +176,7 @@ export function V2PreviewView() {
   }, [selectedThreadId]);
 
   useEffect(() => {
-    const hasActiveRuns = (selectedThread?.runs || []).some((run) => ['pending', 'running', 'checking'].includes(run.status));
+    const hasActiveRuns = (selectedThread?.runs || []).some((run) => isActiveRun(run));
     if (!selectedThreadId || !hasActiveRuns) return;
     const timer = window.setInterval(() => {
       void loadThread(selectedThreadId);
@@ -69,8 +184,137 @@ export function V2PreviewView() {
     return () => window.clearInterval(timer);
   }, [selectedThread, selectedThreadId]);
 
+  useEffect(() => {
+    if (!selectedProject) return;
+    setProjectForm({
+      title: selectedProject.title || '',
+      description: selectedProject.description || '',
+      repoPath: selectedProject.repoPath || '',
+      status: selectedProject.status || 'active',
+      checkCommands: (selectedProject.checkCommands || []).join('\n'),
+    });
+  }, [selectedProject]);
+
+  useEffect(() => {
+    const nextRuns = selectedThread?.runs || [];
+    if (!nextRuns.length) {
+      setSelectedRunId(null);
+      setSelectedRunDetail(null);
+      return;
+    }
+    if (selectedRunId && nextRuns.some((item) => item.id === selectedRunId)) return;
+    setSelectedRunId(nextRuns[0].id);
+  }, [selectedThread, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRunId) return;
+    void loadRunDetail(selectedRunId);
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRunDetail || !isActiveRun(selectedRunDetail)) return;
+    const timer = window.setInterval(() => {
+      void loadRunDetail(selectedRunDetail.id);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [selectedRunDetail]);
+
+  const compareGroups = useMemo<CompareGroup[]>(() => {
+    const groupMap = new Map<string, CompareGroup>();
+    for (const run of selectedThread?.runs || []) {
+      const compareId = asString(run.metadata?.compareGroupId);
+      if (!compareId) continue;
+      if (!groupMap.has(compareId)) {
+        groupMap.set(compareId, {
+          compareId,
+          prompt: asString(run.metadata?.comparePrompt) || '并发对比',
+          createdAt: run.createdAt,
+          runs: [],
+        });
+      }
+      groupMap.get(compareId)?.runs.push(run);
+    }
+    return Array.from(groupMap.values())
+      .map((group) => ({
+        ...group,
+        runs: [...group.runs].sort((left, right) => {
+          return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+        }),
+      }))
+      .sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime());
+  }, [selectedThread]);
+
+  useEffect(() => {
+    if (!compareGroups.length) {
+      setSelectedCompareId(null);
+      return;
+    }
+    if (selectedCompareId && compareGroups.some((item) => item.compareId === selectedCompareId)) return;
+    setSelectedCompareId(compareGroups[0].compareId);
+  }, [compareGroups, selectedCompareId]);
+
+  const selectedCompareGroup = useMemo(
+    () => compareGroups.find((item) => item.compareId === selectedCompareId) || null,
+    [compareGroups, selectedCompareId],
+  );
+
+  useEffect(() => {
+    if (!selectedCompareGroup) return;
+
+    let cancelled = false;
+    const loadCompareRuns = async () => {
+      const results = await Promise.all(
+        selectedCompareGroup.runs.map(async (run) => {
+          try {
+            return await v2RunsApi.getById(run.id);
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (cancelled) return;
+      setCompareRunDetails((current) => {
+        const next = { ...current };
+        results.forEach((result) => {
+          if (result) next[result.id] = result;
+        });
+        return next;
+      });
+    };
+
+    void loadCompareRuns();
+    if (!selectedCompareGroup.runs.some((run) => isActiveRun(run))) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const timer = window.setInterval(() => {
+      void loadCompareRuns();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [selectedCompareGroup]);
+
   const pinnedResources = useMemo(() => selectedProject?.pinnedResources || [], [selectedProject]);
+  const allResources = useMemo(() => selectedProject?.resources || [], [selectedProject]);
   const activeRuns = useMemo(() => selectedThread?.runs || [], [selectedThread]);
+  const artifactIndex = useMemo(() => buildArtifactIndex(selectedRunDetail?.artifacts), [selectedRunDetail]);
+  const artifactTypes = useMemo(() => Object.keys(artifactIndex), [artifactIndex]);
+  const selectedArtifact = artifactIndex[detailArtifactType];
+  const selectedCheckResults = parseCheckResults(artifactIndex.check_result?.content);
+
+  useEffect(() => {
+    if (!artifactTypes.length) {
+      setDetailArtifactType('summary');
+      return;
+    }
+    if (!artifactTypes.includes(detailArtifactType)) {
+      setDetailArtifactType(artifactTypes[0]);
+    }
+  }, [artifactTypes, detailArtifactType]);
 
   async function loadProjects() {
     setIsLoading(true);
@@ -127,6 +371,56 @@ export function V2PreviewView() {
     }
   }
 
+  async function loadMemory(projectId: string, query: string) {
+    setIsMemoryLoading(true);
+    try {
+      setErrorMessage(null);
+      if (query.trim()) {
+        const response = await v2MemoryApi.search({ query: query.trim(), project_id: projectId });
+        setPreferences(response.preferences || []);
+        setDecisions(response.decisions || []);
+        setLearnings(response.learnings || []);
+        const nextDrafts: Record<string, string> = {};
+        (response.preferences || []).forEach((item) => {
+          nextDrafts[item.id] = item.value;
+        });
+        setPreferenceDrafts(nextDrafts);
+        return;
+      }
+
+      const [preferencesResponse, decisionsResponse, learningsResponse] = await Promise.all([
+        v2MemoryApi.listPreferences(),
+        v2MemoryApi.listDecisions({ project_id: projectId }),
+        v2MemoryApi.listLearnings({ project_id: projectId }),
+      ]);
+      setPreferences(preferencesResponse.preferences || []);
+      setDecisions(decisionsResponse.decisions || []);
+      setLearnings(learningsResponse.learnings || []);
+      const nextDrafts: Record<string, string> = {};
+      (preferencesResponse.preferences || []).forEach((item) => {
+        nextDrafts[item.id] = item.value;
+      });
+      setPreferenceDrafts(nextDrafts);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMemoryLoading(false);
+    }
+  }
+
+  async function loadRunDetail(runId: string) {
+    setIsRunLoading(true);
+    try {
+      setErrorMessage(null);
+      const run = await v2RunsApi.getById(runId);
+      setSelectedRunDetail(run);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsRunLoading(false);
+    }
+  }
+
   async function handleCreateProject() {
     if (!projectTitle.trim()) return;
     setIsMutating(true);
@@ -134,11 +428,12 @@ export function V2PreviewView() {
       setErrorMessage(null);
       const created = await v2ProjectsApi.create({
         title: projectTitle.trim(),
-        description: 'v2 预览项目',
+        description: 'v2 指挥台项目',
       });
       setProjectTitle('');
       await loadProjects();
       setSelectedProjectId(created.id);
+      setActivePanel('project');
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -169,7 +464,7 @@ export function V2PreviewView() {
     setIsMutating(true);
     try {
       setErrorMessage(null);
-      await v2ThreadsApi.postMessage(selectedThreadId, {
+      const response = await v2ThreadsApi.postMessage(selectedThreadId, {
         content: messageText.trim(),
         createRun: autoRun,
         agent,
@@ -179,6 +474,235 @@ export function V2PreviewView() {
       });
       setMessageText('');
       if (agent === 'custom') setCustomCommand('');
+      if (response.runs?.length) {
+        setSelectedRunId(response.runs[0].id);
+        const nextCompareId = asString(response.compareId) || asString(response.runs[0].metadata?.compareGroupId);
+        if (nextCompareId) {
+          setSelectedCompareId(nextCompareId);
+          setActivePanel('compare');
+        } else {
+          setActivePanel('detail');
+        }
+      }
+      await loadThread(selectedThreadId);
+      if (selectedProjectId) {
+        await loadProject(selectedProjectId);
+        await loadMemory(selectedProjectId, memoryQuery);
+      }
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleSaveProject() {
+    if (!selectedProjectId || !projectForm.title.trim()) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2ProjectsApi.update(selectedProjectId, {
+        title: projectForm.title.trim(),
+        description: projectForm.description.trim(),
+        repoPath: projectForm.repoPath.trim() || null,
+        status: projectForm.status,
+        checkCommands: splitCommands(projectForm.checkCommands),
+      });
+      await loadProject(selectedProjectId);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleArchiveProject() {
+    if (!selectedProjectId) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2ProjectsApi.archive(selectedProjectId);
+      await loadProjects();
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleAddResource() {
+    if (!selectedProjectId || !resourceForm.uri.trim()) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2ProjectsApi.addResource(selectedProjectId, {
+        type: resourceForm.type,
+        title: resourceForm.title.trim() || undefined,
+        uri: resourceForm.uri.trim(),
+        pinned: resourceForm.pinned,
+      });
+      setResourceForm({ type: 'note', title: '', uri: '', pinned: true });
+      await loadProject(selectedProjectId);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleDeleteResource(resourceId: string) {
+    if (!selectedProjectId) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2ProjectsApi.deleteResource(selectedProjectId, resourceId);
+      await loadProject(selectedProjectId);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleCreatePreference() {
+    if (!preferenceForm.key.trim() || !preferenceForm.value.trim()) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2MemoryApi.createPreference({
+        category: preferenceForm.category.trim() || 'general',
+        key: preferenceForm.key.trim(),
+        value: preferenceForm.value.trim(),
+        sourceThreadId: selectedThreadId || undefined,
+      });
+      setPreferenceForm({ category: 'general', key: '', value: '' });
+      if (selectedProjectId) {
+        await loadMemory(selectedProjectId, memoryQuery);
+      }
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleSavePreference(preferenceId: string) {
+    const nextValue = (preferenceDrafts[preferenceId] || '').trim();
+    if (!nextValue) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2MemoryApi.updatePreference(preferenceId, {
+        value: nextValue,
+        sourceThreadId: selectedThreadId || undefined,
+      });
+      if (selectedProjectId) {
+        await loadMemory(selectedProjectId, memoryQuery);
+      }
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleCreateDecision() {
+    if (!selectedProjectId || !decisionForm.question.trim() || !decisionForm.decision.trim()) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2MemoryApi.createDecision({
+        projectId: selectedProjectId,
+        question: decisionForm.question.trim(),
+        decision: decisionForm.decision.trim(),
+        reasoning: decisionForm.reasoning.trim(),
+        sourceThreadId: selectedThreadId || undefined,
+      });
+      setDecisionForm({ question: '', decision: '', reasoning: '' });
+      await loadMemory(selectedProjectId, memoryQuery);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleCreateLearning() {
+    if (!selectedProjectId || !learningForm.content.trim()) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2MemoryApi.createLearning({
+        projectId: selectedProjectId,
+        content: learningForm.content.trim(),
+        sourceThreadId: selectedThreadId || undefined,
+      });
+      setLearningForm({ content: '' });
+      await loadMemory(selectedProjectId, memoryQuery);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleRunCompare() {
+    if (!selectedThreadId) return;
+    const prompt = comparePrompt.trim() || messageText.trim();
+    if (!prompt) {
+      setErrorMessage('请先输入要对比的任务描述。');
+      return;
+    }
+
+    const agents: CompareAgentSpec[] = [];
+    if (compareAgents.codex) {
+      agents.push({
+        agent: 'codex',
+        label: 'Codex',
+        model: 'gpt-5.4',
+        reasoningEffort: 'xhigh',
+      });
+    }
+    if (compareAgents.claude) {
+      agents.push({
+        agent: 'claude-code',
+        label: 'Claude Code',
+      });
+    }
+    if (compareAgents.custom) {
+      if (!compareCustomCommand.trim()) {
+        setErrorMessage('勾选 Custom 后需要填写命令。');
+        return;
+      }
+      agents.push({
+        agent: 'custom',
+        label: compareCustomLabel.trim() || 'Custom Command',
+        command: compareCustomCommand.trim(),
+      });
+    }
+    if (agents.length < 2) {
+      setErrorMessage('至少选择两个方案才能对比。');
+      return;
+    }
+
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      const response = await v2RunsApi.compare(selectedThreadId, {
+        prompt,
+        agents,
+        autoStart: true,
+        maxRounds: 5,
+        metadata: {
+          requestedFrom: 'v2-preview-compare-panel',
+        },
+      });
+      setComparePrompt('');
+      setSelectedCompareId(response.compareId);
+      if (response.runs?.length) {
+        setSelectedRunId(response.runs[0].id);
+      }
+      setActivePanel('compare');
       await loadThread(selectedThreadId);
       if (selectedProjectId) {
         await loadProject(selectedProjectId);
@@ -198,6 +722,9 @@ export function V2PreviewView() {
       if (selectedThreadId) {
         await loadThread(selectedThreadId);
       }
+      if (selectedRunId === runId) {
+        await loadRunDetail(runId);
+      }
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -213,6 +740,9 @@ export function V2PreviewView() {
       if (selectedThreadId) {
         await loadThread(selectedThreadId);
       }
+      if (selectedRunId === runId) {
+        await loadRunDetail(runId);
+      }
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -224,10 +754,16 @@ export function V2PreviewView() {
     setIsMutating(true);
     try {
       setErrorMessage(null);
-      await v2RunsApi.retry(runId);
+      const response = await v2RunsApi.retry(runId);
+      setSelectedRunId(response.id);
+      const compareId = asString(response.metadata?.compareGroupId);
+      if (compareId) {
+        setSelectedCompareId(compareId);
+      }
       if (selectedThreadId) {
         await loadThread(selectedThreadId);
       }
+      setActivePanel(compareId ? 'compare' : 'detail');
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -236,7 +772,7 @@ export function V2PreviewView() {
   }
 
   return (
-    <div className="grid min-h-[calc(100dvh-2rem)] gap-4 xl:grid-cols-[280px_minmax(0,1fr)_340px]">
+    <div className="grid min-h-[calc(100dvh-2rem)] gap-4 xl:grid-cols-[280px_minmax(0,1fr)_380px]">
       <section className="rounded-[1.75rem] border border-border/70 bg-card/70 p-4 shadow-[0_18px_48px_rgba(15,23,42,0.08)] backdrop-blur">
         <div className="flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/12 text-primary">
@@ -244,7 +780,7 @@ export function V2PreviewView() {
           </div>
           <div>
             <div className="text-sm font-semibold">Projects</div>
-            <div className="text-xs text-muted-foreground">v2 持续上下文</div>
+            <div className="text-xs text-muted-foreground">持续上下文与线程导航</div>
           </div>
         </div>
 
@@ -269,14 +805,22 @@ export function V2PreviewView() {
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="truncate text-sm font-medium">{project.title}</div>
-                <Badge variant="outline">{project.status}</Badge>
+                <div className="flex items-center gap-2">
+                  {project.status === 'active' ? <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> : null}
+                  <Badge variant="outline">{project.status}</Badge>
+                </div>
               </div>
               <div className="mt-2 text-xs text-muted-foreground">
                 {project.threadCount} 个线程 · {project.resourceCount} 个资源
               </div>
+              {project.repoPath ? <div className="mt-1 truncate text-[11px] text-muted-foreground">{project.repoPath}</div> : null}
             </button>
           ))}
-          {!projects.length && !isLoading && <div className="rounded-2xl border border-dashed border-border/60 px-3 py-5 text-sm text-muted-foreground">先创建一个 Project 开始。</div>}
+          {!projects.length && !isLoading && (
+            <div className="rounded-2xl border border-dashed border-border/60 px-3 py-5 text-sm text-muted-foreground">
+              先创建一个 Project 开始。
+            </div>
+          )}
         </div>
 
         <div className="mt-6 border-t border-border/60 pt-4">
@@ -306,7 +850,9 @@ export function V2PreviewView() {
                 }`}
               >
                 <div className="truncate text-sm font-medium">{thread.title}</div>
-                <div className="mt-1 text-xs text-muted-foreground">{thread.messageCount} 条消息 · {fmtTime(thread.updatedAt)}</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {thread.messageCount} 条消息 · {fmtTime(thread.updatedAt)}
+                </div>
               </button>
             ))}
             {!!selectedProjectId && !threads.length && <div className="text-xs text-muted-foreground">还没有线程，先新建一个。</div>}
@@ -323,7 +869,7 @@ export function V2PreviewView() {
             <div>
               <div className="text-base font-semibold">{selectedThread?.title || 'V2 Preview 对话区'}</div>
               <div className="text-xs text-muted-foreground">
-                {selectedProject?.title ? `${selectedProject.title} · ` : ''}Project / Thread / Run 心智模型预览
+                {selectedProject?.title ? `${selectedProject.title} · ` : ''}Project / Thread / Run / Memory 指挥台
               </div>
             </div>
           </div>
@@ -333,6 +879,34 @@ export function V2PreviewView() {
           </div>
         </div>
 
+        <div className="border-b border-border/60 px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Badge variant="secondary">{activeRuns.length} Runs</Badge>
+            <Badge variant="secondary">{compareGroups.length} Compare Sessions</Badge>
+            <Badge variant="secondary">{pinnedResources.length} Pinned Resources</Badge>
+            <Badge variant="secondary">{preferences.length} Preferences</Badge>
+          </div>
+          {!!compareGroups.length && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {compareGroups.map((group) => (
+                <button
+                  key={group.compareId}
+                  type="button"
+                  onClick={() => {
+                    setSelectedCompareId(group.compareId);
+                    setActivePanel('compare');
+                  }}
+                  className={`rounded-full border px-3 py-1 text-xs transition ${
+                    selectedCompareId === group.compareId ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border/60 bg-background/70'
+                  }`}
+                >
+                  {group.runs.length} 路对比 · {fmtTime(group.createdAt)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
           {errorMessage && <div className="rounded-2xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">{errorMessage}</div>}
 
@@ -340,37 +914,85 @@ export function V2PreviewView() {
             <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-3 rounded-[1.75rem] border border-dashed border-border/60 bg-background/40 text-center">
               <Bot className="h-8 w-8 text-primary" />
               <div className="text-base font-semibold">先选择 Project / Thread</div>
-              <div className="max-w-md text-sm text-muted-foreground">这一版已经切到 v2 心智：Project 管持续上下文，Thread 管连续对话，Run 内联展示在消息流里。</div>
+              <div className="max-w-md text-sm text-muted-foreground">
+                这一版已经切到 v2 心智：Project 管持续上下文，Thread 管连续对话，Run 内联展示，右侧面板负责项目设置、记忆、详情和对比。
+              </div>
             </div>
           )}
 
-          {selectedThread?.messages?.map((message) => (
-            <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[78%] rounded-[1.6rem] px-4 py-3 ${message.role === 'user' ? 'bg-primary text-primary-foreground' : 'border border-border/60 bg-background/70'}`}>
-                <div className="text-[11px] uppercase tracking-[0.22em] opacity-70">{message.role}</div>
-                <div className="mt-2 whitespace-pre-wrap text-sm leading-6">{message.content}</div>
-                <div className="mt-2 text-[11px] opacity-70">{fmtTime(message.createdAt)}</div>
-                {!!message.runs?.length && (
-                  <div className="mt-3 space-y-2">
-                    {message.runs.map((run) => (
-                      <RunInlineCard key={run.id} run={run} onAdopt={() => void handleAdoptRun(run.id)} onCancel={() => void handleCancelRun(run.id)} onRetry={() => void handleRetryRun(run.id)} />
-                    ))}
-                  </div>
-                )}
-              </div>
+          {!!selectedThread && !selectedThread.messages?.length && (
+            <div className="rounded-[1.75rem] border border-dashed border-border/60 bg-background/40 px-5 py-8 text-center text-sm text-muted-foreground">
+              这个 Thread 还没有消息，直接输入任务开始即可。
             </div>
-          ))}
+          )}
+
+          {selectedThread?.messages?.map((message) => {
+            const bubbleClass = message.role === 'user'
+              ? 'bg-primary text-primary-foreground'
+              : message.role === 'system'
+                ? 'border border-primary/20 bg-primary/5'
+                : 'border border-border/60 bg-background/70';
+
+            return (
+              <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[82%] rounded-[1.6rem] px-4 py-3 ${bubbleClass}`}>
+                  <div className="text-[11px] uppercase tracking-[0.22em] opacity-70">{message.role}</div>
+                  <div className="mt-2 whitespace-pre-wrap text-sm leading-6">{message.content}</div>
+                  <div className="mt-2 text-[11px] opacity-70">{fmtTime(message.createdAt)}</div>
+                  {!!message.runs?.length && (
+                    <div className="mt-3 space-y-2">
+                      {message.runs.map((run) => (
+                        <RunInlineCard
+                          key={run.id}
+                          run={run}
+                          selected={selectedRunId === run.id}
+                          onSelect={() => {
+                            setSelectedRunId(run.id);
+                            const compareId = asString(run.metadata?.compareGroupId);
+                            if (compareId) setSelectedCompareId(compareId);
+                            setActivePanel(compareId ? 'compare' : 'detail');
+                          }}
+                          onAdopt={() => void handleAdoptRun(run.id)}
+                          onCancel={() => void handleCancelRun(run.id)}
+                          onRetry={() => void handleRetryRun(run.id)}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
 
         <div className="border-t border-border/60 px-5 py-4">
-          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
-            <Textarea
-              value={messageText}
-              onChange={(event) => setMessageText(event.target.value)}
-              placeholder="比如：继续昨天的工作，先把 OAuth token refresh 做完。"
-              className="min-h-[112px] rounded-[1.3rem]"
-              disabled={!selectedThreadId || isMutating}
-            />
+          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_240px]">
+            <div className="space-y-3">
+              <Textarea
+                value={messageText}
+                onChange={(event) => setMessageText(event.target.value)}
+                placeholder="比如：继续昨天的工作，先把 OAuth token refresh 做完。"
+                className="min-h-[112px] rounded-[1.3rem]"
+                disabled={!selectedThreadId || isMutating}
+              />
+              <div className="flex items-center justify-between gap-3 rounded-[1.2rem] border border-border/60 bg-background/50 px-3 py-2 text-xs text-muted-foreground">
+                <div>复杂并发对比放在右侧 `Compare` 面板；这里适合继续当前 Thread。</div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setComparePrompt(messageText);
+                    setActivePanel('compare');
+                  }}
+                  disabled={!messageText.trim()}
+                >
+                  <GitCompareArrows className="mr-1 h-3.5 w-3.5" />
+                  带去对比
+                </Button>
+              </div>
+            </div>
+
             <div className="space-y-3 rounded-[1.3rem] border border-border/60 bg-background/60 p-3">
               <label className="block space-y-2 text-sm">
                 <span className="text-muted-foreground">Agent</span>
@@ -399,7 +1021,11 @@ export function V2PreviewView() {
                 <input type="checkbox" checked={autoRun} onChange={(event) => setAutoRun(event.target.checked)} />
                 发送时自动创建 Run
               </label>
-              <Button className="w-full rounded-xl" onClick={() => void handleSendMessage()} disabled={!selectedThreadId || !messageText.trim() || isMutating || (agent === 'custom' && !customCommand.trim())}>
+              <Button
+                className="w-full rounded-xl"
+                onClick={() => void handleSendMessage()}
+                disabled={!selectedThreadId || !messageText.trim() || isMutating || (agent === 'custom' && !customCommand.trim())}
+              >
                 <Send className="mr-2 h-4 w-4" />
                 发送到 Thread
               </Button>
@@ -409,45 +1035,488 @@ export function V2PreviewView() {
       </section>
 
       <aside className="rounded-[1.75rem] border border-border/70 bg-card/70 p-4 shadow-[0_18px_48px_rgba(15,23,42,0.08)] backdrop-blur">
-        <div>
-          <div className="text-sm font-semibold">Context Panel</div>
-          <div className="mt-1 text-xs text-muted-foreground">资源、Run 状态与最新上下文</div>
-        </div>
+        <Tabs value={activePanel} onValueChange={(value) => setActivePanel(value as PanelTab)} className="flex h-full min-h-[70dvh] flex-col">
+          <div>
+            <div className="text-sm font-semibold">Context Panel</div>
+            <div className="mt-1 text-xs text-muted-foreground">项目设置、记忆、Run 详情与多 Agent 对比</div>
+          </div>
 
-        <div className="mt-5 space-y-5">
-          <section>
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="text-sm font-medium">Pinned Resources</div>
-              <Badge variant="secondary">{pinnedResources.length}</Badge>
-            </div>
-            <div className="space-y-2">
-              {pinnedResources.map((resource) => (
-                <div key={resource.id} className="rounded-2xl border border-border/60 bg-background/60 px-3 py-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="truncate text-sm font-medium">{resource.title || resource.type}</div>
-                    <Badge variant="outline">{resource.type}</Badge>
+          <TabsList className="mt-4 grid w-full grid-cols-4 rounded-2xl border border-border/60 bg-background/70 p-1">
+            <TabsTrigger value="project" className="rounded-xl text-xs">Project</TabsTrigger>
+            <TabsTrigger value="memory" className="rounded-xl text-xs">Memory</TabsTrigger>
+            <TabsTrigger value="detail" className="rounded-xl text-xs">Detail</TabsTrigger>
+            <TabsTrigger value="compare" className="rounded-xl text-xs">Compare</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="project" className="mt-4 flex-1 overflow-y-auto">
+            {!selectedProject ? (
+              <PanelEmpty icon={<FolderKanban className="h-5 w-5" />} title="还没有选中项目" description="先在左侧选一个 Project，再编辑设置与资源。" />
+            ) : (
+              <div className="space-y-5 pr-1">
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Project Settings</div>
+                      <div className="mt-1 text-xs text-muted-foreground">配置描述、仓库路径和项目级检查命令</div>
+                    </div>
+                    <Badge variant="secondary">{selectedProject.status}</Badge>
                   </div>
-                  <div className="mt-2 break-all text-xs text-muted-foreground">{resource.uri}</div>
-                </div>
-              ))}
-              {!pinnedResources.length && <div className="text-xs text-muted-foreground">还没有钉住资源。</div>}
-            </div>
-          </section>
+                  <div className="mt-4 space-y-3">
+                    <Input value={projectForm.title} onChange={(event) => setProjectForm((current) => ({ ...current, title: event.target.value }))} placeholder="项目标题" />
+                    <Input value={projectForm.repoPath} onChange={(event) => setProjectForm((current) => ({ ...current, repoPath: event.target.value }))} placeholder="仓库路径，例如 /workspace/repo" />
+                    <label className="block space-y-2 text-sm">
+                      <span className="text-muted-foreground">状态</span>
+                      <select
+                        value={projectForm.status}
+                        onChange={(event) => setProjectForm((current) => ({ ...current, status: event.target.value }))}
+                        className="h-10 w-full rounded-xl border border-input bg-background px-3 text-sm"
+                      >
+                        <option value="active">active</option>
+                        <option value="paused">paused</option>
+                        <option value="done">done</option>
+                      </select>
+                    </label>
+                    <Textarea
+                      value={projectForm.description}
+                      onChange={(event) => setProjectForm((current) => ({ ...current, description: event.target.value }))}
+                      placeholder="项目目标、范围、约束。"
+                      className="min-h-[96px] rounded-xl"
+                    />
+                    <Textarea
+                      value={projectForm.checkCommands}
+                      onChange={(event) => setProjectForm((current) => ({ ...current, checkCommands: event.target.value }))}
+                      placeholder="每行一个检查命令，例如 npm test / npm run lint"
+                      className="min-h-[120px] rounded-xl font-mono text-xs"
+                    />
+                    <div className="flex gap-2">
+                      <Button className="flex-1 rounded-xl" onClick={() => void handleSaveProject()} disabled={isMutating}>
+                        <Save className="mr-2 h-4 w-4" />
+                        保存项目设置
+                      </Button>
+                      <Button variant="outline" className="rounded-xl" onClick={() => void loadProject(selectedProject.id)} disabled={isMutating}>
+                        <RefreshCcw className="mr-2 h-4 w-4" />
+                        刷新
+                      </Button>
+                    </div>
+                    <Button variant="outline" className="w-full rounded-xl" onClick={() => void handleArchiveProject()} disabled={isMutating}>
+                      <Archive className="mr-2 h-4 w-4" />
+                      归档项目
+                    </Button>
+                  </div>
+                </section>
 
-          <section>
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="text-sm font-medium">Thread Runs</div>
-              <Badge variant="secondary">{activeRuns.length}</Badge>
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Resources</div>
+                      <div className="mt-1 text-xs text-muted-foreground">自动上下文之外，你手动钉住的重要文件、链接、说明。</div>
+                    </div>
+                    <Badge variant="secondary">{allResources.length}</Badge>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    <div className="grid gap-3 grid-cols-[110px_minmax(0,1fr)]">
+                      <select
+                        value={resourceForm.type}
+                        onChange={(event) => setResourceForm((current) => ({ ...current, type: event.target.value }))}
+                        className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+                      >
+                        <option value="note">note</option>
+                        <option value="url">url</option>
+                        <option value="file">file</option>
+                        <option value="repo-path">repo-path</option>
+                        <option value="doc">doc</option>
+                      </select>
+                      <Input value={resourceForm.title} onChange={(event) => setResourceForm((current) => ({ ...current, title: event.target.value }))} placeholder="资源标题（可选）" />
+                    </div>
+                    <Textarea value={resourceForm.uri} onChange={(event) => setResourceForm((current) => ({ ...current, uri: event.target.value }))} placeholder="URL、文件路径或说明内容" className="min-h-[96px] rounded-xl" />
+                    <label className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <input type="checkbox" checked={resourceForm.pinned} onChange={(event) => setResourceForm((current) => ({ ...current, pinned: event.target.checked }))} />
+                      直接钉住到项目上下文
+                    </label>
+                    <Button className="w-full rounded-xl" onClick={() => void handleAddResource()} disabled={isMutating || !resourceForm.uri.trim()}>
+                      <Pin className="mr-2 h-4 w-4" />
+                      添加资源
+                    </Button>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {allResources.map((resource) => (
+                      <div key={resource.id} className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <div className="truncate text-sm font-medium">{resource.title || resource.type}</div>
+                              {resource.pinned ? <Badge variant="secondary">Pinned</Badge> : null}
+                              <Badge variant="outline">{resource.type}</Badge>
+                            </div>
+                            <div className="mt-2 break-all text-xs text-muted-foreground">{resource.uri}</div>
+                          </div>
+                          <Button size="sm" variant="outline" onClick={() => void handleDeleteResource(resource.id)}>
+                            <Trash2 className="mr-1 h-3.5 w-3.5" />
+                            删除
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                    {!allResources.length && <div className="text-xs text-muted-foreground">还没有资源。</div>}
+                  </div>
+                </section>
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="memory" className="mt-4 flex-1 overflow-y-auto">
+            {!selectedProject ? (
+              <PanelEmpty icon={<Brain className="h-5 w-5" />} title="还没有项目上下文" description="先选中一个项目，记忆面板就会展示偏好、决策和 learnings。" />
+            ) : (
+              <div className="space-y-5 pr-1">
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-medium">Memory Search</div>
+                      <div className="mt-1 text-xs text-muted-foreground">跨偏好、决策、项目 learnings 搜索</div>
+                    </div>
+                    {isMemoryLoading ? <Badge variant="secondary">加载中</Badge> : null}
+                  </div>
+                  <div className="mt-4 flex gap-2">
+                    <Input value={memoryQuery} onChange={(event) => setMemoryQuery(event.target.value)} placeholder="例如 race / pnpm / Zustand" />
+                    <Button variant="outline" onClick={() => void loadMemory(selectedProject.id, memoryQuery)}>
+                      <Search className="h-4 w-4" />
+                    </Button>
+                    <Button variant="outline" onClick={() => { setMemoryQuery(''); void loadMemory(selectedProject.id, ''); }}>
+                      <RefreshCcw className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium">Preferences</div>
+                    <Badge variant="secondary">{preferences.length}</Badge>
+                  </div>
+                  <div className="mt-4 grid gap-2">
+                    <div className="grid grid-cols-3 gap-2">
+                      <Input value={preferenceForm.category} onChange={(event) => setPreferenceForm((current) => ({ ...current, category: event.target.value }))} placeholder="category" />
+                      <Input value={preferenceForm.key} onChange={(event) => setPreferenceForm((current) => ({ ...current, key: event.target.value }))} placeholder="key" />
+                      <Input value={preferenceForm.value} onChange={(event) => setPreferenceForm((current) => ({ ...current, value: event.target.value }))} placeholder="value" />
+                    </div>
+                    <Button className="rounded-xl" onClick={() => void handleCreatePreference()} disabled={isMutating}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      新增偏好
+                    </Button>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {preferences.map((preference) => (
+                      <div key={preference.id} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="text-sm font-medium">{preference.key}</div>
+                            <div className="text-xs text-muted-foreground">{preference.category} · {fmtTime(preference.createdAt)}</div>
+                          </div>
+                          <Button size="sm" variant="outline" onClick={() => void handleSavePreference(preference.id)}>
+                            <Save className="mr-1 h-3.5 w-3.5" />
+                            保存
+                          </Button>
+                        </div>
+                        <Input
+                          className="mt-3"
+                          value={preferenceDrafts[preference.id] ?? preference.value}
+                          onChange={(event) => setPreferenceDrafts((current) => ({ ...current, [preference.id]: event.target.value }))}
+                        />
+                      </div>
+                    ))}
+                    {!preferences.length && <div className="text-xs text-muted-foreground">还没有记录偏好。</div>}
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium">Decision Log</div>
+                    <Badge variant="secondary">{decisions.length}</Badge>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <Input value={decisionForm.question} onChange={(event) => setDecisionForm((current) => ({ ...current, question: event.target.value }))} placeholder="决策问题" />
+                    <Input value={decisionForm.decision} onChange={(event) => setDecisionForm((current) => ({ ...current, decision: event.target.value }))} placeholder="最终决策" />
+                    <Textarea value={decisionForm.reasoning} onChange={(event) => setDecisionForm((current) => ({ ...current, reasoning: event.target.value }))} placeholder="为什么这么选" className="min-h-[84px] rounded-xl" />
+                    <Button className="w-full rounded-xl" onClick={() => void handleCreateDecision()} disabled={isMutating || !selectedProjectId}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      记录决策
+                    </Button>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {decisions.map((decision) => (
+                      <div key={decision.id} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                        <div className="text-sm font-medium">{decision.question}</div>
+                        <div className="mt-2 text-sm">{decision.decision}</div>
+                        {decision.reasoning ? <div className="mt-2 text-xs text-muted-foreground">{decision.reasoning}</div> : null}
+                        <div className="mt-2 text-[11px] text-muted-foreground">{fmtTime(decision.createdAt)}</div>
+                      </div>
+                    ))}
+                    {!decisions.length && <div className="text-xs text-muted-foreground">还没有决策记录。</div>}
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium">Project Learnings</div>
+                    <Badge variant="secondary">{learnings.length}</Badge>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    <Textarea value={learningForm.content} onChange={(event) => setLearningForm({ content: event.target.value })} placeholder="例如：OAuth token refresh 要处理 race condition。" className="min-h-[96px] rounded-xl" />
+                    <Button className="w-full rounded-xl" onClick={() => void handleCreateLearning()} disabled={isMutating || !selectedProjectId}>
+                      <Plus className="mr-2 h-4 w-4" />
+                      新增 learning
+                    </Button>
+                  </div>
+                  <div className="mt-4 space-y-2">
+                    {learnings.map((learning) => (
+                      <div key={learning.id} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                        <div className="text-sm leading-6">{learning.content}</div>
+                        <div className="mt-2 text-[11px] text-muted-foreground">{fmtTime(learning.createdAt)}</div>
+                      </div>
+                    ))}
+                    {!learnings.length && <div className="text-xs text-muted-foreground">还没有项目 learnings。</div>}
+                  </div>
+                </section>
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="detail" className="mt-4 flex-1 overflow-y-auto">
+            <div className="space-y-4 pr-1">
+              <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium">Recent Runs</div>
+                    <div className="mt-1 text-xs text-muted-foreground">点击任意 Run 查看完整 artifacts</div>
+                  </div>
+                  <Badge variant="secondary">{activeRuns.length}</Badge>
+                </div>
+                <div className="mt-4 space-y-2">
+                  {activeRuns.map((run) => (
+                    <RunInlineCard
+                      key={run.id}
+                      run={run}
+                      compact
+                      selected={selectedRunId === run.id}
+                      onSelect={() => setSelectedRunId(run.id)}
+                      onAdopt={() => void handleAdoptRun(run.id)}
+                      onCancel={() => void handleCancelRun(run.id)}
+                      onRetry={() => void handleRetryRun(run.id)}
+                    />
+                  ))}
+                  {!activeRuns.length && <div className="text-xs text-muted-foreground">当前 Thread 还没有 Run。</div>}
+                </div>
+              </section>
+
+              {!selectedRunDetail ? (
+                <PanelEmpty icon={<FileText className="h-5 w-5" />} title="还没有选中 Run" description="从上面的 Run 列表或消息流里点一个，即可查看详细 artifacts。" />
+              ) : (
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <div className="text-sm font-medium">{asString(selectedRunDetail.metadata?.compareLabel) || selectedRunDetail.agent}</div>
+                        <Badge variant={runTone(selectedRunDetail.status) as never}>{selectedRunDetail.status}</Badge>
+                        {selectedRunDetail.metadata?.adopted ? <Badge variant="secondary">Adopted</Badge> : null}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        {selectedRunDetail.model || '未指定模型'} · {selectedRunDetail.reasoningEffort || 'default'} · round {selectedRunDetail.round}/{selectedRunDetail.maxRounds}
+                      </div>
+                      <div className="mt-1 text-xs text-muted-foreground">{fmtTime(selectedRunDetail.createdAt)}</div>
+                    </div>
+                    {isRunLoading ? <Badge variant="secondary">加载中</Badge> : null}
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-border/60 bg-background/70 px-3 py-3 text-xs text-muted-foreground">
+                    <div className="font-medium text-foreground">命令</div>
+                    <div className="mt-2 break-all font-mono">{commandLine(selectedRunDetail)}</div>
+                  </div>
+
+                  {selectedCheckResults.length ? (
+                    <div className="mt-4 rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+                      <div className="text-sm font-medium">Checks</div>
+                      <div className="mt-3 space-y-2">
+                        {selectedCheckResults.map((item, index) => (
+                          <div key={`${item.command || 'check'}-${index}`} className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="break-all font-mono">{asString(item.command) || `check-${index + 1}`}</div>
+                              <Badge variant={item.passed ? 'default' : 'destructive'}>{item.passed ? 'passed' : 'failed'}</Badge>
+                            </div>
+                            {asString(item.output) ? <div className="mt-2 whitespace-pre-wrap text-muted-foreground">{asString(item.output)}</div> : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {artifactTypes.map((type) => (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => setDetailArtifactType(type)}
+                        className={`rounded-full border px-3 py-1 text-xs transition ${
+                          detailArtifactType === type ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border/60 bg-background/70'
+                        }`}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+                    <div className="mb-2 text-sm font-medium">{selectedArtifact?.title || detailArtifactType}</div>
+                    {selectedArtifact ? (
+                      <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">
+                        {selectedArtifact.content || '（空）'}
+                      </pre>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">当前 Run 没有这个 artifact。</div>
+                    )}
+                  </div>
+                </section>
+              )}
             </div>
-            <div className="space-y-2">
-              {activeRuns.map((run) => (
-                <RunInlineCard key={run.id} run={run} onAdopt={() => void handleAdoptRun(run.id)} onCancel={() => void handleCancelRun(run.id)} onRetry={() => void handleRetryRun(run.id)} compact />
-              ))}
-              {!activeRuns.length && <div className="text-xs text-muted-foreground">发送消息并勾选自动创建 Run 后，这里会出现执行卡片。</div>}
-            </div>
-          </section>
-        </div>
+          </TabsContent>
+
+          <TabsContent value="compare" className="mt-4 flex-1 overflow-y-auto">
+            {!selectedThread ? (
+              <PanelEmpty icon={<GitCompareArrows className="h-5 w-5" />} title="还没有线程" description="先选中一个 Thread，再发起多 Agent 对比。" />
+            ) : (
+              <div className="space-y-4 pr-1">
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Run Compare</div>
+                      <div className="mt-1 text-xs text-muted-foreground">并发跑多个 Agent / 命令，对比摘要、状态与 artifacts。</div>
+                    </div>
+                    <Badge variant="secondary">{compareGroups.length} Sessions</Badge>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    <Textarea
+                      value={comparePrompt}
+                      onChange={(event) => setComparePrompt(event.target.value)}
+                      placeholder="例如：分别实现 refresh token 流程，并给出对比。留空时会使用左侧输入框内容。"
+                      className="min-h-[96px] rounded-xl"
+                    />
+                    <div className="grid gap-2 rounded-2xl border border-border/60 bg-background/70 p-3 text-sm">
+                      <label className="flex items-center gap-2 text-muted-foreground">
+                        <input type="checkbox" checked={compareAgents.codex} onChange={(event) => setCompareAgents((current) => ({ ...current, codex: event.target.checked }))} />
+                        Codex (`gpt-5.4` / `xhigh`)
+                      </label>
+                      <label className="flex items-center gap-2 text-muted-foreground">
+                        <input type="checkbox" checked={compareAgents.claude} onChange={(event) => setCompareAgents((current) => ({ ...current, claude: event.target.checked }))} />
+                        Claude Code
+                      </label>
+                      <label className="flex items-center gap-2 text-muted-foreground">
+                        <input type="checkbox" checked={compareAgents.custom} onChange={(event) => setCompareAgents((current) => ({ ...current, custom: event.target.checked }))} />
+                        Custom Command
+                      </label>
+                    </div>
+                    {compareAgents.custom ? (
+                      <div className="space-y-2">
+                        <Input value={compareCustomLabel} onChange={(event) => setCompareCustomLabel(event.target.value)} placeholder="自定义方案名称" />
+                        <Textarea value={compareCustomCommand} onChange={(event) => setCompareCustomCommand(event.target.value)} placeholder="例如：pytest -q 或 bash -lc 'npm test'" className="min-h-[96px] rounded-xl font-mono text-xs" />
+                      </div>
+                    ) : null}
+                    <Button className="w-full rounded-xl" onClick={() => void handleRunCompare()} disabled={isMutating}>
+                      <GitCompareArrows className="mr-2 h-4 w-4" />
+                      发起并发对比
+                    </Button>
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                  <div className="text-sm font-medium">Compare Sessions</div>
+                  <div className="mt-3 space-y-2">
+                    {compareGroups.map((group) => (
+                      <button
+                        key={group.compareId}
+                        type="button"
+                        onClick={() => setSelectedCompareId(group.compareId)}
+                        className={`w-full rounded-2xl border px-3 py-3 text-left transition ${
+                          selectedCompareId === group.compareId ? 'border-primary/50 bg-primary/8' : 'border-border/60 bg-background/70'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="truncate text-sm font-medium">{group.prompt}</div>
+                          <Badge variant="secondary">{group.runs.length} runs</Badge>
+                        </div>
+                        <div className="mt-2 text-xs text-muted-foreground">{fmtTime(group.createdAt)}</div>
+                      </button>
+                    ))}
+                    {!compareGroups.length && <div className="text-xs text-muted-foreground">还没有 compare session。</div>}
+                  </div>
+                </section>
+
+                {selectedCompareGroup ? (
+                  <section className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-medium">当前对比</div>
+                        <div className="mt-1 text-xs text-muted-foreground">{selectedCompareGroup.prompt}</div>
+                      </div>
+                      <Badge variant="secondary">{selectedCompareGroup.runs.length} 路</Badge>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {selectedCompareGroup.runs.map((run) => {
+                        const detailRun = compareRunDetails[run.id] || run;
+                        const checks = parseCheckResults(buildArtifactIndex(detailRun.artifacts).check_result?.content);
+                        return (
+                          <div key={run.id} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <div className="text-sm font-medium">{asString(run.metadata?.compareLabel) || run.agent}</div>
+                                  <Badge variant={runTone(run.status) as never}>{run.status}</Badge>
+                                </div>
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  {detailRun.model || '未指定模型'} · {detailRun.reasoningEffort || 'default'} · {fmtTime(detailRun.createdAt)}
+                                </div>
+                              </div>
+                              <Button size="sm" variant="outline" onClick={() => { setSelectedRunId(run.id); setActivePanel('detail'); }}>
+                                查看详情
+                              </Button>
+                            </div>
+                            <div className="mt-3 whitespace-pre-wrap text-sm leading-6">{summaryText(detailRun)}</div>
+                            {checks.length ? (
+                              <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                                {checks.map((item, index) => (
+                                  <Badge key={`${run.id}-${index}`} variant={item.passed ? 'default' : 'destructive'}>
+                                    {item.passed ? 'check ok' : 'check failed'}
+                                  </Badge>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ) : null}
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </aside>
+    </div>
+  );
+}
+
+function PanelEmpty({
+  icon,
+  title,
+  description,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="flex min-h-[220px] flex-col items-center justify-center gap-3 rounded-[1.75rem] border border-dashed border-border/60 bg-background/40 px-5 text-center">
+      <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">{icon}</div>
+      <div className="text-sm font-medium">{title}</div>
+      <div className="max-w-xs text-xs leading-6 text-muted-foreground">{description}</div>
     </div>
   );
 }
@@ -457,30 +1526,40 @@ function RunInlineCard({
   onAdopt,
   onCancel,
   onRetry,
+  onSelect,
   compact = false,
+  selected = false,
 }: {
   run: ConversationRun;
   onAdopt: () => void;
   onCancel: () => void;
   onRetry: () => void;
+  onSelect: () => void;
   compact?: boolean;
+  selected?: boolean;
 }) {
+  const compareLabel = asString(run.metadata?.compareLabel);
+  const adopted = Boolean(run.metadata?.adopted);
+
   return (
-    <div className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+    <div className={`rounded-2xl border px-3 py-3 ${selected ? 'border-primary/50 bg-primary/8' : 'border-border/60 bg-background/70'}`}>
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-medium">{run.agent}</div>
+        <button type="button" onClick={onSelect} className="min-w-0 flex-1 text-left">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-sm font-medium">{compareLabel || run.agent}</div>
             <Badge variant={runTone(run.status) as never}>{run.status}</Badge>
+            {adopted ? <Badge variant="secondary">Adopted</Badge> : null}
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
             {run.model || '未指定模型'} · {run.reasoningEffort || 'default'} · round {run.round}/{run.maxRounds}
           </div>
-          {!compact && run.artifacts?.length ? (
-            <div className="mt-2 text-xs text-muted-foreground">Artifacts: {run.artifacts.map((item) => item.type).join(', ')}</div>
+          {!compact ? (
+            <div className="mt-2 text-xs text-muted-foreground">
+              {commandLine(run)}
+            </div>
           ) : null}
-        </div>
-        <div className="flex items-center gap-2">
+        </button>
+        <div className="flex shrink-0 items-center gap-2">
           {['pending', 'running', 'checking'].includes(run.status) ? (
             <Button size="sm" variant="outline" onClick={onCancel}>
               <Square className="mr-1 h-3.5 w-3.5" />

@@ -108,3 +108,30 @@ export interface ProjectLearningRecord {
   sourceThreadId?: string | null;
   createdAt: Date | string;
 }
+
+export interface CompareAgentSpec {
+  agent: string;
+  label?: string | null;
+  command?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RunCompareResponse {
+  compareId: string;
+  threadId: string;
+  prompt: string;
+  requestedAgents: CompareAgentSpec[];
+  message?: ThreadMessageRecord | null;
+  runs: ConversationRun[];
+}
+
+export interface PostThreadMessageResponse {
+  message: ThreadMessageRecord;
+  reply?: ThreadMessageRecord | null;
+  runs: ConversationRun[];
+  preferences?: UserPreferenceRecord[];
+  routerMode?: string;
+  compareId?: string | null;
+}

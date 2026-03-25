@@ -111,11 +111,13 @@ python scripts/reset_lite_core_schema.py
 
 当前已提供：
 
-- `projects / project_resources`
-- `threads / messages`
-- `runs / artifacts`（支持创建 / 重试 / 采纳，当前仍以预览骨架流转为主）
+- `projects / project_resources`，并带项目级 `repoPath / description / checkCommands / archive`
+- `threads / messages`，支持消息驱动自动创建 Run
+- `runs / artifacts`，支持创建 / 重试 / 取消 / 采纳 / 查看完整 artifacts
+- `compare`：`POST /api/v2/threads/:id/compare` 支持并发拉起多个 Agent / custom command
 - `conversation router / context assembler`（已接到消息入口；有 `OPENAI_API_KEY` 时优先走 LLM，失败自动降级）
-- `memory preferences / decisions / learnings / search`
+- `memory preferences / decisions / learnings / search`，并已注入到 v2 上下文组装
+- 前端 `V2 Preview` 已补齐 `Project / Memory / Detail / Compare` 四块面板，可直接在 8000 端口体验
 
 默认 Codex 执行模型已切到：
 

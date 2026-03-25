@@ -24,11 +24,16 @@ class ContextAssembler:
             return None
 
         project = thread.project
+        project_id = str(project.id) if project else None
         recent_runs = [run.to_dict(include_artifacts=False) for run in self.run_service.list_runs(thread_id)[:3]]
         preferences = [item.to_dict() for item in self.memory_service.list_preferences()[:20]]
         decisions = [
             item.to_dict()
-            for item in self.memory_service.list_decisions(project_id=str(project.id) if project else None)[:5]
+            for item in self.memory_service.list_decisions(project_id=project_id)[:5]
+        ]
+        learnings = [
+            item.to_dict()
+            for item in self.memory_service.list_learnings(project_id=project_id)[:8]
         ]
         recent_messages = [message.to_dict() for message in (thread.messages or [])[-10:]]
 
@@ -41,6 +46,7 @@ class ContextAssembler:
             "recentRuns": recent_runs,
             "preferences": preferences,
             "decisions": decisions,
+            "learnings": learnings,
         }
 
     def _summarize_thread(self, thread: Thread) -> str:

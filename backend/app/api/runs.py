@@ -26,6 +26,23 @@ class RunCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class CompareAgentCreate(BaseModel):
+    agent: str = Field(..., min_length=1, max_length=50)
+    label: Optional[str] = None
+    command: Optional[str] = None
+    model: Optional[str] = None
+    reasoningEffort: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CompareCreate(BaseModel):
+    prompt: str = Field(..., min_length=1)
+    agents: list[CompareAgentCreate] = Field(..., min_length=2, max_length=4)
+    maxRounds: int = Field(default=5, ge=1, le=12)
+    autoStart: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 @router.get("/threads/{thread_id}/runs")
 async def list_thread_runs(thread_id: str, db: Session = Depends(get_db)):
     service = RunService(db)
@@ -43,6 +60,13 @@ async def create_thread_run(thread_id: str, data: RunCreate, db: Session = Depen
     return run.to_dict()
 
 
+@router.post("/threads/{thread_id}/compare")
+async def compare_thread_runs(thread_id: str, data: CompareCreate, db: Session = Depends(get_db)):
+    service = RunService(db)
+    result = service.compare_runs(thread_id, data.model_dump())
+    if not result:
+        raise HTTPException(status_code=404, detail="线程不存在或 compare 参数无效")
+    return result
 
 
 @router.post("/runs/{run_id}/start")

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from sqlalchemy.orm import Session
@@ -58,7 +59,8 @@ class ConversationRouter:
         recorded_preferences = self._merge_preferences(heuristic_preferences, llm_preferences)
 
         should_run = self._resolve_should_run(user_message, create_run, llm_plan)
-        agents = self._resolve_agents(llm_plan, agent, command)
+        agents = self._resolve_agents(llm_plan, agent, command, user_message)
+        compare_group_id = str(uuid4()) if should_run and len(agents) > 1 else None
         runs = []
         if should_run:
             prompt = self._build_run_prompt(user_message, context)
@@ -78,6 +80,11 @@ class ConversationRouter:
                             "routerModel": settings.ROUTER_MODEL,
                             "routerReasoningEffort": settings.ROUTER_REASONING_EFFORT,
                             "routerMode": llm_plan.get("mode") or "heuristic",
+                            **({
+                                "compareGroupId": compare_group_id,
+                                "compareLabel": agent_spec.get("label") or agent_spec.get("agent") or settings.DEFAULT_RUN_AGENT,
+                                "comparePrompt": user_message.strip(),
+                            } if compare_group_id else {}),
                         },
                     },
                     message_id=message_id,
@@ -99,6 +106,7 @@ class ConversationRouter:
             "preferences": recorded_preferences,
             "context": context,
             "routerMode": llm_plan.get("mode") or "heuristic",
+            "compareId": compare_group_id,
         }
 
     def _route_with_llm(self, user_message: str, context: dict[str, Any]) -> dict[str, Any]:
@@ -129,6 +137,7 @@ class ConversationRouter:
                             "pinnedResources": context.get("pinnedResources") or [],
                             "preferences": context.get("preferences") or [],
                             "decisions": context.get("decisions") or [],
+                            "learnings": context.get("learnings") or [],
                         },
                         ensure_ascii=False,
                     ),
@@ -174,18 +183,47 @@ class ConversationRouter:
             return bool(llm_plan["should_run"])
         return self._looks_like_execution(user_message)
 
-    def _resolve_agents(self, llm_plan: dict[str, Any], agent: str | None, command: str | None) -> list[dict[str, Any]]:
+    def _resolve_agents(self, llm_plan: dict[str, Any], agent: str | None, command: str | None, user_message: str) -> list[dict[str, Any]]:
         llm_agents = llm_plan.get("agents") or []
         if llm_agents:
             return llm_agents
+        if not agent and self._looks_like_compare(user_message):
+            return [
+                {
+                    "agent": "codex",
+                    "label": "Codex",
+                    "command": None,
+                    "model": settings.CODEX_MODEL,
+                    "reasoningEffort": settings.CODEX_REASONING_EFFORT,
+                },
+                {
+                    "agent": "claude-code",
+                    "label": "Claude Code",
+                    "command": None,
+                    "model": None,
+                    "reasoningEffort": None,
+                },
+            ]
+
+        resolved_agent = agent or settings.DEFAULT_RUN_AGENT
+        resolved_label = {
+            "codex": "Codex",
+            "claude-code": "Claude Code",
+            "custom": "Custom Command",
+        }.get(resolved_agent, resolved_agent)
         return [
             {
-                "agent": agent or settings.DEFAULT_RUN_AGENT,
+                "agent": resolved_agent,
+                "label": resolved_label,
                 "command": command,
-                "model": settings.CODEX_MODEL if (agent or settings.DEFAULT_RUN_AGENT) == "codex" else None,
-                "reasoningEffort": settings.CODEX_REASONING_EFFORT if (agent or settings.DEFAULT_RUN_AGENT) == "codex" else None,
+                "model": settings.CODEX_MODEL if resolved_agent == "codex" else None,
+                "reasoningEffort": settings.CODEX_REASONING_EFFORT if resolved_agent == "codex" else None,
             }
         ]
+
+    def _looks_like_compare(self, user_message: str) -> bool:
+        text = user_message.strip().lower()
+        return any(keyword in text for keyword in ["对比", "比较", "compare", "vs", "versus"])
 
     def _looks_like_execution(self, user_message: str) -> bool:
         text = user_message.strip().lower()
@@ -267,6 +305,7 @@ class ConversationRouter:
         pinned_resources = context.get("pinnedResources") or []
         preferences = context.get("preferences") or []
         decisions = context.get("decisions") or []
+        learnings = context.get("learnings") or []
 
         lines = [
             "# Task",
@@ -303,6 +342,16 @@ class ConversationRouter:
                 *[
                     f"- {item.get('question')}: {item.get('decision')}"
                     for item in decisions[:5]
+                ],
+            ])
+
+        if learnings:
+            lines.extend([
+                "",
+                "# Project Learnings",
+                *[
+                    f"- {item.get('content')}"
+                    for item in learnings[:5]
                 ],
             ])
 

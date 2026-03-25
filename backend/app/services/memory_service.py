@@ -75,6 +75,14 @@ class MemoryService:
         self.db.refresh(decision)
         return decision
 
+    def list_learnings(self, project_id: str | None = None, query: str | None = None) -> list[ProjectLearning]:
+        statement = self.db.query(ProjectLearning)
+        if project_id:
+            statement = statement.filter(ProjectLearning.project_id == project_id)
+        if query:
+            statement = statement.filter(ProjectLearning.content.contains(query))
+        return statement.order_by(ProjectLearning.created_at.desc()).all()
+
     def create_learning(self, data: dict[str, Any]) -> ProjectLearning:
         learning = ProjectLearning(
             project_id=data.get("projectId") or data.get("project_id"),
