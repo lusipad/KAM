@@ -75,6 +75,32 @@ class MemoryService:
         self.db.refresh(decision)
         return decision
 
+    def ensure_decision(self, data: dict[str, Any]) -> DecisionLog:
+        project_id = data.get("projectId") or data.get("project_id")
+        source_thread_id = data.get("sourceThreadId") or data.get("source_thread_id")
+        question = str(data.get("question") or "").strip()
+        decision_value = str(data.get("decision") or "").strip()
+        reasoning = str(data.get("reasoning") or "").strip()
+
+        existing = (
+            self.db.query(DecisionLog)
+            .filter(
+                DecisionLog.project_id == project_id,
+                DecisionLog.question == question,
+                DecisionLog.source_thread_id == source_thread_id,
+            )
+            .order_by(DecisionLog.created_at.desc())
+            .first()
+        )
+        if existing:
+            existing.decision = decision_value or existing.decision
+            if reasoning:
+                existing.reasoning = reasoning
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
+        return self.create_decision(data)
+
     def update_decision(self, decision_id: str, data: dict[str, Any]) -> DecisionLog | None:
         decision = self.db.query(DecisionLog).filter(DecisionLog.id == decision_id).first()
         if not decision:
@@ -110,6 +136,40 @@ class MemoryService:
         self.db.commit()
         self.db.refresh(learning)
         return learning
+
+    def ensure_learning(self, data: dict[str, Any]) -> ProjectLearning | None:
+        project_id = data.get("projectId") or data.get("project_id")
+        if not project_id:
+            return None
+
+        content = " ".join(str(data.get("content") or "").strip().split())
+        if len(content) < 18:
+            return None
+        if content.lower() in {"ok", "done", "passed", "success", "smoke run ok"}:
+            return None
+
+        source_thread_id = data.get("sourceThreadId") or data.get("source_thread_id")
+        existing = (
+            self.db.query(ProjectLearning)
+            .filter(ProjectLearning.project_id == project_id, ProjectLearning.content == content)
+            .order_by(ProjectLearning.created_at.desc())
+            .first()
+        )
+        if existing:
+            if source_thread_id and not existing.source_thread_id:
+                existing.source_thread_id = source_thread_id
+                self.db.commit()
+                self.db.refresh(existing)
+            return existing
+
+        return self.create_learning(
+            {
+                **data,
+                "projectId": project_id,
+                "content": content,
+                "sourceThreadId": source_thread_id,
+            }
+        )
 
     def update_learning(self, learning_id: str, data: dict[str, Any]) -> ProjectLearning | None:
         learning = self.db.query(ProjectLearning).filter(ProjectLearning.id == learning_id).first()

@@ -114,12 +114,69 @@ function splitCommands(value: string) {
     .filter(Boolean);
 }
 
+const ARTIFACT_TYPE_PRIORITY = ['summary', 'check_result', 'feedback', 'changes', 'patch', 'stdout', 'stderr', 'prompt', 'context'];
+
+function artifactDateValue(value?: string | Date) {
+  if (!value) return 0;
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function sortArtifactTypes(types: string[]) {
+  return [...types].sort((left, right) => {
+    const leftIndex = ARTIFACT_TYPE_PRIORITY.indexOf(left);
+    const rightIndex = ARTIFACT_TYPE_PRIORITY.indexOf(right);
+    if (leftIndex === -1 && rightIndex === -1) return left.localeCompare(right);
+    if (leftIndex === -1) return 1;
+    if (rightIndex === -1) return -1;
+    return leftIndex - rightIndex;
+  });
+}
+
 function buildArtifactIndex(artifacts?: ThreadRunArtifactRecord[]) {
   const index: Record<string, ThreadRunArtifactRecord> = {};
-  for (const artifact of artifacts || []) {
+  const sorted = [...(artifacts || [])].sort((left, right) => {
+    const roundDelta = Number(left.round || 0) - Number(right.round || 0);
+    if (roundDelta !== 0) return roundDelta;
+    return artifactDateValue(left.createdAt) - artifactDateValue(right.createdAt);
+  });
+  for (const artifact of sorted) {
     index[artifact.type] = artifact;
   }
   return index;
+}
+
+function buildArtifactRounds(artifacts?: ThreadRunArtifactRecord[]) {
+  const grouped = new Map<number, ThreadRunArtifactRecord[]>();
+  for (const artifact of artifacts || []) {
+    const round = Number(artifact.round || 1);
+    if (!grouped.has(round)) grouped.set(round, []);
+    grouped.get(round)!.push(artifact);
+  }
+  return Array.from(grouped.entries())
+    .sort((left, right) => right[0] - left[0])
+    .map(([round, items]) => ({
+      round,
+      artifacts: items,
+      index: buildArtifactIndex(items),
+    }));
+}
+
+function artifactPreview(content?: string, maxChars = 520) {
+  const normalized = (content || '').trim();
+  if (!normalized) return '（空）';
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars)}…`;
+}
+
+function fmtDuration(value?: number | null) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '—';
+  if (value < 1000) return `${value}ms`;
+  const seconds = value / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${remainSeconds}s`;
 }
 
 function parseCheckResults(content?: string) {
@@ -160,8 +217,10 @@ export function WorkspaceView() {
   const [activePanel, setActivePanel] = useState<PanelTab>(() => readStoredWorkspaceState().activePanel ?? 'project');
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] = useState<ConversationRun | null>(null);
+  const [detailRound, setDetailRound] = useState<number | null>(null);
   const [detailArtifactType, setDetailArtifactType] = useState('summary');
   const [selectedCompareId, setSelectedCompareId] = useState<string | null>(null);
+  const [compareArtifactType, setCompareArtifactType] = useState('summary');
   const [compareRunDetails, setCompareRunDetails] = useState<Record<string, ConversationRun>>({});
 
   const [projectForm, setProjectForm] = useState({
@@ -408,10 +467,39 @@ export function WorkspaceView() {
   const pinnedResources = useMemo(() => selectedProject?.pinnedResources || [], [selectedProject]);
   const allResources = useMemo(() => selectedProject?.resources || [], [selectedProject]);
   const activeRuns = useMemo(() => selectedThread?.runs || [], [selectedThread]);
-  const artifactIndex = useMemo(() => buildArtifactIndex(selectedRunDetail?.artifacts), [selectedRunDetail]);
-  const artifactTypes = useMemo(() => Object.keys(artifactIndex), [artifactIndex]);
+  const runningRunCount = useMemo(() => activeRuns.filter((run) => isActiveRun(run)).length, [activeRuns]);
+  const detailRounds = useMemo(() => buildArtifactRounds(selectedRunDetail?.artifacts), [selectedRunDetail]);
+  const selectedDetailRoundGroup = useMemo(
+    () => detailRounds.find((item) => item.round === detailRound) || detailRounds[0] || null,
+    [detailRound, detailRounds],
+  );
+  const artifactIndex = useMemo(() => buildArtifactIndex(selectedDetailRoundGroup?.artifacts), [selectedDetailRoundGroup]);
+  const artifactTypes = useMemo(() => sortArtifactTypes(Object.keys(artifactIndex)), [artifactIndex]);
   const selectedArtifact = artifactIndex[detailArtifactType];
   const selectedCheckResults = parseCheckResults(artifactIndex.check_result?.content);
+  const compareArtifactTypes = useMemo(() => {
+    if (!selectedCompareGroup) return [];
+    const types = new Set<string>();
+    selectedCompareGroup.runs.forEach((run) => {
+      const detailRun = compareRunDetails[run.id] || run;
+      Object.keys(buildArtifactIndex(detailRun.artifacts)).forEach((type) => types.add(type));
+    });
+    return sortArtifactTypes(Array.from(types));
+  }, [compareRunDetails, selectedCompareGroup]);
+  const compareActiveRunCount = useMemo(
+    () => (selectedCompareGroup?.runs || []).filter((run) => isActiveRun(compareRunDetails[run.id] || run)).length,
+    [compareRunDetails, selectedCompareGroup],
+  );
+
+  useEffect(() => {
+    if (!detailRounds.length) {
+      setDetailRound(null);
+      return;
+    }
+    if (!detailRound || !detailRounds.some((item) => item.round === detailRound)) {
+      setDetailRound(detailRounds[0].round);
+    }
+  }, [detailRound, detailRounds]);
 
   useEffect(() => {
     if (!artifactTypes.length) {
@@ -422,6 +510,16 @@ export function WorkspaceView() {
       setDetailArtifactType(artifactTypes[0]);
     }
   }, [artifactTypes, detailArtifactType]);
+
+  useEffect(() => {
+    if (!compareArtifactTypes.length) {
+      setCompareArtifactType('summary');
+      return;
+    }
+    if (!compareArtifactTypes.includes(compareArtifactType)) {
+      setCompareArtifactType(compareArtifactTypes[0]);
+    }
+  }, [compareArtifactType, compareArtifactTypes]);
 
   async function loadProjects() {
     setIsLoading(true);
@@ -1343,6 +1441,27 @@ export function WorkspaceView() {
             </div>
           </div>
         </div>
+
+        <div className="border-t border-border/60 px-5 py-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Status:</span>
+            <span>{runningRunCount ? `${runningRunCount} runs active` : '当前没有活跃 runs'}</span>
+            <span>·</span>
+            <span>{selectedProject?.title || '未选择 Project'}</span>
+            <span>·</span>
+            <span>{selectedThread?.title || '未选择 Thread'}</span>
+            <span>·</span>
+            <span>{autoRun ? '发送即执行' : '仅对话模式'}</span>
+            <span>·</span>
+            <span>{agent === 'codex' ? 'Codex · gpt-5.4 / xhigh' : agent === 'claude-code' ? 'Claude Code' : 'Custom Command'}</span>
+            {selectedCompareGroup ? (
+              <>
+                <span>·</span>
+                <span>{selectedCompareGroup.runs.length} 路 Compare / {compareActiveRunCount} active</span>
+              </>
+            ) : null}
+          </div>
+        </div>
       </section>
 
       <aside className="rounded-[1.75rem] border border-border/70 bg-card/70 p-4 shadow-[0_18px_48px_rgba(15,23,42,0.08)] backdrop-blur">
@@ -1821,9 +1940,93 @@ export function WorkspaceView() {
                     <div className="mt-2 break-all font-mono">{commandLine(selectedRunDetail)}</div>
                   </div>
 
+                  <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Current Round</div>
+                      <div className="mt-2 text-sm font-medium text-foreground">第 {selectedDetailRoundGroup?.round || selectedRunDetail.round} 轮 / 共 {selectedRunDetail.maxRounds} 轮</div>
+                    </div>
+                    <div className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Duration</div>
+                      <div className="mt-2 text-sm font-medium text-foreground">{fmtDuration(selectedRunDetail.durationMs)}</div>
+                    </div>
+                    <div className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Artifacts</div>
+                      <div className="mt-2 text-sm font-medium text-foreground">{selectedRunDetail.artifacts?.length || 0} 条</div>
+                    </div>
+                    <div className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Work Dir</div>
+                      <div className="mt-2 break-all font-mono text-[11px] text-foreground">{selectedRunDetail.workDir || '未记录'}</div>
+                    </div>
+                  </div>
+
+                  {detailRounds.length ? (
+                    <div className="mt-4 rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
+                      <div className="text-sm font-medium">Rounds</div>
+                      <div className="mt-1 text-xs text-muted-foreground">按轮查看 summary / checks / feedback / patch。</div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {detailRounds.map((item) => (
+                          <button
+                            key={item.round}
+                            type="button"
+                            onClick={() => setDetailRound(item.round)}
+                            className={`rounded-full border px-3 py-1 text-xs transition ${
+                              detailRound === item.round ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border/60 bg-background/80'
+                            }`}
+                          >
+                            Round {item.round}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    {artifactIndex.summary ? (
+                      <button
+                        type="button"
+                        onClick={() => setDetailArtifactType('summary')}
+                        className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3 text-left transition hover:border-primary/40"
+                      >
+                        <div className="text-sm font-medium">Summary</div>
+                        <div className="mt-2 whitespace-pre-wrap text-xs leading-6 text-muted-foreground">{artifactPreview(artifactIndex.summary.content, 360)}</div>
+                      </button>
+                    ) : null}
+                    {artifactIndex.feedback ? (
+                      <button
+                        type="button"
+                        onClick={() => setDetailArtifactType('feedback')}
+                        className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3 text-left transition hover:border-primary/40"
+                      >
+                        <div className="text-sm font-medium">Retry Feedback</div>
+                        <div className="mt-2 whitespace-pre-wrap text-xs leading-6 text-muted-foreground">{artifactPreview(artifactIndex.feedback.content, 360)}</div>
+                      </button>
+                    ) : null}
+                    {artifactIndex.changes ? (
+                      <button
+                        type="button"
+                        onClick={() => setDetailArtifactType('changes')}
+                        className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3 text-left transition hover:border-primary/40"
+                      >
+                        <div className="text-sm font-medium">Changes</div>
+                        <div className="mt-2 whitespace-pre-wrap text-xs leading-6 text-muted-foreground">{artifactPreview(artifactIndex.changes.content, 360)}</div>
+                      </button>
+                    ) : null}
+                    {artifactIndex.patch ? (
+                      <button
+                        type="button"
+                        onClick={() => setDetailArtifactType('patch')}
+                        className="rounded-2xl border border-border/60 bg-background/70 px-3 py-3 text-left transition hover:border-primary/40"
+                      >
+                        <div className="text-sm font-medium">Patch</div>
+                        <div className="mt-2 whitespace-pre-wrap text-xs leading-6 text-muted-foreground">{artifactPreview(artifactIndex.patch.content, 480)}</div>
+                      </button>
+                    ) : null}
+                  </div>
+
                   {selectedCheckResults.length ? (
                     <div className="mt-4 rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
                       <div className="text-sm font-medium">Checks</div>
+                      <div className="mt-1 text-xs text-muted-foreground">第 {selectedDetailRoundGroup?.round || selectedRunDetail.round} 轮验收结果</div>
                       <div className="mt-3 space-y-2">
                         {selectedCheckResults.map((item, index) => (
                           <div key={`${item.command || 'check'}-${index}`} className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
@@ -1854,13 +2057,16 @@ export function WorkspaceView() {
                   </div>
 
                   <div className="mt-4 rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
-                    <div className="mb-2 text-sm font-medium">{selectedArtifact?.title || detailArtifactType}</div>
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="text-sm font-medium">{selectedArtifact?.title || detailArtifactType}</div>
+                      <div className="text-xs text-muted-foreground">Round {selectedDetailRoundGroup?.round || selectedRunDetail.round}</div>
+                    </div>
                     {selectedArtifact ? (
                       <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">
                         {selectedArtifact.content || '（空）'}
                       </pre>
                     ) : (
-                      <div className="text-xs text-muted-foreground">当前 Run 没有这个 artifact。</div>
+                      <div className="text-xs text-muted-foreground">当前 Round 没有这个 artifact。</div>
                     )}
                   </div>
                 </section>
@@ -1947,17 +2153,37 @@ export function WorkspaceView() {
                       </div>
                       <Badge variant="secondary">{selectedCompareGroup.runs.length} 路</Badge>
                     </div>
-                    <div className="mt-4 space-y-3">
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {compareArtifactTypes.map((type) => (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => setCompareArtifactType(type)}
+                          className={`rounded-full border px-3 py-1 text-xs transition ${
+                            compareArtifactType === type ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border/60 bg-background/70'
+                          }`}
+                        >
+                          {type}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-4 flex gap-3 overflow-x-auto pb-1">
                       {selectedCompareGroup.runs.map((run) => {
                         const detailRun = compareRunDetails[run.id] || run;
-                        const checks = parseCheckResults(buildArtifactIndex(detailRun.artifacts).check_result?.content);
+                        const compareIndex = buildArtifactIndex(detailRun.artifacts);
+                        const checks = parseCheckResults(compareIndex.check_result?.content);
+                        const compareArtifact = compareIndex[compareArtifactType];
+                        const preview = compareArtifactType === 'summary'
+                          ? compareArtifact?.content || summaryText(detailRun)
+                          : compareArtifact?.content || '';
                         return (
-                          <div key={run.id} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                          <div key={run.id} className="min-w-[320px] shrink-0 rounded-2xl border border-border/60 bg-background/70 p-3 xl:min-w-[360px]">
                             <div className="flex items-start justify-between gap-3">
                               <div>
                                 <div className="flex items-center gap-2">
                                   <div className="text-sm font-medium">{asString(run.metadata?.compareLabel) || run.agent}</div>
                                   <Badge variant={runTone(run.status) as never}>{run.status}</Badge>
+                                  {detailRun.metadata?.adopted ? <Badge variant="secondary">Adopted</Badge> : null}
                                 </div>
                                 <div className="mt-1 text-xs text-muted-foreground">
                                   {detailRun.model || '未指定模型'} · {detailRun.reasoningEffort || 'default'} · {fmtTime(detailRun.createdAt)}
@@ -1967,16 +2193,50 @@ export function WorkspaceView() {
                                 查看详情
                               </Button>
                             </div>
-                            <div className="mt-3 whitespace-pre-wrap text-sm leading-6">{summaryText(detailRun)}</div>
-                            {checks.length ? (
-                              <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                                {checks.map((item, index) => (
-                                  <Badge key={`${run.id}-${index}`} variant={item.passed ? 'default' : 'destructive'}>
-                                    {item.passed ? 'check ok' : 'check failed'}
-                                  </Badge>
-                                ))}
+                            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                              <div className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Round</div>
+                                <div className="mt-1 font-medium text-foreground">{detailRun.round}/{detailRun.maxRounds}</div>
                               </div>
-                            ) : null}
+                              <div className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Duration</div>
+                                <div className="mt-1 font-medium text-foreground">{fmtDuration(detailRun.durationMs)}</div>
+                              </div>
+                              <div className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Artifacts</div>
+                                <div className="mt-1 font-medium text-foreground">{detailRun.artifacts?.length || 0}</div>
+                              </div>
+                            </div>
+                            {compareArtifactType === 'check_result' ? (
+                              checks.length ? (
+                                <div className="mt-3 space-y-2">
+                                  {checks.map((item, index) => (
+                                    <div key={`${run.id}-${index}`} className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="break-all font-mono">{asString(item.command) || `check-${index + 1}`}</div>
+                                        <Badge variant={item.passed ? 'default' : 'destructive'}>{item.passed ? 'passed' : 'failed'}</Badge>
+                                      </div>
+                                      {checkOutputText(item) ? <div className="mt-2 whitespace-pre-wrap text-muted-foreground">{checkOutputText(item)}</div> : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="mt-3 rounded-xl border border-border/50 bg-background/80 px-3 py-3 text-xs text-muted-foreground">这个方案还没有 check 结果。</div>
+                              )
+                            ) : (
+                              <div className="mt-3 rounded-xl border border-border/50 bg-background/80 px-3 py-3">
+                                <div className="text-xs font-medium text-foreground">{compareArtifact?.title || compareArtifactType}</div>
+                                <pre className="mt-2 max-h-[260px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">{artifactPreview(preview, compareArtifactType === 'patch' ? 1200 : 520)}</pre>
+                              </div>
+                            )}
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <Button size="sm" variant="outline" onClick={() => { setSelectedRunId(run.id); setActivePanel('detail'); }}>
+                                查看详情
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={() => void handleAdoptRun(run.id)}>
+                                采纳方案
+                              </Button>
+                            </div>
                           </div>
                         );
                       })}

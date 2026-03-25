@@ -474,6 +474,16 @@ class V2WorkspaceApiTests(unittest.TestCase):
             )
             self.assertEqual(decision.status_code, 200)
 
+            learning = client.post(
+                '/api/v2/memory/learnings',
+                json={
+                    'projectId': project['id'],
+                    'content': 'OAuth refresh 要处理 race condition 与并发刷新覆盖。',
+                    'sourceThreadId': thread['id'],
+                },
+            )
+            self.assertEqual(learning.status_code, 200)
+
             posted = client.post(
                 f"/api/v2/threads/{thread['id']}/messages",
                 json={
@@ -485,6 +495,7 @@ class V2WorkspaceApiTests(unittest.TestCase):
             payload = posted.json()
             self.assertIn('package-manager=pnpm', payload['reply']['content'])
             self.assertIn('状态管理选什么？ → Zustand', payload['reply']['content'])
+            self.assertIn('OAuth refresh 要处理 race condition', payload['reply']['content'])
 
     def test_thread_events_endpoint_streams_payload(self):
         with TestClient(app) as client:
@@ -520,6 +531,88 @@ class V2WorkspaceApiTests(unittest.TestCase):
             self.assertIn('data: ', body)
             self.assertIn('"thread"', body)
             self.assertIn('"runs"', body)
+
+    def test_passed_run_auto_creates_project_learning(self):
+        with TestClient(app) as client:
+            project = client.post(
+                '/api/v2/projects',
+                json={'title': 'Auto learning project'},
+            ).json()
+            thread = client.post(
+                f"/api/v2/projects/{project['id']}/threads",
+                json={'title': '自动 learning'},
+            ).json()
+
+            command = (
+                "printf '%s' '实现了 token refresh，并处理 race condition 和并发覆盖。' > '{summary_file}'"
+                if os.name != 'nt'
+                else "Set-Content -Path '{summary_file}' -Value '实现了 token refresh，并处理 race condition 和并发覆盖。'"
+            )
+            created = client.post(
+                f"/api/v2/threads/{thread['id']}/runs",
+                json={
+                    'agent': 'custom',
+                    'command': command,
+                    'prompt': '实现 refresh token',
+                    'autoStart': True,
+                },
+            ).json()
+            run_payload = self._wait_run(client, created['id'])
+            self.assertEqual(run_payload['status'], 'passed')
+
+            learnings = client.get('/api/v2/memory/learnings', params={'project_id': project['id']})
+            self.assertEqual(learnings.status_code, 200)
+            contents = [item['content'] for item in learnings.json()['learnings']]
+            self.assertTrue(any('race condition' in content for content in contents))
+
+    def test_adopt_compare_run_records_decision_memory(self):
+        with TestClient(app) as client:
+            project = client.post(
+                '/api/v2/projects',
+                json={'title': 'Adopt compare project'},
+            ).json()
+            thread = client.post(
+                f"/api/v2/projects/{project['id']}/threads",
+                json={'title': 'Compare adopt'},
+            ).json()
+
+            command_a = (
+                "printf '%s' '方案 A：实现 refresh token，并增加 race condition 保护。' > '{summary_file}'"
+                if os.name != 'nt'
+                else "Set-Content -Path '{summary_file}' -Value '方案 A：实现 refresh token，并增加 race condition 保护。'"
+            )
+            command_b = (
+                "printf '%s' '方案 B：实现 refresh token，并增加缓存。' > '{summary_file}'"
+                if os.name != 'nt'
+                else "Set-Content -Path '{summary_file}' -Value '方案 B：实现 refresh token，并增加缓存。'"
+            )
+            created = client.post(
+                f"/api/v2/threads/{thread['id']}/compare",
+                json={
+                    'prompt': '分别实现 refresh token 流程并对比',
+                    'agents': [
+                        {'agent': 'custom', 'label': '方案 A', 'command': command_a},
+                        {'agent': 'custom', 'label': '方案 B', 'command': command_b},
+                    ],
+                    'autoStart': True,
+                },
+            )
+            self.assertEqual(created.status_code, 200)
+            payload = created.json()
+
+            first = self._wait_run(client, payload['runs'][0]['id'])
+            second = self._wait_run(client, payload['runs'][1]['id'])
+            self.assertEqual(first['status'], 'passed')
+            self.assertEqual(second['status'], 'passed')
+
+            adopted = client.post(f"/api/v2/runs/{payload['runs'][0]['id']}/adopt")
+            self.assertEqual(adopted.status_code, 200)
+
+            decisions = client.get('/api/v2/memory/decisions', params={'project_id': project['id']})
+            self.assertEqual(decisions.status_code, 200)
+            rows = decisions.json()['decisions']
+            self.assertTrue(any(item['question'] == '分别实现 refresh token 流程并对比' for item in rows))
+            self.assertTrue(any(item['decision'] == '方案 A' for item in rows))
 
 
 if __name__ == "__main__":

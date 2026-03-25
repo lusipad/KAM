@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.db.base import SessionLocal
 from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.models.project import Project, ProjectResource
+from app.services.memory_service import MemoryService
 
 
 TERMINAL_RUN_STATUSES = {"passed", "failed", "cancelled"}
@@ -261,6 +262,7 @@ class V2RunExecutionManager:
                     run.error = None
                     run.completed_at = datetime.utcnow()
                     run.duration_ms = self._duration_ms(run)
+                    self._capture_project_learning(db, run, summary_text)
                     self._record_thread_event(
                         db,
                         run,
@@ -806,6 +808,32 @@ class V2RunExecutionManager:
         run.duration_ms = self._duration_ms(run)
         self._record_thread_event(db, run, f"{run.agent} 已取消", "run-cancelled")
         db.commit()
+
+
+    def _capture_project_learning(self, db, run: Run | None, summary_text: str):
+        if not run:
+            return
+        project_id = None
+        if getattr(run, 'thread', None) and getattr(run.thread, 'project_id', None):
+            project_id = str(run.thread.project_id)
+        if not project_id:
+            thread = db.query(Thread).filter(Thread.id == run.thread_id).first()
+            if thread and thread.project_id:
+                project_id = str(thread.project_id)
+        if not project_id:
+            return
+
+        content = " ".join((summary_text or "").strip().split())
+        if not content:
+            return
+
+        MemoryService(db).ensure_learning(
+            {
+                'projectId': project_id,
+                'content': content,
+                'sourceThreadId': str(run.thread_id),
+            }
+        )
 
     def _duration_ms(self, run: Run | None) -> int | None:
         if not run or not run.completed_at:

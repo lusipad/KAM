@@ -379,6 +379,10 @@ class ConversationRouter:
         if context_decisions:
             reply_lines.append(f"我也会延续这些历史决策：{context_decisions}。")
 
+        context_learnings = self._format_context_learnings(context.get("learnings") or [])
+        if context_learnings:
+            reply_lines.append(f"我会参考这些项目经验：{context_learnings}。")
+
         if runs:
             if len(runs) == 1:
                 run = runs[0]
@@ -430,6 +434,17 @@ class ConversationRouter:
             if not decision:
                 continue
             items.append(f"{question} → {decision}" if question else decision)
+            if len(items) >= 2:
+                break
+        return "；".join(items)
+
+    def _format_context_learnings(self, learnings: list[dict[str, Any]]) -> str:
+        items: list[str] = []
+        for item in learnings:
+            content = " ".join(str(item.get("content") or "").strip().split())
+            if not content:
+                continue
+            items.append(content[:72])
             if len(items) >= 2:
                 break
         return "；".join(items)
