@@ -78,6 +78,7 @@ Frontend KAM Workspace
 - `memory_service.py`
   - 读写 preferences / decisions / learnings
   - 关键词搜索
+  - 在配置 OpenAI key 时为 project learnings 生成 embedding，并在搜索时优先做语义召回
 
 ## 5. 数据模型
 

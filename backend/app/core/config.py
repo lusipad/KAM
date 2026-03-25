@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     model_config = SettingsConfigDict(
         env_file=ROOT_DIR / ".env",

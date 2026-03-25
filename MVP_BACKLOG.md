@@ -5,6 +5,7 @@
 - 继续用 SSE 替换剩余高频轮询，消息发送入口与 Compare 面板已切到 SSE
 - 给 Compare 面板增加更细的差异摘要与 artifacts 横向对照
 - 让 Router 的 function calling 继续演进到更稳定的动作编排与记忆提取
+- 把 semantic search 从 learnings 扩展到 decisions / preferences 的相关召回与排序
 
 ## Next
 

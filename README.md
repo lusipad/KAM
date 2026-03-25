@@ -23,6 +23,7 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
   - 内置 artifacts、检查结果、失败反馈、重试、取消、采纳
 - `Memory`
   - preferences / decisions / learnings / search
+  - learning 在配置 `OPENAI_API_KEY` 时可自动生成 embedding，并在搜索时优先做语义召回
 - `Compare`
   - 在同一 Thread 中并发发起多 Agent 对比
 

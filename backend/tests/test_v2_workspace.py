@@ -286,6 +286,97 @@ class V2WorkspaceApiTests(unittest.TestCase):
             self.assertEqual(search.status_code, 200)
             self.assertEqual(len(search.json()["learnings"]), 1)
 
+    def test_learning_auto_generates_embedding_when_key_available(self):
+        class FakeEmbeddingResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    'data': [
+                        {
+                            'embedding': [0.11, 0.22, 0.33],
+                        }
+                    ]
+                }
+
+        previous_key = settings.OPENAI_API_KEY
+        settings.OPENAI_API_KEY = 'test-key'
+        try:
+            with patch('app.services.memory_service.httpx.post', return_value=FakeEmbeddingResponse()):
+                with TestClient(app) as client:
+                    project = client.post(
+                        "/api/v2/projects",
+                        json={"title": "Embedding project"},
+                    ).json()
+
+                    learning = client.post(
+                        "/api/v2/memory/learnings",
+                        json={
+                            "projectId": project["id"],
+                            "content": "OAuth refresh 需要处理 race condition 和并发刷新覆盖",
+                        },
+                    )
+                    self.assertEqual(learning.status_code, 200)
+                    self.assertEqual(learning.json()["embedding"], [0.11, 0.22, 0.33])
+        finally:
+            settings.OPENAI_API_KEY = previous_key
+
+    def test_memory_search_prefers_semantic_learning_matches(self):
+        class FakeEmbeddingResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    'data': [
+                        {
+                            'embedding': [1.0, 0.0],
+                        }
+                    ]
+                }
+
+        previous_key = settings.OPENAI_API_KEY
+        settings.OPENAI_API_KEY = 'test-key'
+        try:
+            with patch('app.services.memory_service.httpx.post', return_value=FakeEmbeddingResponse()):
+                with TestClient(app) as client:
+                    project = client.post(
+                        "/api/v2/projects",
+                        json={"title": "Semantic search project"},
+                    ).json()
+
+                    first = client.post(
+                        "/api/v2/memory/learnings",
+                        json={
+                            "projectId": project["id"],
+                            "content": "处理 OAuth refresh token 的并发覆盖",
+                            "embedding": [1.0, 0.0],
+                        },
+                    )
+                    second = client.post(
+                        "/api/v2/memory/learnings",
+                        json={
+                            "projectId": project["id"],
+                            "content": "构建发布脚本要处理环境变量模板",
+                            "embedding": [0.0, 1.0],
+                        },
+                    )
+                    self.assertEqual(first.status_code, 200)
+                    self.assertEqual(second.status_code, 200)
+
+                    result = client.get(
+                        "/api/v2/memory/search",
+                        params={"query": "怎么避免 refresh token 竞态", "project_id": project["id"]},
+                    )
+                    self.assertEqual(result.status_code, 200)
+                    learnings = result.json()["learnings"]
+                    self.assertGreaterEqual(len(learnings), 1)
+                    self.assertEqual(learnings[0]["content"], "处理 OAuth refresh token 的并发覆盖")
+                    self.assertIn("semanticScore", learnings[0])
+        finally:
+            settings.OPENAI_API_KEY = previous_key
+
     def test_compare_endpoint_creates_grouped_runs(self):
         with TestClient(app) as client:
             project = client.post(

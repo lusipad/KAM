@@ -3,10 +3,13 @@ KAM v2 记忆服务
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
+import httpx
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.memory import DecisionLog, ProjectLearning, UserPreference
 
 
@@ -126,10 +129,11 @@ class MemoryService:
         return statement.order_by(ProjectLearning.created_at.desc()).all()
 
     def create_learning(self, data: dict[str, Any]) -> ProjectLearning:
+        content = str(data["content"]).strip()
         learning = ProjectLearning(
             project_id=data.get("projectId") or data.get("project_id"),
-            content=data["content"],
-            embedding=data.get("embedding"),
+            content=content,
+            embedding=self._resolve_learning_embedding(content=content, embedding=data.get("embedding")),
             source_thread_id=data.get("sourceThreadId") or data.get("source_thread_id"),
         )
         self.db.add(learning)
@@ -176,9 +180,12 @@ class MemoryService:
         if not learning:
             return None
         if "content" in data:
-            learning.content = data["content"]
-        if "embedding" in data:
-            learning.embedding = data.get("embedding")
+            learning.content = str(data["content"]).strip()
+        if "content" in data or "embedding" in data:
+            learning.embedding = self._resolve_learning_embedding(
+                content=learning.content,
+                embedding=data.get("embedding") if "embedding" in data else None,
+            )
         if "sourceThreadId" in data or "source_thread_id" in data:
             learning.source_thread_id = data.get("sourceThreadId") or data.get("source_thread_id")
         self.db.commit()
@@ -205,8 +212,113 @@ class MemoryService:
             )
             learnings_query = learnings_query.filter(ProjectLearning.content.contains(query))
 
+        lexical_learnings = learnings_query.order_by(ProjectLearning.created_at.desc()).limit(20).all()
+        semantic_learnings = self._semantic_search_learnings(query=query, project_id=project_id)
         return {
             "preferences": [item.to_dict() for item in preferences_query.order_by(UserPreference.created_at.desc()).limit(20).all()],
             "decisions": [item.to_dict() for item in decisions_query.order_by(DecisionLog.created_at.desc()).limit(20).all()],
-            "learnings": [item.to_dict() for item in learnings_query.order_by(ProjectLearning.created_at.desc()).limit(20).all()],
+            "learnings": self._merge_learning_results(semantic_learnings, lexical_learnings),
         }
+
+    def _resolve_learning_embedding(self, *, content: str, embedding: Any) -> list[float] | None:
+        if isinstance(embedding, list) and embedding:
+            values = [float(item) for item in embedding]
+            return values or None
+        if not content or not settings.OPENAI_API_KEY.strip():
+            return None
+        return self._embed_text(content)
+
+    def _embed_text(self, text: str) -> list[float] | None:
+        try:
+            response = httpx.post(
+                f"{settings.OPENAI_BASE_URL.rstrip('/')}/embeddings",
+                headers={
+                    "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.OPENAI_EMBEDDING_MODEL,
+                    "input": text,
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            data = payload.get("data") or []
+            if not data:
+                return None
+            embedding = data[0].get("embedding") or []
+            if not isinstance(embedding, list):
+                return None
+            return [float(item) for item in embedding]
+        except Exception:
+            return None
+
+    def _semantic_search_learnings(self, *, query: str, project_id: str | None) -> list[dict[str, Any]]:
+        normalized_query = str(query or "").strip()
+        if not normalized_query or not settings.OPENAI_API_KEY.strip():
+            return []
+
+        query_embedding = self._embed_text(normalized_query)
+        if not query_embedding:
+            return []
+
+        statement = self.db.query(ProjectLearning)
+        if project_id:
+            statement = statement.filter(ProjectLearning.project_id == project_id)
+
+        ranked: list[tuple[float, ProjectLearning]] = []
+        for learning in statement.order_by(ProjectLearning.created_at.desc()).limit(200).all():
+            embedding = learning.embedding
+            if not isinstance(embedding, list) or not embedding:
+                continue
+            score = self._cosine_similarity(query_embedding, embedding)
+            if score <= 0:
+                continue
+            ranked.append((score, learning))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [
+            {
+                **learning.to_dict(),
+                "semanticScore": round(score, 6),
+            }
+            for score, learning in ranked[:20]
+        ]
+
+    def _merge_learning_results(
+        self,
+        semantic_learnings: list[dict[str, Any]],
+        lexical_learnings: list[ProjectLearning],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for item in semantic_learnings:
+            item_id = str(item.get("id") or "")
+            if not item_id or item_id in seen:
+                continue
+            seen.add(item_id)
+            merged.append(item)
+
+        for learning in lexical_learnings:
+            item = learning.to_dict()
+            item_id = item["id"]
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            merged.append(item)
+
+        return merged[:20]
+
+    def _cosine_similarity(self, left: list[float], right: list[float]) -> float:
+        size = min(len(left), len(right))
+        if size == 0:
+            return 0.0
+
+        numerator = sum(float(left[index]) * float(right[index]) for index in range(size))
+        left_norm = math.sqrt(sum(float(left[index]) ** 2 for index in range(size)))
+        right_norm = math.sqrt(sum(float(right[index]) ** 2 for index in range(size)))
+        if left_norm == 0 or right_norm == 0:
+            return 0.0
+        return numerator / (left_norm * right_norm)
