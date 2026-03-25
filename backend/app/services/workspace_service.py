@@ -4,7 +4,6 @@ Lite 任务台服务
 from __future__ import annotations
 
 import json
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -12,7 +11,6 @@ from typing import Any, Iterable
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.note import Note
 from app.models.workspace import AgentRun, ContextSnapshot, RunArtifact, TaskCard, TaskRef
 from app.services.run_executor import execution_manager
 
@@ -115,16 +113,14 @@ class WorkspaceService:
             return None
 
         refs = [ref.to_dict() for ref in task.refs] if task.refs else []
-        related_notes = self._find_related_notes(task)
         recent_runs = [run.to_dict(include_artifacts=False) for run in task.runs[:5]] if task.runs else []
 
         data = {
             "task": task.to_dict(include_relations=False),
             "refs": refs,
-            "notes": related_notes,
             "recentRuns": recent_runs,
         }
-        summary = self._build_context_summary(task, refs, related_notes, recent_runs)
+        summary = self._build_context_summary(task, refs, recent_runs)
 
         snapshot = ContextSnapshot(task_id=task.id, summary=summary, data=data)
         self.db.add(snapshot)
@@ -321,59 +317,6 @@ class WorkspaceService:
             self.db.refresh(clone)
         return clone
 
-    def apply_patch_from_run(self, run_id: str) -> dict[str, Any] | None:
-        run = self.get_run(run_id)
-        if not run:
-            return None
-
-        patch_artifact = next((artifact for artifact in run.artifacts if artifact.artifact_type == "patch"), None)
-        if not patch_artifact:
-            raise ValueError("该 run 没有可应用的 patch 产物")
-
-        patch_path = self._ensure_patch_file(run, patch_artifact)
-        target_repo = self._resolve_patch_target_repo(run, patch_artifact)
-
-        check_result = self._run_git_apply(target_repo, patch_path, check_only=True)
-        if check_result.returncode != 0:
-            raise RuntimeError(check_result.stderr.strip() or check_result.stdout.strip() or "Patch 校验失败")
-
-        apply_result = self._run_git_apply(target_repo, patch_path, check_only=False)
-        if apply_result.returncode != 0:
-            raise RuntimeError(apply_result.stderr.strip() or apply_result.stdout.strip() or "Patch 应用失败")
-
-        applied_at = datetime.utcnow().isoformat()
-        result = {
-            "runId": str(run.id),
-            "targetRepo": str(target_repo),
-            "patchPath": str(patch_path),
-            "appliedAt": applied_at,
-            "stdout": apply_result.stdout.strip(),
-            "stderr": apply_result.stderr.strip(),
-        }
-
-        run.metadata_ = {
-            **(run.metadata_ or {}),
-            "patchApply": result,
-        }
-        patch_artifact.metadata_ = {
-            **(patch_artifact.metadata_ or {}),
-            "appliedAt": applied_at,
-            "appliedRepoRoot": str(target_repo),
-        }
-
-        apply_record_path = Path(run.workdir or settings.AGENT_WORKROOT) / "patch-apply-result.json"
-        apply_record_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._create_artifact(
-            run,
-            artifact_type="apply",
-            title="patch apply result",
-            content=json.dumps(result, ensure_ascii=False, indent=2),
-            path=str(apply_record_path),
-        )
-        self.db.commit()
-        self.db.refresh(run)
-        return result
-
     # ===== Review =====
     def get_review(self, task_id: str) -> dict[str, Any] | None:
         task = self.get_task(task_id)
@@ -447,99 +390,11 @@ class WorkspaceService:
                 payload["size"] = len(content)
         return payload
 
-    def _ensure_patch_file(self, run: AgentRun, patch_artifact: RunArtifact) -> Path:
-        patch_content = ""
-        if patch_artifact.path:
-            source_patch = Path(patch_artifact.path)
-            if source_patch.exists():
-                patch_content = source_patch.read_text(encoding="utf-8", errors="replace")
-
-        if not patch_content:
-            patch_content = patch_artifact.content or ""
-        if not patch_content.strip():
-            raise ValueError("Patch 内容为空，无法应用")
-        if not patch_content.endswith("\n"):
-            patch_content += "\n"
-
-        run_dir = Path(run.workdir or settings.AGENT_WORKROOT)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        patch_path = (run_dir / "patch-for-apply.patch").resolve()
-        patch_path.write_text(patch_content, encoding="utf-8")
-        return patch_path
-
-    def _resolve_patch_target_repo(self, run: AgentRun, patch_artifact: RunArtifact) -> Path:
-        task = self.get_task(str(run.task_id))
-        candidates: list[Path] = []
-        if task:
-            for ref in task.refs or []:
-                if ref.ref_type not in {"repo-path", "path", "workspace"}:
-                    continue
-                candidate = Path(ref.value).expanduser()
-                candidates.append(candidate.parent if candidate.is_file() else candidate)
-
-        patch_metadata = patch_artifact.metadata_ or {}
-        run_metadata = run.metadata_ or {}
-        for raw_candidate in [
-            patch_metadata.get("repoRoot"),
-            run_metadata.get("worktree"),
-            run_metadata.get("executionCwd"),
-        ]:
-            if raw_candidate:
-                candidates.append(Path(raw_candidate).expanduser())
-
-        for candidate in candidates:
-            git_root = self._find_git_root(candidate)
-            if git_root is not None:
-                return git_root
-
-        raise ValueError("未找到可应用 patch 的 Git 仓库")
-
-    def _find_git_root(self, candidate: Path) -> Path | None:
-        if not candidate.exists():
-            return None
-
-        target = candidate.parent if candidate.is_file() else candidate
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except Exception:
-            return None
-
-        git_root = result.stdout.strip()
-        return Path(git_root) if git_root else None
-
-    def _run_git_apply(self, target_repo: Path, patch_path: Path, check_only: bool) -> subprocess.CompletedProcess[str]:
-        command = [
-            "git",
-            "-C",
-            str(target_repo),
-            "apply",
-            "--binary",
-            "--3way",
-            "--verbose",
-        ]
-        if check_only:
-            command.append("--check")
-        command.append(str(patch_path))
-        return subprocess.run(command, capture_output=True, text=True)
-
     # ===== helpers =====
-    def _find_related_notes(self, task: TaskCard) -> list[dict[str, Any]]:
-        query = self.db.query(Note)
-        if task.title:
-            query = query.filter(Note.title.ilike(f"%{task.title}%") | Note.content.ilike(f"%{task.title}%"))
-        notes = query.order_by(Note.updated_at.desc()).limit(5).all()
-        return [note.to_dict() for note in notes]
-
     def _build_context_summary(
         self,
         task: TaskCard,
         refs: list[dict[str, Any]],
-        notes: list[dict[str, Any]],
         runs: list[dict[str, Any]],
     ) -> str:
         lines = [
@@ -551,7 +406,6 @@ class WorkspaceService:
             task.description or "无",
             "",
             f"引用数量: {len(refs)}",
-            f"关联笔记: {len(notes)}",
             f"历史运行: {len(runs)}",
         ]
         if refs:

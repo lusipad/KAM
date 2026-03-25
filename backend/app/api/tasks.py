@@ -188,20 +188,6 @@ async def retry_run(run_id: str, db: Session = Depends(get_db)):
     return run.to_dict()
 
 
-@router.post("/runs/{run_id}/apply-patch")
-async def apply_run_patch(run_id: str, db: Session = Depends(get_db)):
-    service = WorkspaceService(db)
-    try:
-        result = service.apply_patch_from_run(run_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if not result:
-        raise HTTPException(status_code=404, detail="Run 不存在")
-    return result
-
-
 @router.get("/runs/{run_id}/artifacts")
 async def get_run_artifacts(
     run_id: str,
@@ -280,15 +266,6 @@ async def get_review(task_id: str, db: Session = Depends(get_db)):
     if not review:
         raise HTTPException(status_code=404, detail="任务不存在")
     return review
-
-
-@router.post("/reviews/{task_id}/summarize")
-async def summarize_review(task_id: str, db: Session = Depends(get_db)):
-    service = WorkspaceService(db)
-    review = service.get_review(task_id)
-    if not review:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    return {"summary": review["summary"]}
 
 
 @router.post("/reviews/{task_id}/compare")

@@ -8,58 +8,43 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ai_assistant
-      REDIS_URL: redis://redis:6379/0
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4}
-      APP_SECRET_KEY: ${APP_SECRET_KEY:-your-secret-key}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:postgres@postgres:5432/kam_lite}
       APP_CORS_ORIGINS: ${APP_CORS_ORIGINS:-http://localhost:8000,http://localhost,http://localhost:5173}
+      AGENT_WORKROOT: ${AGENT_WORKROOT:-./storage/agent-runs}
+      CODEX_CLI_PATH: ${CODEX_CLI_PATH:-codex}
+      CLAUDE_CODE_CLI_PATH: ${CLAUDE_CODE_CLI_PATH:-claude}
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
     volumes:
       - storage:/app/storage
     networks:
-      - ai-assistant
+      - kam-lite
     restart: unless-stopped
 
   postgres:
-    image: ankane/pgvector:latest
+    image: postgres:15-alpine
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=ai_assistant
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: kam_lite
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     networks:
-      - ai-assistant
+      - kam-lite
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kam_lite"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis_data:/data
-    ports:
-      - "6379:6379"
-    networks:
-      - ai-assistant
-    restart: unless-stopped
-
 volumes:
   postgres_data:
-  redis_data:
   storage:
 
 networks:
-  ai-assistant:
+  kam-lite:
     driver: bridge

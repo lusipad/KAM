@@ -381,6 +381,8 @@ class RunExecutionManager:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             return result.stdout.strip()
         except Exception:
@@ -507,6 +509,8 @@ class RunExecutionManager:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             return True
         except Exception:
@@ -519,6 +523,8 @@ class RunExecutionManager:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             root = result.stdout.strip()
             return Path(root) if root else None

@@ -1,180 +1,147 @@
 import { useState } from 'react';
-import { 
-  BookOpen, Brain, Bot, ClipboardList, GitBranch, MessageSquare, 
-  ChevronLeft, ChevronRight, Settings, User 
-} from 'lucide-react';
+import { ArrowRight, Bot, Compass, FolderInput, GitCompareArrows, Settings2, Sparkles, Workflow } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useApiStore } from '@/store/apiStore';
 import { SettingsPanel } from '@/components/Settings/SettingsPanel';
 import { cn } from '@/lib/utils';
 
-interface NavItem {
-  id: 'tasks' | 'knowledge' | 'memory' | 'clawteam' | 'azure-devops' | 'chat';
-  label: string;
-  icon: React.ElementType;
-  description: string;
-}
-
-const navItems: NavItem[] = [
+const focusAreas = [
   {
-    id: 'tasks',
-    label: '任务台',
-    icon: ClipboardList,
-    description: '任务、上下文、Agent runs'
+    label: '任务定焦',
+    description: '把目标、边界和优先级压成一张可派发的任务卡。',
+    icon: Compass,
   },
-  { 
-    id: 'knowledge', 
-    label: '知识管理', 
-    icon: BookOpen,
-    description: '笔记、双链、知识图谱'
+  {
+    label: '引用封包',
+    description: '只保留当前任务真正需要的链接、路径、PR 与工单。',
+    icon: FolderInput,
   },
-  { 
-    id: 'memory', 
-    label: '长期记忆', 
-    icon: Brain,
-    description: '记忆存储与检索'
-  },
-  { 
-    id: 'clawteam', 
-    label: 'ClawTeam', 
-    icon: Bot,
-    description: 'AI代理团队协作'
-  },
-  { 
-    id: 'azure-devops', 
-    label: 'Azure DevOps', 
-    icon: GitBranch,
-    description: '项目同步与集成'
-  },
-  { 
-    id: 'chat', 
-    label: 'AI对话', 
-    icon: MessageSquare,
-    description: '智能助手对话'
+  {
+    label: '结果收口',
+    description: '并行看多个 Agent run，再在一个地方完成 compare。',
+    icon: GitCompareArrows,
   },
 ];
 
 export function Sidebar() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  
-  const { 
-    currentView, 
-    sidebarCollapsed, 
-    setCurrentView, 
-    toggleSidebar,
-  } = useApiStore();
 
   return (
-    <div 
-      className={cn(
-        "flex flex-col h-full bg-card border-r transition-all duration-300",
-        sidebarCollapsed ? "w-16" : "w-64"
-      )}
-    >
-      {/* Logo区域 */}
-      <div className="flex items-center justify-between p-4 border-b">
-        {!sidebarCollapsed && (
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-              <Bot className="w-5 h-5 text-white" />
+    <>
+      <div className="sticky top-0 z-40 border-b border-border/70 bg-background/80 px-4 py-3 backdrop-blur lg:hidden">
+        <div className="mx-auto flex max-w-[1680px] items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-[1.35rem] bg-primary text-primary-foreground shadow-[0_16px_32px_rgba(202,99,49,0.22)]">
+              <Bot className="h-5 w-5" />
             </div>
-            <span className="font-semibold text-lg">AI助手</span>
+            <div>
+              <div className="font-display text-base font-semibold">KAM Lite</div>
+              <div className="text-xs text-muted-foreground">任务到结果的单一工作带</div>
+            </div>
           </div>
-        )}
-        {sidebarCollapsed && (
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mx-auto">
-            <Bot className="w-5 h-5 text-white" />
-          </div>
-        )}
-        {!sidebarCollapsed && (
-          <Button 
-            variant="ghost" 
-            size="icon" 
-            onClick={toggleSidebar}
-            className="h-8 w-8"
-          >
-            <ChevronLeft className="h-4 w-4" />
+          <Button variant="outline" onClick={() => setIsSettingsOpen(true)} className="rounded-full px-4">
+            <Settings2 className="h-4 w-4" />
+            外观
           </Button>
-        )}
+        </div>
       </div>
 
-      {/* 导航菜单 */}
-      <nav className="flex-1 p-2 space-y-1 overflow-y-auto">
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = currentView === item.id;
-          
-          return (
-            <button
-              key={item.id}
-              onClick={() => setCurrentView(item.id)}
-              className={cn(
-                "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all",
-                "hover:bg-accent hover:text-accent-foreground",
-                isActive 
-                  ? "bg-primary/10 text-primary border border-primary/20" 
-                  : "text-muted-foreground",
-                sidebarCollapsed && "justify-center px-2"
-              )}
-              title={sidebarCollapsed ? item.label : undefined}
-            >
-              <Icon className={cn("w-5 h-5 flex-shrink-0", isActive && "text-primary")} />
-              {!sidebarCollapsed && (
-                <div className="flex flex-col items-start text-left">
-                  <span className={cn("text-sm font-medium", isActive && "text-primary")}>
-                    {item.label}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {item.description}
-                  </span>
-                </div>
-              )}
-            </button>
-          );
-        })}
-      </nav>
-
-      {/* 底部区域 */}
-      <div className="p-2 border-t space-y-1">
-        <button
-          onClick={() => setIsSettingsOpen(true)}
-          className={cn(
-            "w-full flex items-center gap-3 px-3 py-2 rounded-lg",
-            "hover:bg-accent hover:text-accent-foreground text-muted-foreground",
-            sidebarCollapsed && "justify-center px-2"
-          )}
-        >
-          <Settings className="w-5 h-5" />
-          {!sidebarCollapsed && <span className="text-sm">设置</span>}
-        </button>
-        
-        {!sidebarCollapsed && (
-          <div className="flex items-center gap-3 px-3 py-2">
-            <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-              <User className="w-4 h-4" />
+      <aside className="sticky top-0 hidden h-[100dvh] w-[22rem] shrink-0 border-r border-border/70 bg-card/58 backdrop-blur-2xl lg:flex lg:flex-col">
+        <div className="border-b border-border/70 px-6 py-6">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-[1.5rem] bg-primary text-primary-foreground shadow-[0_16px_32px_rgba(202,99,49,0.22)]">
+              <Bot className="h-6 w-6" />
             </div>
-            <div className="flex flex-col">
-              <span className="text-sm font-medium">用户</span>
-              <span className="text-xs text-muted-foreground">user@example.com</span>
+            <div>
+              <div className="font-display text-xl font-semibold">KAM Lite</div>
+              <div className="text-sm text-muted-foreground">External Brain for Agent Work</div>
             </div>
           </div>
-        )}
-      </div>
+          <p className="mt-5 text-sm leading-6 text-muted-foreground">
+            不再堆模块。这里只保留一条干净主线，把任务定焦、上下文封包、Agent 并行执行和结果收口放在同一张工作台里。
+          </p>
+        </div>
 
-      {/* 展开按钮（折叠时显示） */}
-      {sidebarCollapsed && (
-        <Button 
-          variant="ghost" 
-          size="icon" 
-          onClick={toggleSidebar}
-          className="absolute -right-3 top-20 h-6 w-6 rounded-full border bg-background"
-        >
-          <ChevronRight className="h-3 w-3" />
-        </Button>
-      )}
-      
-      {/* 设置面板 */}
+        <div className="flex-1 overflow-auto px-6 py-6">
+          <div className="rounded-[2rem] border border-border/70 bg-background/78 p-5 shadow-[0_20px_50px_rgba(24,20,14,0.08)]">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+              <Workflow className="h-3.5 w-3.5" />
+              Lite Core
+            </div>
+            <div className="font-display mt-4 text-2xl font-semibold">唯一工作带</div>
+            <div className="mt-2 text-sm leading-6 text-muted-foreground">
+              任务卡
+              <ArrowRight className="mx-2 inline h-3.5 w-3.5" />
+              引用
+              <ArrowRight className="mx-2 inline h-3.5 w-3.5" />
+              Context
+              <ArrowRight className="mx-2 inline h-3.5 w-3.5" />
+              Runs
+              <ArrowRight className="mx-2 inline h-3.5 w-3.5" />
+              Compare
+            </div>
+          </div>
+
+          <div className="mt-6 space-y-3">
+            {focusAreas.map((item, index) => {
+              const Icon = item.icon;
+
+              return (
+                <div
+                  key={item.label}
+                  className={cn(
+                    'rounded-[1.75rem] border border-border/70 bg-background/78 p-4 transition-all duration-200',
+                    'hover:-translate-y-0.5 hover:border-primary/20 hover:bg-background/92'
+                  )}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 rounded-[1rem] bg-primary/10 p-2.5 text-primary">
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          {String(index + 1).padStart(2, '0')}
+                        </span>
+                        <div className="font-display text-base font-semibold">{item.label}</div>
+                      </div>
+                      <div className="mt-2 text-sm leading-6 text-muted-foreground">{item.description}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-6 rounded-[2rem] bg-foreground px-5 py-5 text-background shadow-[0_24px_60px_rgba(20,18,14,0.22)]">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.22em] text-background/60">
+              <Sparkles className="h-3.5 w-3.5" />
+              Design Intent
+            </div>
+            <div className="font-display mt-3 text-xl font-semibold">减少界面噪音，让每一块都服务当前任务。</div>
+            <ul className="mt-4 space-y-3 text-sm leading-6 text-background/76">
+              <li>左侧只看任务池与当前阶段。</li>
+              <li>中间锁定任务焦点和上下文。</li>
+              <li>右侧只处理运行与收口。</li>
+            </ul>
+          </div>
+        </div>
+
+        <div className="border-t border-border/70 px-6 py-5">
+          <Button
+            variant="outline"
+            onClick={() => setIsSettingsOpen(true)}
+            className="w-full justify-between rounded-full border-border/80 bg-background/80 px-5"
+          >
+            <span className="flex items-center gap-2">
+              <Settings2 className="h-4 w-4" />
+              外观设置
+            </span>
+            <ArrowRight className="h-4 w-4" />
+          </Button>
+        </div>
+      </aside>
+
       <SettingsPanel isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
-    </div>
+    </>
   );
 }

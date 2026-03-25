@@ -63,7 +63,7 @@ class TaskRef(Base):
 
     id = Column(uuid_type(), primary_key=True, default=uuid_default)
     task_id = Column(uuid_type(), ForeignKey("task_cards.id", ondelete="CASCADE"), nullable=False)
-    ref_type = Column(String(50), nullable=False)  # ado-work-item, git-pr, repo-path, url, note, file
+    ref_type = Column(String(50), nullable=False)  # repo-path, file, url, work-item, pr, doc
     label = Column(String(200), nullable=False)
     value = Column(Text, nullable=False)
     metadata_ = Column("metadata", JSON, default=dict)

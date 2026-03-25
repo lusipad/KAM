@@ -1,5 +1,5 @@
 """
-AI工作助手 - FastAPI主应用
+KAM Lite - FastAPI 主应用
 """
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,20 +21,14 @@ RESERVED_BACKEND_PREFIXES = ("api", "docs", "redoc", "openapi.json", "health")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    print("正在初始化数据库...")
     init_db()
-    print("数据库初始化完成")
-
     yield
-
-    print("应用关闭")
 
 
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="AI工作助手 - 集成知识管理、长期记忆、ClawTeam代理团队和Azure DevOps的智能工作平台",
+    description="KAM Lite - 任务卡、上下文快照、Agent Runs 与结果收口工作台",
     lifespan=lifespan,
 )
 
@@ -51,7 +45,6 @@ app.include_router(api_router, prefix="/api")
 
 @app.get("/health")
 async def health_check():
-    """健康检查"""
     return {"status": "healthy"}
 
 
@@ -87,7 +80,6 @@ if FRONTEND_INDEX_FILE.exists():
 else:
     @app.get("/")
     async def root():
-        """根路径"""
         return {
             "name": settings.APP_NAME,
             "version": settings.APP_VERSION,

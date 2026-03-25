@@ -1,8 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { useApiStore } from '@/store/apiStore';
 
 type Theme = 'light' | 'dark' | 'system';
-type ColorTheme = 'default' | 'blue' | 'purple' | 'green' | 'orange' | 'pink';
+type ColorTheme = 'default' | 'graphite' | 'moss' | 'teal' | 'brick' | 'amber';
 
 interface ThemeContextType {
   theme: Theme;
@@ -15,87 +14,89 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 const colorThemes: Record<ColorTheme, { primary: string; primaryForeground: string; accent: string }> = {
   default: {
-    primary: '240 5.9% 10%',
-    primaryForeground: '0 0% 98%',
-    accent: '240 4.8% 95.9%',
+    primary: '21 72% 46%',
+    primaryForeground: '36 33% 97%',
+    accent: '32 100% 95%',
   },
-  blue: {
-    primary: '217 91% 60%',
-    primaryForeground: '0 0% 100%',
-    accent: '213 100% 96%',
+  graphite: {
+    primary: '217 14% 24%',
+    primaryForeground: '30 17% 95%',
+    accent: '220 18% 93%',
   },
-  purple: {
-    primary: '270 60% 55%',
-    primaryForeground: '0 0% 100%',
-    accent: '270 50% 96%',
+  moss: {
+    primary: '90 31% 38%',
+    primaryForeground: '54 27% 96%',
+    accent: '92 34% 92%',
   },
-  green: {
-    primary: '142 76% 36%',
-    primaryForeground: '0 0% 100%',
-    accent: '142 60% 96%',
+  teal: {
+    primary: '185 57% 34%',
+    primaryForeground: '180 30% 96%',
+    accent: '182 39% 91%',
   },
-  orange: {
-    primary: '24 95% 53%',
-    primaryForeground: '0 0% 100%',
-    accent: '24 100% 96%',
+  brick: {
+    primary: '9 68% 49%',
+    primaryForeground: '24 29% 97%',
+    accent: '18 100% 94%',
   },
-  pink: {
-    primary: '330 80% 60%',
-    primaryForeground: '0 0% 100%',
-    accent: '330 80% 96%',
+  amber: {
+    primary: '39 85% 47%',
+    primaryForeground: '33 48% 12%',
+    accent: '44 100% 91%',
   },
 };
 
+const legacyColorThemeMap: Record<string, ColorTheme> = {
+  blue: 'teal',
+  purple: 'graphite',
+  green: 'moss',
+  orange: 'amber',
+  pink: 'brick',
+};
+
+function getStoredTheme(): Theme {
+  if (typeof window === 'undefined') return 'system';
+  const savedTheme = localStorage.getItem('kam-lite-theme');
+  return savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system' ? savedTheme : 'system';
+}
+
+function getStoredColorTheme(): ColorTheme {
+  if (typeof window === 'undefined') return 'default';
+  const savedColorTheme = localStorage.getItem('kam-lite-color-theme');
+  return (savedColorTheme && colorThemes[savedColorTheme as ColorTheme] && (savedColorTheme as ColorTheme)) ||
+    (savedColorTheme ? legacyColorThemeMap[savedColorTheme] : undefined) ||
+    'default';
+}
+
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const storeTheme = useApiStore((state) => state.theme);
-  const storeSetTheme = useApiStore((state) => state.setTheme);
-  
-  const [theme, setThemeState] = useState<Theme>(storeTheme);
-  const [colorTheme, setColorThemeState] = useState<ColorTheme>('default');
+  const [theme, setThemeState] = useState<Theme>(getStoredTheme);
+  const [colorTheme, setColorThemeState] = useState<ColorTheme>(getStoredColorTheme);
 
-  // 从localStorage加载颜色主题
-  useEffect(() => {
-    const savedColorTheme = localStorage.getItem('ai-assistant-color-theme') as ColorTheme;
-    if (savedColorTheme && colorThemes[savedColorTheme]) {
-      setColorThemeState(savedColorTheme);
-    }
-  }, []);
-
-  // 同步store主题
-  useEffect(() => {
-    setThemeState(storeTheme);
-  }, [storeTheme]);
-
-  // 应用主题
   useEffect(() => {
     const root = window.document.documentElement;
-    
-    // 处理light/dark/system
     let effectiveTheme = theme;
+
     if (theme === 'system') {
       effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
-    
+
     root.classList.remove('light', 'dark');
     root.classList.add(effectiveTheme);
-    
-    // 应用颜色主题
+
     const colors = colorThemes[colorTheme];
-    if (colors) {
-      root.style.setProperty('--primary', colors.primary);
-      root.style.setProperty('--primary-foreground', colors.primaryForeground);
-      root.style.setProperty('--accent', colors.accent);
-    }
+    root.style.setProperty('--primary', colors.primary);
+    root.style.setProperty('--primary-foreground', colors.primaryForeground);
+    root.style.setProperty('--accent', colors.accent);
+    root.style.setProperty('--ring', colors.primary);
   }, [theme, colorTheme]);
 
-  const setTheme = (newTheme: Theme) => {
-    setThemeState(newTheme);
-    storeSetTheme(newTheme);
+  const setTheme = (nextTheme: Theme) => {
+    setThemeState(nextTheme);
+    localStorage.setItem('kam-lite-theme', nextTheme);
   };
 
-  const setColorTheme = (newColorTheme: ColorTheme) => {
-    setColorThemeState(newColorTheme);
-    localStorage.setItem('ai-assistant-color-theme', newColorTheme);
+  const setColorTheme = (nextColorTheme: ColorTheme) => {
+    setColorThemeState(nextColorTheme);
+    localStorage.setItem('kam-lite-color-theme', nextColorTheme);
   };
 
   return (
@@ -107,7 +108,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
 export function useTheme() {
   const context = useContext(ThemeContext);
-  if (context === undefined) {
+  if (!context) {
     throw new Error('useTheme must be used within a ThemeProvider');
   }
   return context;

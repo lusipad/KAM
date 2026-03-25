@@ -1,24 +1,20 @@
 import { Sidebar } from './Sidebar';
-import { useAppStore } from '@/store/appStore';
-import { cn } from '@/lib/utils';
 
 interface MainLayoutProps {
   children: React.ReactNode;
 }
 
 export function MainLayout({ children }: MainLayoutProps) {
-  const { sidebarCollapsed } = useAppStore();
-
   return (
-    <div className="flex h-screen w-full bg-background">
+    <div className="lite-shell flex min-h-[100dvh] bg-background text-foreground">
       <Sidebar />
-      <main 
-        className={cn(
-          "flex-1 overflow-hidden transition-all duration-300",
-          sidebarCollapsed ? "ml-16" : "ml-64"
-        )}
-      >
-        <div className="h-full overflow-auto">
+      <main className="relative min-w-0 flex-1">
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="lite-orb lite-orb-primary" />
+          <div className="lite-orb lite-orb-secondary" />
+          <div className="lite-grid-haze" />
+        </div>
+        <div className="relative mx-auto min-h-[100dvh] max-w-[1680px] px-4 py-4 lg:px-6 lg:py-6">
           {children}
         </div>
       </main>
