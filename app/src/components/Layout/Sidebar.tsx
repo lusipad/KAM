@@ -3,7 +3,7 @@ import { Bot, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SettingsPanel } from '@/components/Settings/SettingsPanel';
 
-const railSteps = ['Inbox', 'Focus', 'Ship'];
+const railSteps = ['Projects', 'Threads', 'Runs'];
 
 export function Sidebar() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -17,8 +17,8 @@ export function Sidebar() {
               <Bot className="h-5 w-5" />
             </div>
             <div>
-              <div className="font-display text-base font-semibold">KAM Lite</div>
-              <div className="text-xs text-muted-foreground">Focused workspace</div>
+              <div className="font-display text-base font-semibold">KAM</div>
+              <div className="text-xs text-muted-foreground">个人 AI 指挥台</div>
             </div>
           </div>
 
@@ -36,7 +36,7 @@ export function Sidebar() {
           </div>
           <div className="text-center">
             <div className="font-display text-sm font-semibold tracking-[0.18em]">KAM</div>
-            <div className="mt-1 text-[10px] uppercase tracking-[0.24em] text-muted-foreground">Lite</div>
+            <div className="mt-1 text-[10px] uppercase tracking-[0.24em] text-muted-foreground">Command</div>
           </div>
         </div>
 

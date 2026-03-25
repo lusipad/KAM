@@ -1,5 +1,5 @@
 """
-KAM Lite / v2 预览应用配置
+KAM 应用配置
 """
 import json
 from pathlib import Path
@@ -12,8 +12,8 @@ ROOT_DIR = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
-    APP_NAME: str = "KAM Lite"
-    APP_VERSION: str = "1.3.0"
+    APP_NAME: str = "KAM"
+    APP_VERSION: str = "2.0.0"
     APP_DEBUG: bool = False
     APP_CORS_ORIGINS: str = "http://localhost:5173,http://localhost:3000,http://localhost:8000"
 

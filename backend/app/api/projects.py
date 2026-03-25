@@ -1,5 +1,5 @@
 """
-KAM v2 项目 API（预览）
+KAM v2 项目 API
 """
 from __future__ import annotations
 

@@ -106,7 +106,7 @@ function commandLine(run?: ConversationRun | null) {
   return asString(run?.metadata?.commandLine) || run?.command || '未记录命令';
 }
 
-export function V2PreviewView() {
+export function WorkspaceView() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedProject, setSelectedProject] = useState<ProjectRecord | null>(null);
@@ -428,7 +428,7 @@ export function V2PreviewView() {
       setErrorMessage(null);
       const created = await v2ProjectsApi.create({
         title: projectTitle.trim(),
-        description: 'v2 指挥台项目',
+        description: 'KAM 项目',
       });
       setProjectTitle('');
       await loadProjects();
@@ -694,7 +694,7 @@ export function V2PreviewView() {
         autoStart: true,
         maxRounds: 5,
         metadata: {
-          requestedFrom: 'v2-preview-compare-panel',
+          requestedFrom: 'kam-compare-panel',
         },
       });
       setComparePrompt('');
@@ -867,7 +867,7 @@ export function V2PreviewView() {
               <MessageSquare className="h-5 w-5" />
             </div>
             <div>
-              <div className="text-base font-semibold">{selectedThread?.title || 'V2 Preview 对话区'}</div>
+              <div className="text-base font-semibold">{selectedThread?.title || 'KAM 对话区'}</div>
               <div className="text-xs text-muted-foreground">
                 {selectedProject?.title ? `${selectedProject.title} · ` : ''}Project / Thread / Run / Memory 指挥台
               </div>

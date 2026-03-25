@@ -1,5 +1,5 @@
 """
-KAM v2 记忆 API（预览）
+KAM v2 记忆 API
 """
 from __future__ import annotations
 

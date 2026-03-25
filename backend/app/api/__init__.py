@@ -1,5 +1,5 @@
 """
-KAM API 路由模块：保留 Lite Core，并并行挂载 v2 Preview。
+KAM API 路由模块：当前以 v2 工作台为主，旧 Lite 路由仅保留迁移兼容。
 """
 from fastapi import APIRouter
 

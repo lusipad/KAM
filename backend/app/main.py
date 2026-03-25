@@ -1,5 +1,5 @@
 """
-KAM Lite - FastAPI 主应用
+KAM - FastAPI 主应用
 """
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="KAM Lite - 任务卡、上下文快照、Agent Runs 与结果收口工作台",
+    description="KAM - 个人 AI 指挥台，围绕 Project / Thread / Run / Memory 组织持续工作。",
     lifespan=lifespan,
 )
 

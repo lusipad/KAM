@@ -1,58 +1,82 @@
-# KAM Lite
+# KAM
 
-KAM Lite 是一个面向开发场景的“外置大脑 + Agent 指挥台”。它只做一条核心链路：
+KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Project / Thread / Run / Memory` 组织持续上下文、并发执行与结果收口。
 
-1. 创建任务卡
-2. 给任务添加引用
-3. 生成 Context Snapshot
-4. 并发拉起一个或多个 Agent run
-5. 查看日志、summary、changes、patch
-6. 在任务维度做 review 与 compare
-7. 进入自治会话，让 AI 自动迭代并用检查命令自验收
+## 当前状态
 
-当前仓库已经完成边界重置，只描述并实现 Lite Core。
+当前仓库已经以 **v2 工作台** 为主：
 
-## 保留能力
+- 前端默认直接进入 v2 工作区
+- 后端默认以 `/api/v2` 作为主工作流接口
+- Codex 默认模型已切到 `gpt-5.4` + `xhigh`
+- Legacy Lite 能力仍保留在仓库中，作为迁移兼容与历史参考，不再是默认 UI
 
-- Lite 任务台
-- Context Snapshot
-- Codex / Claude Code / custom command 执行链路
-- `git worktree` 隔离运行目录
-- run artifacts 查看
-- review summary 与 compare
-- SSE 事件流与轮询兜底
-- Autonomy Session / Cycle
-- 任务级与全局自治指标：自主完成率、打断率、完成成功率
-- KAM 仓库 dogfooding 模板
+## v2 核心能力
 
-## 明确不做
+- `Project`
+  - 项目级描述、仓库路径、检查命令、资源钉住、归档
+- `Thread`
+  - 项目内连续对话与工作流
+- `Run`
+  - Codex / Claude Code / Custom Command 执行
+  - 内置 artifacts、检查结果、失败反馈、重试、取消、采纳
+- `Memory`
+  - preferences / decisions / learnings / search
+- `Compare`
+  - 在同一 Thread 中并发发起多 Agent 对比
 
-- 额外独立工作台或管理台
-- 平台内 patch apply
-- 旧 API 兼容层
-- 旧数据迁移
+## 当前 UI
+
+右侧主工作区已经补齐四块核心面板：
+
+- `Project`：项目设置、资源管理、检查命令
+- `Memory`：偏好、决策、项目 learnings、搜索
+- `Detail`：Run artifacts、checks、命令与摘要
+- `Compare`：多 Agent / custom command 并发对比
+
+## API
+
+主接口位于 `/api/v2`：
+
+- `GET/POST /api/v2/projects`
+- `GET/PUT /api/v2/projects/:id`
+- `GET/POST/DELETE /api/v2/projects/:id/resources`
+- `GET/POST /api/v2/projects/:id/threads`
+- `GET /api/v2/threads/:id`
+- `POST /api/v2/threads/:id/messages`
+- `GET/POST /api/v2/threads/:id/runs`
+- `POST /api/v2/threads/:id/compare`
+- `GET /api/v2/runs/:id`
+- `GET /api/v2/runs/:id/artifacts`
+- `POST /api/v2/runs/:id/cancel|retry|adopt`
+- `GET/POST/PUT /api/v2/memory/preferences`
+- `GET/POST /api/v2/memory/decisions`
+- `GET/POST /api/v2/memory/learnings`
+- `GET /api/v2/memory/search`
 
 ## 代码结构
 
 ```text
 app/
   src/
-    components/Layout/      Lite 壳层与设置
-    components/Tasks/       唯一主工作台
-    lib/api.ts              Lite Core API 客户端
-    types/index.ts          Lite Core 类型
+    components/Layout/         应用壳层与导航
+    components/V2/             v2 主工作区
+    lib/api-v2.ts              v2 API 客户端
+    types/v2.ts                v2 类型定义
 
 backend/
-  app/api/tasks.py          Lite Core API
-  app/api/autonomy.py       自治会话 API
-  app/models/workspace.py   任务/引用/快照/run/artifact 模型
+  app/api/
+    projects.py                v2 项目 API
+    threads.py                 v2 线程与消息 API
+    runs.py                    v2 Run / Compare API
+    memory.py                  v2 记忆 API
   app/services/
-    workspace_service.py    任务与收口服务
-    run_executor.py         Agent 执行器
-    autonomy_service.py     自治会话与指标服务
-    autonomy_manager.py     自治迭代与检查执行器
-  scripts/reset_lite_core_schema.py
-  tests/test_lite_core.py
+    conversation_router.py     对话路由
+    context_assembler.py       上下文自动组装
+    run_service.py             Run / Compare 服务
+    run_engine.py              Run 生命周期与执行
+    memory_service.py          记忆读写
+  tests/test_v2_workspace.py     v2 回归测试
 ```
 
 ## 本地开发
@@ -73,65 +97,29 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-默认本地数据库为 `sqlite:///./storage/dev.db`。
+默认本地数据库：`sqlite:///./storage/dev.db`
 
-## Docker
+## 验证
 
-```bash
-docker compose up -d --build
-```
-
-应用入口：
-
-- UI: `http://localhost:8000`
-- Swagger: `http://localhost:8000/docs`
-
-## Lite Core Schema Reset
-
-需要直接清掉旧表和旧数据时，运行：
+后端测试：
 
 ```bash
 cd backend
-python scripts/reset_lite_core_schema.py
+python3 -m unittest discover -s tests -v
 ```
 
-该脚本会破坏式清空现有业务表，只重建以下 Lite Core 表：
+前端构建：
 
-- `task_cards`
-- `task_refs`
-- `context_snapshots`
-- `agent_runs`
-- `run_artifacts`
-- `autonomy_sessions`
-- `autonomy_cycles`
-
-## v2 Preview
-
-当前仓库已并行挂出一组 `v2 Preview` 后端接口，统一放在 `/api/v2` 下，用于逐步迁移到 `Project / Thread / Run / Memory` 心智模型。
-
-当前已提供：
-
-- `projects / project_resources`，并带项目级 `repoPath / description / checkCommands / archive`
-- `threads / messages`，支持消息驱动自动创建 Run
-- `runs / artifacts`，支持创建 / 重试 / 取消 / 采纳 / 查看完整 artifacts
-- `compare`：`POST /api/v2/threads/:id/compare` 支持并发拉起多个 Agent / custom command
-- `conversation router / context assembler`（已接到消息入口；有 `OPENAI_API_KEY` 时优先走 LLM，失败自动降级）
-- `memory preferences / decisions / learnings / search`，并已注入到 v2 上下文组装
-- 前端 `V2 Preview` 已补齐 `Project / Memory / Detail / Compare` 四块面板，可直接在 8000 端口体验
-
-默认 Codex 执行模型已切到：
-
-- `gpt-5.4`
-- `xhigh`
+```bash
+cd app
+npm run build
+```
 
 ## 文档
 
-- 主文档：
-  - [README](README.md)
-  - [PRD](AI工作助手产品需求文档(PRD).md)
-  - [Architecture](system_architecture.md)
-  - [Backlog](MVP_BACKLOG.md)
-  - [Autonomy V2](docs/autonomy-v2.md)
-  - [Optimization Campaign](docs/optimization-campaign.md)
-- 历史方案：
-  - `docs/archive/legacy/`
+- `README.md`
+- `system_architecture.md`
+- `MVP_BACKLOG.md`
+- `AI工作助手产品需求文档(PRD).md`
+- `docs/autonomy-v2.md`
+- `docs/archive/legacy/`

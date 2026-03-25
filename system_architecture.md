@@ -1,163 +1,136 @@
-# KAM Lite 系统架构
+# KAM v2 系统架构
 
 ## 1. 架构目标
 
-KAM Lite 是一个单体式任务工作台，围绕以下对象工作：
+KAM v2 是一个以对话为中心的个人 AI 指挥台，围绕以下对象工作：
 
-- `TaskCard`
-- `TaskRef`
-- `ContextSnapshot`
-- `AgentRun`
-- `RunArtifact`
-- `AutonomySession`
-- `AutonomyCycle`
+- `Project`：持续性的工作主题
+- `Thread`：项目内的一次连贯对话 / 工作流
+- `Run`：AI 的一次具体执行
+- `Memory`：偏好、决策、项目 learnings 的长期积累
 
 设计原则：
 
-- 单库优先
-- 外部 Agent 复用优先
-- 平台只做调度、记录、收口
-- 不承担额外独立工作台职责
+- 对话驱动，而不是表单驱动
+- 上下文自动流转，而不是手动快照
+- AI 持续工作是默认模式
+- 结果可监督，但不要求用户盯着全过程
+- 历史偏好、决策与 learnings 可回流到后续执行
 
 ## 2. 系统分层
 
 ```text
-Frontend Task Workspace
-  -> FastAPI Lite Core API
-    -> Workspace Service
-    -> Run Executor
-    -> Autonomy Service / Manager
+Frontend KAM Workspace
+  -> FastAPI API
+    -> Conversation Router
+    -> Project / Thread / Run / Memory Services
+    -> Run Engine
       -> Codex / Claude Code / custom command
-        -> Local storage / Git worktree / PostgreSQL
+        -> SQLite / PostgreSQL / Git worktree / Local storage
 ```
 
 ## 3. 前端结构
 
-- `App.tsx` 直接加载唯一任务工作台
-- `MainLayout` 提供 Lite 壳层
-- `Sidebar` 只展示产品定位与外观设置
-- `TasksView` 承担任务、引用、run、review、artifacts 全部交互
-- `AutonomyPanel` 承担自治会话、检查结果、指标展示与 dogfooding 入口
-- `lib/api.ts` 只保留 Lite Core API 客户端
+- `App.tsx`
+  - 默认直接进入 v2 工作台
+- `MainLayout`
+  - 提供统一壳层与主题能力
+- `Sidebar`
+  - 展示 KAM 品牌与主导航心智
+- `WorkspaceView`
+  - 当前主工作区实现
+  - 左侧：Projects / Threads
+  - 中间：对话流与 Run 卡片
+  - 右侧：Project / Memory / Detail / Compare 面板
+- `lib/api-v2.ts`
+  - 统一 v2 API 客户端
+- `types/v2.ts`
+  - Project / Thread / Run / Memory / Compare 类型定义
 
 ## 4. 后端结构
 
 ### 4.1 API
 
-- `backend/app/api/tasks.py`
-- `backend/app/api/autonomy.py`
+- `backend/app/api/projects.py`
+- `backend/app/api/threads.py`
+- `backend/app/api/runs.py`
+- `backend/app/api/memory.py`
 
 ### 4.2 服务
 
-- `workspace_service.py`
-  - 任务 CRUD
-  - 引用管理
-  - Context Snapshot 生成
-  - review / compare 聚合
-- `run_executor.py`
-  - 外部 Agent 启动
-  - 运行目录与 worktree 管理
-  - stdout/stderr/summary/changes/patch 采集
-- `autonomy_service.py`
-  - 自治会话 CRUD
-  - dogfooding 模板
-  - 指标聚合
-- `autonomy_manager.py`
-  - 自动迭代 worker run
-  - 执行检查命令
-  - 记录 cycle 结果与反馈
+- `project_service.py`
+  - 项目 CRUD、资源管理、归档
+- `thread_service.py`
+  - 线程 CRUD、消息落库
+- `conversation_router.py`
+  - 用户消息意图判断
+  - 调用 LLM 路由或规则路由
+  - 自动创建单 Run 或多 Run compare
+- `context_assembler.py`
+  - 聚合最近对话、资源、决策、偏好、learnings、最近 runs
+- `run_service.py`
+  - 创建 / 启动 / 重试 / 取消 / 采纳
+  - compare 任务编排
+- `run_engine.py`
+  - 真正执行 agent / custom command
+  - 采集 stdout / stderr / summary / changes / patch / check_result / feedback
+  - 执行项目级 checks 与自动重试
+- `memory_service.py`
+  - 读写 preferences / decisions / learnings
+  - 关键词搜索
 
-### 4.3 数据模型
+## 5. 数据模型
 
-#### `task_cards`
+### 5.1 项目域
 
-- 任务标题、描述、状态、优先级、标签、metadata
+- `projects`
+- `project_resources`
 
-#### `task_refs`
+### 5.2 对话域
 
-- 任务引用
-- 支持 URL、repo-path、file、work-item、doc、pr 等自由类型
+- `threads`
+- `messages`
+- `runs`
+- `thread_run_artifacts`
 
-#### `context_snapshots`
+### 5.3 记忆域
 
-- 仅保存 `{ task, refs, recentRuns }`
+- `user_preferences`
+- `decision_log`
+- `project_learnings`
 
-#### `agent_runs`
+## 6. 关键行为
 
-- Agent 名称、类型、状态、工作目录、prompt、command、metadata
+### 6.1 Message -> Router -> Run
 
-#### `run_artifacts`
+- 用户向 Thread 发送消息
+- Router 判断是纯回复、执行、还是 compare
+- Context Assembler 自动拼装上下文
+- RunService 创建 Run
+- RunEngine 执行并采集产物
+- 前端轮询展示最新状态
 
-- `prompt`
-- `context`
-- `plan`
-- `stdout`
-- `stderr`
-- `summary`
-- `changes`
-- `patch`
+### 6.2 Run Check Loop
 
-#### `autonomy_sessions`
+- Run 完成后自动执行项目级 `checkCommands`
+- 如果检查失败，生成 `feedback` 注入下一轮 prompt
+- 直到通过、取消或达到 `maxRounds`
 
-- 自治会话配置
-- 主 Agent / 最大轮次 / 成功标准 / 检查命令
-- 打断次数与最终状态
+### 6.3 Memory Feedback Loop
 
-#### `autonomy_cycles`
+- 对话中的明确偏好可自动提取
+- 手工记录决策与项目 learnings
+- 后续执行自动注入相关偏好、决策与 learnings
 
-- 每一轮自治迭代记录
-- 关联 worker run
-- 检查结果与失败反馈
+### 6.4 Compare
 
-## 5. 关键行为
+- 同一个 Thread 下可并发创建多个 Run
+- 每个 Run 带 `compareGroupId` / `compareLabel`
+- 前端按 compare group 聚合展示状态与摘要
 
-### 5.1 Context Resolve
+## 7. 运维约束
 
-输入：
-
-- 当前任务
-- 任务 refs
-- 最近 runs
-
-输出：
-
-- 快照摘要
-- 快照 JSON 数据
-
-### 5.2 Run Execution
-
-- 创建 run 时自动生成 prompt、context、plan artifacts
-- 执行器按 Agent 类型拉起 CLI
-- 若检测到 Git 仓库，自动采集 changes 与 patch
-- 平台只展示 patch，不负责直接应用
-
-### 5.3 Review / Compare
-
-- Review 汇总任务下所有 runs 与 artifacts
-- Compare 返回每个 run 的状态、artifact 数、变更文件数、untracked 数、patch 存在性
-
-### 5.4 Autonomy Loop
-
-- 会话启动后自动创建 worker run
-- worker run 结束后自动执行检查命令
-- 如果检查失败，系统把反馈拼进下一轮 prompt appendix
-- 直到：
-  - 所有检查通过
-  - 用户打断
-  - 达到最大轮次
-
-### 5.5 Autonomy Metrics
-
-- `autonomyCompletionRate`
-  - 终态会话中，未被打断且最终完成的占比
-- `interruptionRate`
-  - 终态会话中，被用户打断的占比
-- `successRate`
-  - 终态会话中，最终通过检查并完成的占比
-
-## 6. 运维约束
-
-- SQLite 可用于本地开发
-- PostgreSQL 用于长期运行环境
-- 使用 `backend/scripts/reset_lite_core_schema.py` 做破坏式 schema reset
-- 历史模块表不再保留
+- SQLite 用于本地开发
+- PostgreSQL 适合长期运行环境
+- 前端静态产物由 FastAPI 直接托管
+- 旧 Lite 路由暂时保留在仓库中，但不再是默认交互路径

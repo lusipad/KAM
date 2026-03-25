@@ -15,7 +15,7 @@ from app.main import app
 from app.db.base import Base, engine
 
 
-class V2PreviewApiTests(unittest.TestCase):
+class V2WorkspaceApiTests(unittest.TestCase):
     def setUp(self):
         Base.metadata.drop_all(bind=engine)
         Base.metadata.create_all(bind=engine)

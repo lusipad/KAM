@@ -1,5 +1,5 @@
 """
-KAM v2 Run 服务（Phase 2 预览）
+KAM v2 Run 服务
 """
 from __future__ import annotations
 

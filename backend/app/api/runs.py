@@ -1,5 +1,5 @@
 """
-KAM v2 Run API（预览）
+KAM v2 Run API
 """
 from __future__ import annotations
 

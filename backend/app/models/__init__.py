@@ -1,5 +1,5 @@
 """
-KAM 模型模块：兼容 Lite Core 与 v2 Preview
+KAM 模型模块：v2 为主，兼容 legacy 模型
 """
 from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.models.memory import DecisionLog, ProjectLearning, UserPreference
