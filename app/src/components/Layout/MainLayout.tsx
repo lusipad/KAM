@@ -14,7 +14,7 @@ export function MainLayout({ children }: MainLayoutProps) {
           <div className="lite-orb lite-orb-secondary" />
           <div className="lite-grid-haze" />
         </div>
-        <div className="relative mx-auto min-h-[100dvh] max-w-[1680px] px-4 py-4 lg:px-6 lg:py-6">
+        <div className="relative mx-auto min-h-[100dvh] max-w-[1560px] px-4 py-4 lg:px-5 lg:py-5">
           {children}
         </div>
       </main>
