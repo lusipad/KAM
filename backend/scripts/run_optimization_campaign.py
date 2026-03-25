@@ -118,7 +118,12 @@ def build_default_checks() -> list[dict[str, str]]:
         },
         {
             "label": "Backend unit",
-            "command": "Set-Location -LiteralPath (Join-Path '{execution_cwd}' 'backend'); py -m unittest discover -s tests -v",
+            "command": (
+                "$python = Join-Path '{execution_cwd}' '.venv\\Scripts\\python.exe'; "
+                "if (!(Test-Path $python)) { $python = Join-Path '{repo_path}' '.venv\\Scripts\\python.exe' }; "
+                "Set-Location -LiteralPath (Join-Path '{execution_cwd}' 'backend'); "
+                "if (Test-Path $python) { & $python -m unittest discover -s tests -v } else { py -m unittest discover -s tests -v }"
+            ),
         },
     ]
 

@@ -13,6 +13,7 @@ os.environ["AGENT_WORKROOT"] = "./storage/test-lite-runs"
 
 from app.main import app
 from app.db.base import Base, engine
+from app.services.run_executor import execution_manager
 
 
 class LiteCoreApiTests(unittest.TestCase):
@@ -35,6 +36,9 @@ class LiteCoreApiTests(unittest.TestCase):
                 if time.time() >= deadline:
                     raise
                 time.sleep(0.25)
+
+    def _wait_for_run_cleanup(self, run_id: str):
+        self.assertTrue(execution_manager.wait_for_run_cleanup(run_id, timeout=5))
 
     def test_context_snapshot_contains_only_core_fields(self):
         with TestClient(app) as client:
@@ -87,6 +91,7 @@ class LiteCoreApiTests(unittest.TestCase):
             self.assertEqual(artifacts.status_code, 200)
             artifact_types = {item["type"] for item in artifacts.json()["artifacts"]}
             self.assertTrue({"prompt", "context", "plan", "stdout", "stderr", "summary"}.issubset(artifact_types))
+            self._wait_for_run_cleanup(run_id)
 
             review = client.get(f"/api/reviews/{task['id']}")
             self.assertEqual(review.status_code, 200)
@@ -95,6 +100,47 @@ class LiteCoreApiTests(unittest.TestCase):
             comparison = client.post(f"/api/reviews/{task['id']}/compare", json={})
             self.assertEqual(comparison.status_code, 200)
             self.assertEqual(comparison.json()["comparison"][0]["status"], "completed")
+
+    def test_run_worktree_hydrates_runtime_dependencies(self):
+        command = "Set-Content -Path (Join-Path '{run_dir}' 'final.md') -Value 'runtime hydrated'"
+
+        with TestClient(app) as client:
+            task = client.post("/api/tasks", json={"title": "Hydrate runtime", "description": "link shared runtime"}).json()
+            ref = client.post(
+                f"/api/tasks/{task['id']}/refs",
+                json={"type": "repo-path", "label": "repo", "value": "D:/Repos/KAM"},
+            )
+            self.assertEqual(ref.status_code, 200)
+
+            created = client.post(
+                f"/api/tasks/{task['id']}/runs",
+                json={"agents": [{"name": "hydrate-runtime", "type": "custom", "command": command}]},
+            )
+            self.assertEqual(created.status_code, 200)
+
+            run_id = created.json()["runs"][0]["id"]
+            deadline = time.time() + 20
+            run_payload = None
+
+            while time.time() < deadline:
+                response = client.get(f"/api/runs/{run_id}")
+                self.assertEqual(response.status_code, 200)
+                run_payload = response.json()
+                if run_payload["status"] in {"completed", "failed", "canceled"}:
+                    break
+                time.sleep(0.25)
+
+            self.assertIsNotNone(run_payload)
+            self.assertEqual(run_payload["status"], "completed")
+            self._wait_for_run_cleanup(run_id)
+
+            worktree_root = Path(run_payload["metadata"]["worktree"])
+            self.assertTrue(worktree_root.exists())
+
+            if Path("D:/Repos/KAM/app/node_modules").exists():
+                self.assertTrue((worktree_root / "app" / "node_modules").exists())
+            if Path("D:/Repos/KAM/.venv").exists():
+                self.assertTrue((worktree_root / ".venv").exists())
 
     def test_autonomy_session_completes_with_checks_and_updates_metrics(self):
         command = (
@@ -139,6 +185,7 @@ class LiteCoreApiTests(unittest.TestCase):
             self.assertEqual(session_payload["status"], "completed")
             self.assertEqual(session_payload["cycles"][0]["status"], "passed")
             self.assertTrue(session_payload["cycles"][0]["checkResults"][0]["passed"])
+            self._wait_for_run_cleanup(session_payload["cycles"][0]["workerRunId"])
 
             task_metrics = client.get(f"/api/tasks/{task['id']}/autonomy/metrics")
             self.assertEqual(task_metrics.status_code, 200)
@@ -196,6 +243,7 @@ class LiteCoreApiTests(unittest.TestCase):
             self.assertIsNotNone(session_payload)
             self.assertEqual(session_payload["status"], "interrupted")
             self.assertEqual(session_payload["interruptionCount"], 1)
+            self._wait_for_run_cleanup(session_payload["cycles"][0]["workerRunId"])
 
             task_metrics = client.get(f"/api/tasks/{task['id']}/autonomy/metrics")
             self.assertEqual(task_metrics.status_code, 200)
@@ -247,6 +295,19 @@ class LiteCoreApiTests(unittest.TestCase):
         with TestClient(app) as client:
             self.assertEqual(actual_routes, expected_routes)
             self.assertEqual(client.get("/api/this-path-does-not-exist").status_code, 404)
+
+    def test_dogfood_session_checks_target_worktree_runtime(self):
+        with TestClient(app) as client:
+            task = client.post("/api/tasks", json={"title": "Dogfood checks", "description": "verify templates"}).json()
+            created = client.post(f"/api/tasks/{task['id']}/autonomy/dogfood")
+            self.assertEqual(created.status_code, 200)
+
+            commands = {item["label"]: item["command"] for item in created.json()["checkCommands"]}
+            self.assertIn("{execution_cwd}", commands["App lint"])
+            self.assertIn("{execution_cwd}", commands["App build"])
+            self.assertIn("{execution_cwd}", commands["App e2e"])
+            self.assertIn("{execution_cwd}", commands["Backend unit"])
+            self.assertIn("{repo_path}", commands["Backend unit"])
 
 
 if __name__ == "__main__":

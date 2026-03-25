@@ -169,42 +169,52 @@ class AutonomyService:
         self.db.flush()
 
     def _build_dogfood_checks(self, repo_path: str) -> list[dict[str, str]]:
-        root = Path(repo_path)
         if os.name == "nt":
             return [
                 {
                     "label": "App lint",
-                    "command": f"Set-Location -LiteralPath '{root / 'app'}'; npm run lint",
+                    "command": "Set-Location -LiteralPath (Join-Path '{execution_cwd}' 'app'); npm run lint",
                 },
                 {
                     "label": "App build",
-                    "command": f"Set-Location -LiteralPath '{root / 'app'}'; npm run build",
+                    "command": "Set-Location -LiteralPath (Join-Path '{execution_cwd}' 'app'); npm run build",
                 },
                 {
                     "label": "App e2e",
-                    "command": f"Set-Location -LiteralPath '{root / 'app'}'; npm run test:e2e",
+                    "command": "Set-Location -LiteralPath (Join-Path '{execution_cwd}' 'app'); npm run test:e2e",
                 },
                 {
                     "label": "Backend unit",
-                    "command": f"Set-Location -LiteralPath '{root / 'backend'}'; py -m unittest discover -s tests -v",
+                    "command": (
+                        "$python = Join-Path '{execution_cwd}' '.venv\\Scripts\\python.exe'; "
+                        "if (!(Test-Path $python)) { $python = Join-Path '{repo_path}' '.venv\\Scripts\\python.exe' }; "
+                        "Set-Location -LiteralPath (Join-Path '{execution_cwd}' 'backend'); "
+                        "if (Test-Path $python) { & $python -m unittest discover -s tests -v } else { py -m unittest discover -s tests -v }"
+                    ),
                 },
             ]
 
         return [
             {
                 "label": "App lint",
-                "command": f"cd '{root / 'app'}' && npm run lint",
+                "command": "cd '{execution_cwd}/app' && npm run lint",
             },
             {
                 "label": "App build",
-                "command": f"cd '{root / 'app'}' && npm run build",
+                "command": "cd '{execution_cwd}/app' && npm run build",
             },
             {
                 "label": "App e2e",
-                "command": f"cd '{root / 'app'}' && npm run test:e2e",
+                "command": "cd '{execution_cwd}/app' && npm run test:e2e",
             },
             {
                 "label": "Backend unit",
-                "command": f"cd '{root / 'backend'}' && python -m unittest discover -s tests -v",
+                "command": (
+                    "PYTHON_BIN='{execution_cwd}/.venv/bin/python'; "
+                    "if [ ! -x \"$PYTHON_BIN\" ]; then PYTHON_BIN='{repo_path}/.venv/bin/python'; fi; "
+                    "cd '{execution_cwd}/backend' && "
+                    "if [ -x \"$PYTHON_BIN\" ]; then \"$PYTHON_BIN\" -m unittest discover -s tests -v; "
+                    "else python -m unittest discover -s tests -v; fi"
+                ),
             },
         ]

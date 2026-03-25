@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,26 @@ class RunExecutionManager:
         if thread and thread.is_alive():
             thread.join(timeout=5)
         return True
+
+    def wait_for_run_cleanup(self, run_id: str, timeout: float = 5) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._lock:
+                process = self._processes.get(run_id)
+                thread = self._threads.get(run_id)
+
+            if process is None and (thread is None or not thread.is_alive()):
+                return True
+
+            if thread and thread.is_alive():
+                thread.join(timeout=min(0.1, max(deadline - time.time(), 0)))
+            else:
+                time.sleep(0.1)
+
+        with self._lock:
+            process = self._processes.get(run_id)
+            thread = self._threads.get(run_id)
+        return process is None and (thread is None or not thread.is_alive())
 
     def _execute_run(self, run_id: str):
         db = SessionLocal()
@@ -240,6 +261,7 @@ class RunExecutionManager:
             if self._create_git_worktree(repo_path, candidate_worktree):
                 created_worktree = candidate_worktree
                 execution_cwd = created_worktree
+                self._hydrate_worktree_runtime(repo_path, execution_cwd)
             else:
                 execution_cwd = repo_path
 
@@ -544,6 +566,41 @@ class RunExecutionManager:
             return Path(root) if root else None
         except Exception:
             return None
+
+    def _hydrate_worktree_runtime(self, repo_root: Path, worktree_root: Path) -> None:
+        if worktree_root.resolve() == repo_root.resolve():
+            return
+
+        self._link_directory(repo_root / "app" / "node_modules", worktree_root / "app" / "node_modules")
+        self._link_directory(repo_root / ".venv", worktree_root / ".venv")
+
+    def _link_directory(self, source: Path, target: Path) -> bool:
+        if not source.exists() or target.exists():
+            return False
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    [
+                        "cmd",
+                        "/c",
+                        "mklink",
+                        "/J",
+                        str(target),
+                        str(source),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            else:
+                os.symlink(source, target, target_is_directory=True)
+            return True
+        except Exception:
+            return False
 
     def _ensure_artifact(
         self,
