@@ -113,5 +113,6 @@ python scripts/reset_lite_core_schema.py
   - [Architecture](system_architecture.md)
   - [Backlog](MVP_BACKLOG.md)
   - [Autonomy V2](docs/autonomy-v2.md)
+  - [Optimization Campaign](docs/optimization-campaign.md)
 - 历史方案：
   - `docs/archive/legacy/`
