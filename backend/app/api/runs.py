@@ -3,13 +3,17 @@ KAM v2 Run API
 """
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.db.base import get_db
+from app.db.base import SessionLocal, get_db
+from app.services.run_engine import TERMINAL_RUN_STATUSES
 from app.services.run_service import RunService
 
 router = APIRouter(prefix="/v2", tags=["v2-runs"])
@@ -88,12 +92,76 @@ async def get_run(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/runs/{run_id}/artifacts")
-async def get_run_artifacts(run_id: str, db: Session = Depends(get_db)):
+async def get_run_artifacts(
+    run_id: str,
+    tail_chars: Optional[int] = Query(default=None, ge=200, le=500_000),
+    db: Session = Depends(get_db),
+):
     service = RunService(db)
     run = service.get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run 不存在")
-    return {"artifacts": [artifact.to_dict() for artifact in service.list_artifacts(run_id)]}
+    artifacts = service.list_artifacts(run_id)
+    return {"artifacts": [service.hydrate_artifact(artifact, max_chars=tail_chars) for artifact in artifacts]}
+
+
+@router.get("/runs/{run_id}/events")
+async def stream_run_events(
+    run_id: str,
+    request: Request,
+    tail_chars: int = Query(default=20_000, ge=200, le=500_000),
+    db: Session = Depends(get_db),
+):
+    service = RunService(db)
+    run = service.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run 不存在")
+
+    async def event_stream():
+        last_payload: str | None = None
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            stream_db = SessionLocal()
+            try:
+                stream_service = RunService(stream_db)
+                current_run = stream_service.get_run(run_id)
+                if not current_run:
+                    break
+
+                artifacts = [
+                    stream_service.hydrate_artifact(artifact, max_chars=tail_chars)
+                    for artifact in stream_service.list_artifacts(run_id)
+                ]
+                payload = {
+                    "run": current_run.to_dict(include_artifacts=False),
+                    "artifacts": artifacts,
+                }
+                serialized = json.dumps(payload, ensure_ascii=False)
+                if serialized != last_payload:
+                    last_payload = serialized
+                    yield f"data: {serialized}\n\n"
+                else:
+                    yield ": keep-alive\n\n"
+
+                if current_run.status in TERMINAL_RUN_STATUSES:
+                    break
+            finally:
+                stream_db.close()
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/runs/{run_id}/cancel")

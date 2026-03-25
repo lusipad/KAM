@@ -21,7 +21,7 @@ import {
   Trash2,
   Undo2,
 } from 'lucide-react';
-import { v2MemoryApi, v2ProjectsApi, v2RunsApi, v2ThreadsApi } from '@/lib/api-v2';
+import { getV2RunEventsUrl, v2MemoryApi, v2ProjectsApi, v2RunsApi, v2ThreadsApi } from '@/lib/api-v2';
 import type {
   CompareAgentSpec,
   ConversationRun,
@@ -220,12 +220,35 @@ export function WorkspaceView() {
   }, [selectedRunId]);
 
   useEffect(() => {
-    if (!selectedRunDetail || !isActiveRun(selectedRunDetail)) return;
-    const timer = window.setInterval(() => {
-      void loadRunDetail(selectedRunDetail.id);
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [selectedRunDetail]);
+    if (!selectedRunId) return;
+
+    const eventSource = new EventSource(getV2RunEventsUrl(selectedRunId, 60_000));
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          run?: ConversationRun;
+          artifacts?: ThreadRunArtifactRecord[];
+        };
+        if (!payload.run) return;
+        setSelectedRunDetail({
+          ...payload.run,
+          artifacts: payload.artifacts || [],
+        });
+        if (!isActiveRun(payload.run)) {
+          eventSource.close();
+        }
+      } catch {
+        eventSource.close();
+      }
+    };
+    eventSource.onerror = () => {
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [selectedRunId]);
 
   const compareGroups = useMemo<CompareGroup[]>(() => {
     const groupMap = new Map<string, CompareGroup>();

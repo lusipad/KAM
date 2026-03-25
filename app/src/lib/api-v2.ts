@@ -132,3 +132,7 @@ export const v2MemoryApi = {
       learnings: ProjectLearningRecord[];
     }>('/v2/memory/search', params),
 };
+
+export function getV2RunEventsUrl(runId: string, tailChars = 20000) {
+  return `${API_BASE_URL}/v2/runs/${runId}/events?tail_chars=${tailChars}`;
+}

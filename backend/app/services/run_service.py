@@ -34,6 +34,16 @@ class RunService:
             .all()
         )
 
+    def hydrate_artifact(self, artifact: ThreadRunArtifact, max_chars: int | None = None) -> dict[str, Any]:
+        payload = artifact.to_dict()
+        content = payload.get("content") or ""
+        if max_chars and len(content) > max_chars:
+            payload["content"] = content[-max_chars:]
+            payload["truncated"] = True
+        else:
+            payload["truncated"] = False
+        return payload
+
     def create_run(self, thread_id: str, data: dict[str, Any], message_id: str | None = None, auto_start: bool = True) -> Run | None:
         thread = self.db.query(Thread).filter(Thread.id == thread_id).first()
         if not thread:

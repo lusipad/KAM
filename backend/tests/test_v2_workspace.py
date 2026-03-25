@@ -148,6 +148,41 @@ class V2WorkspaceApiTests(unittest.TestCase):
                 hidden_names = [item['name'] for item in hidden_listing.json()['entries']]
                 self.assertIn('.secret', hidden_names)
 
+    def test_run_events_endpoint_streams_payload(self):
+        with TestClient(app) as client:
+            project = client.post(
+                "/api/v2/projects",
+                json={"title": "Events project"},
+            ).json()
+            thread = client.post(
+                f"/api/v2/projects/{project['id']}/threads",
+                json={"title": "事件流"},
+            ).json()
+
+            command = (
+                "printf '%s' 'event done' > '{summary_file}'"
+                if os.name != "nt"
+                else "Set-Content -Path '{summary_file}' -Value 'event done'"
+            )
+            created = client.post(
+                f"/api/v2/threads/{thread['id']}/runs",
+                json={
+                    "agent": "custom",
+                    "command": command,
+                    "prompt": "事件流验证",
+                    "autoStart": True,
+                },
+            ).json()
+            run_payload = self._wait_run(client, created["id"])
+            self.assertEqual(run_payload["status"], "passed")
+
+            with client.stream("GET", f"/api/v2/runs/{created['id']}/events") as response:
+                self.assertEqual(response.status_code, 200)
+                body = ''.join(response.iter_text())
+            self.assertIn('data: ', body)
+            self.assertIn('"status": "passed"', body)
+            self.assertIn('summary', body)
+
     def test_memory_endpoints(self):
         with TestClient(app) as client:
             project = client.post(
