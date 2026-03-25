@@ -13,6 +13,8 @@ from app.db.types import IS_SQLITE
 from app.models import workspace  # noqa: F401
 
 LITE_TABLES = [
+    "autonomy_cycles",
+    "autonomy_sessions",
     "run_artifacts",
     "agent_runs",
     "context_snapshots",
@@ -54,7 +56,7 @@ def main() -> None:
 
     print("Lite Core schema reset complete.")
     print(f"DATABASE_URL={settings.DATABASE_URL}")
-    print("Tables: task_cards, task_refs, context_snapshots, agent_runs, run_artifacts")
+    print("Tables: task_cards, task_refs, context_snapshots, agent_runs, run_artifacts, autonomy_sessions, autonomy_cycles")
 
 
 if __name__ == "__main__":

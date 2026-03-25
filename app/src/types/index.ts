@@ -99,6 +99,74 @@ export interface RunArtifactView {
   size?: number;
 }
 
+export interface AutonomyCheckCommand {
+  label: string;
+  command: string;
+}
+
+export interface AutonomyCheckResult {
+  label: string;
+  command: string;
+  resolvedCommand: string;
+  passed: boolean;
+  exitCode: number;
+  durationMs: number;
+  stdoutPath?: string;
+  stderrPath?: string;
+  stdoutPreview?: string;
+  stderrPreview?: string;
+}
+
+export interface AutonomyCycle {
+  id: string;
+  sessionId: string;
+  iteration: number;
+  status: 'planned' | 'running' | 'checking' | 'passed' | 'failed' | 'interrupted';
+  workerRunId?: string | null;
+  workerRun?: AgentRunRecord | null;
+  feedbackSummary: string;
+  checkResults: AutonomyCheckResult[];
+  metadata: JsonObject;
+  createdAt: Date | string;
+  completedAt?: Date | string | null;
+}
+
+export interface AutonomySession {
+  id: string;
+  taskId: string;
+  title: string;
+  objective: string;
+  status: 'draft' | 'running' | 'completed' | 'failed' | 'interrupted';
+  repoPath?: string | null;
+  primaryAgentName: string;
+  primaryAgentType: string;
+  primaryAgentCommand?: string | null;
+  maxIterations: number;
+  currentIteration: number;
+  interruptionCount: number;
+  successCriteria: string;
+  checkCommands: AutonomyCheckCommand[];
+  metadata: JsonObject;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  completedAt?: Date | string | null;
+  cycles?: AutonomyCycle[];
+  latestCycle?: AutonomyCycle | null;
+}
+
+export interface AutonomyMetrics {
+  totalSessions: number;
+  activeSessions: number;
+  terminalSessions: number;
+  completedSessions: number;
+  failedSessions: number;
+  interruptedSessions: number;
+  autonomyCompletionRate: number;
+  interruptionRate: number;
+  successRate: number;
+  averageCompletedIterations: number;
+}
+
 export interface TaskListResponse {
   tasks: WorkspaceTask[];
 }
@@ -109,6 +177,10 @@ export interface ReviewCompareResponse {
 
 export interface RunArtifactListResponse {
   artifacts: RunArtifactView[];
+}
+
+export interface AutonomySessionListResponse {
+  sessions: AutonomySession[];
 }
 
 export interface TaskCreateInput {
@@ -147,4 +219,17 @@ export interface RunCreateInput {
   name: string;
   type: string;
   command?: string;
+}
+
+export interface AutonomySessionCreateInput {
+  title: string;
+  objective?: string;
+  repoPath?: string;
+  primaryAgentName?: string;
+  primaryAgentType?: string;
+  primaryAgentCommand?: string;
+  maxIterations?: number;
+  successCriteria?: string;
+  checkCommands?: AutonomyCheckCommand[];
+  metadata?: JsonObject;
 }

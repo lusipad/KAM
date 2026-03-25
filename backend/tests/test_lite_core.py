@@ -22,8 +22,19 @@ class LiteCoreApiTests(unittest.TestCase):
 
         self.workroot = Path("./storage/test-lite-runs")
         if self.workroot.exists():
-            shutil.rmtree(self.workroot)
+            self._remove_workroot()
         self.workroot.mkdir(parents=True, exist_ok=True)
+
+    def _remove_workroot(self):
+        deadline = time.time() + 5
+        while True:
+            try:
+                shutil.rmtree(self.workroot)
+                return
+            except PermissionError:
+                if time.time() >= deadline:
+                    raise
+                time.sleep(0.25)
 
     def test_context_snapshot_contains_only_core_fields(self):
         with TestClient(app) as client:
@@ -85,6 +96,112 @@ class LiteCoreApiTests(unittest.TestCase):
             self.assertEqual(comparison.status_code, 200)
             self.assertEqual(comparison.json()["comparison"][0]["status"], "completed")
 
+    def test_autonomy_session_completes_with_checks_and_updates_metrics(self):
+        command = (
+            "Set-Content -Path (Join-Path '{run_dir}' 'done.txt') -Value 'ok'; "
+            "Set-Content -Path (Join-Path '{run_dir}' 'final.md') -Value 'autonomy summary'; "
+            "Write-Output 'autonomy finished'"
+        )
+        check_command = "if (!(Test-Path -LiteralPath (Join-Path '{run_dir}' 'done.txt'))) { throw 'missing done.txt'; }"
+
+        with TestClient(app) as client:
+            task = client.post("/api/tasks", json={"title": "Autonomy success", "description": "verify autonomy metrics"}).json()
+            created = client.post(
+                f"/api/tasks/{task['id']}/autonomy/sessions",
+                json={
+                    "title": "Autonomy smoke",
+                    "objective": "complete once",
+                    "primaryAgentName": "autonomy-smoke",
+                    "primaryAgentType": "custom",
+                    "primaryAgentCommand": command,
+                    "maxIterations": 2,
+                    "successCriteria": "done.txt exists",
+                    "checkCommands": [{"label": "done marker", "command": check_command}],
+                },
+            )
+            self.assertEqual(created.status_code, 200)
+            session_id = created.json()["id"]
+
+            started = client.post(f"/api/autonomy/sessions/{session_id}/start")
+            self.assertEqual(started.status_code, 200)
+
+            deadline = time.time() + 20
+            session_payload = None
+            while time.time() < deadline:
+                response = client.get(f"/api/autonomy/sessions/{session_id}")
+                self.assertEqual(response.status_code, 200)
+                session_payload = response.json()
+                if session_payload["status"] in {"completed", "failed", "interrupted"}:
+                    break
+                time.sleep(0.5)
+
+            self.assertIsNotNone(session_payload)
+            self.assertEqual(session_payload["status"], "completed")
+            self.assertEqual(session_payload["cycles"][0]["status"], "passed")
+            self.assertTrue(session_payload["cycles"][0]["checkResults"][0]["passed"])
+
+            task_metrics = client.get(f"/api/tasks/{task['id']}/autonomy/metrics")
+            self.assertEqual(task_metrics.status_code, 200)
+            self.assertEqual(task_metrics.json()["completedSessions"], 1)
+            self.assertEqual(task_metrics.json()["autonomyCompletionRate"], 1)
+            self.assertEqual(task_metrics.json()["successRate"], 1)
+
+    def test_autonomy_session_interrupt_increments_interruption_rate(self):
+        command = (
+            "Start-Sleep -Seconds 5; "
+            "Set-Content -Path (Join-Path '{run_dir}' 'final.md') -Value 'too late'"
+        )
+
+        with TestClient(app) as client:
+            task = client.post("/api/tasks", json={"title": "Autonomy interrupt", "description": "interrupt loop"}).json()
+            created = client.post(
+                f"/api/tasks/{task['id']}/autonomy/sessions",
+                json={
+                    "title": "Autonomy interrupt smoke",
+                    "objective": "interrupt once",
+                    "primaryAgentName": "interrupt-smoke",
+                    "primaryAgentType": "custom",
+                    "primaryAgentCommand": command,
+                    "maxIterations": 2,
+                    "checkCommands": [],
+                },
+            )
+            self.assertEqual(created.status_code, 200)
+            session_id = created.json()["id"]
+
+            started = client.post(f"/api/autonomy/sessions/{session_id}/start")
+            self.assertEqual(started.status_code, 200)
+
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                response = client.get(f"/api/autonomy/sessions/{session_id}")
+                self.assertEqual(response.status_code, 200)
+                if response.json()["status"] == "running":
+                    break
+                time.sleep(0.25)
+
+            interrupted = client.post(f"/api/autonomy/sessions/{session_id}/interrupt")
+            self.assertEqual(interrupted.status_code, 200)
+
+            deadline = time.time() + 20
+            session_payload = None
+            while time.time() < deadline:
+                response = client.get(f"/api/autonomy/sessions/{session_id}")
+                self.assertEqual(response.status_code, 200)
+                session_payload = response.json()
+                if session_payload["status"] in {"completed", "failed", "interrupted"}:
+                    break
+                time.sleep(0.5)
+
+            self.assertIsNotNone(session_payload)
+            self.assertEqual(session_payload["status"], "interrupted")
+            self.assertEqual(session_payload["interruptionCount"], 1)
+
+            task_metrics = client.get(f"/api/tasks/{task['id']}/autonomy/metrics")
+            self.assertEqual(task_metrics.status_code, 200)
+            self.assertEqual(task_metrics.json()["interruptedSessions"], 1)
+            self.assertEqual(task_metrics.json()["interruptionRate"], 1)
+
     def test_api_surface_is_lite_core_only(self):
         expected_routes = {
             ("GET", "/api/tasks"),
@@ -106,6 +223,14 @@ class LiteCoreApiTests(unittest.TestCase):
             ("GET", "/api/runs/{run_id}/events"),
             ("GET", "/api/reviews/{task_id}"),
             ("POST", "/api/reviews/{task_id}/compare"),
+            ("GET", "/api/tasks/{task_id}/autonomy/sessions"),
+            ("POST", "/api/tasks/{task_id}/autonomy/sessions"),
+            ("POST", "/api/tasks/{task_id}/autonomy/dogfood"),
+            ("GET", "/api/tasks/{task_id}/autonomy/metrics"),
+            ("GET", "/api/autonomy/sessions/{session_id}"),
+            ("POST", "/api/autonomy/sessions/{session_id}/start"),
+            ("POST", "/api/autonomy/sessions/{session_id}/interrupt"),
+            ("GET", "/api/autonomy/metrics"),
         }
         actual_routes = {
             (method, route.path)

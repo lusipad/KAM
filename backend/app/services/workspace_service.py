@@ -155,13 +155,12 @@ class WorkspaceService:
             self.db.refresh(run)
         return run
 
-    def create_runs(self, task_id: str, agents: Iterable[dict[str, Any]]) -> list[AgentRun] | None:
+    def create_runs(self, task_id: str, agents: Iterable[dict[str, Any]], auto_launch: bool = True) -> list[AgentRun] | None:
         task = self.get_task(task_id)
         if not task:
             return None
 
         snapshot = self.resolve_context(task_id)
-        prompt = self._build_prompt(task, snapshot)
         created_runs: list[AgentRun] = []
 
         for agent in agents:
@@ -171,6 +170,8 @@ class WorkspaceService:
 
             agent_type = agent.get("type") or agent.get("agentType") or "custom"
             command = agent.get("command")
+            prompt_appendix = agent.get("promptAppendix") or agent.get("prompt_appendix")
+            prompt = self._build_prompt(task, snapshot, prompt_appendix=prompt_appendix)
             workdir = self._create_workdir(task_id, agent_name)
             launch_plan = self._build_launch_plan(agent_type, command, workdir)
 
@@ -186,6 +187,7 @@ class WorkspaceService:
                     "requestedAt": datetime.utcnow().isoformat(),
                     "snapshotId": str(snapshot.id) if snapshot else None,
                     "launchPlan": launch_plan,
+                    "promptAppendix": prompt_appendix,
                 },
             )
             self.db.add(run)
@@ -229,10 +231,11 @@ class WorkspaceService:
         for run in created_runs:
             self.db.refresh(run)
         self.db.refresh(task)
-        for run in created_runs:
-            if execution_manager.launch_run(str(run.id)):
-                self.db.expire(run)
-                self.db.refresh(run)
+        if auto_launch:
+            for run in created_runs:
+                if execution_manager.launch_run(str(run.id)):
+                    self.db.expire(run)
+                    self.db.refresh(run)
         return created_runs
 
     def cancel_run(self, run_id: str) -> AgentRun | None:
@@ -413,24 +416,36 @@ class WorkspaceService:
             lines.extend([f"- [{ref['type']}] {ref['label']}: {ref['value']}" for ref in refs[:5]])
         return "\n".join(lines)
 
-    def _build_prompt(self, task: TaskCard, snapshot: ContextSnapshot | None) -> str:
+    def _build_prompt(
+        self,
+        task: TaskCard,
+        snapshot: ContextSnapshot | None,
+        prompt_appendix: str | None = None,
+    ) -> str:
         summary = snapshot.summary if snapshot else task.description
-        return "\n".join(
-            [
-                f"# Task: {task.title}",
-                "",
-                "## Goal",
-                task.description or "请根据当前任务完成工作。",
-                "",
-                "## Context",
-                summary or "无上下文摘要。",
-                "",
-                "## Output Requirements",
-                "- 给出关键结论",
-                "- 标注风险与假设",
-                "- 如有代码修改，说明涉及文件与建议后续动作",
-            ]
-        )
+        lines = [
+            f"# Task: {task.title}",
+            "",
+            "## Goal",
+            task.description or "请根据当前任务完成工作。",
+            "",
+            "## Context",
+            summary or "无上下文摘要。",
+            "",
+            "## Output Requirements",
+            "- 给出关键结论",
+            "- 标注风险与假设",
+            "- 如有代码修改，说明涉及文件与建议后续动作",
+        ]
+        if prompt_appendix:
+            lines.extend(
+                [
+                    "",
+                    "## Autonomy Instructions",
+                    prompt_appendix,
+                ]
+            )
+        return "\n".join(lines)
 
     def _create_workdir(self, task_id: str, agent_name: str) -> Path:
         safe_agent_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in agent_name.lower()).strip("-")

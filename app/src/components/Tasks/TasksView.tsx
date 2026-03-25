@@ -18,6 +18,7 @@ import {
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { AutonomyPanel } from '@/components/Tasks/AutonomyPanel';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
@@ -27,7 +28,7 @@ import type { AgentRunRecord, ComparisonRow, ReviewData, RunArtifactView, Worksp
 
 type RunType = 'codex' | 'claude-code' | 'custom';
 type BadgeVariant = 'default' | 'secondary' | 'outline' | 'destructive';
-type WorkspacePanel = 'overview' | 'sources' | 'runs' | 'review';
+type WorkspacePanel = 'overview' | 'sources' | 'runs' | 'review' | 'autonomy';
 type NextActionIntent = 'add-ref' | 'resolve-context' | 'dispatch' | 'monitor-runs' | 'review';
 
 interface NextAction {
@@ -73,6 +74,7 @@ const panelMeta = {
   sources: { label: '资料', hint: '引用与 Context 按需展开。' },
   runs: { label: '执行', hint: 'Run 队列和产物只在这里出现。' },
   review: { label: '收口', hint: 'Review 与 Compare 回到任务维度。' },
+  autonomy: { label: '自治', hint: '让 AI 自动迭代，并用检查系统验收。' },
 } as const satisfies Record<WorkspacePanel, { label: string; hint: string }>;
 
 const liveArtifactTypes = ['stdout', 'stderr', 'summary', 'changes', 'patch'] as const;
@@ -1280,6 +1282,15 @@ export function TasksView() {
                 )}
               </div>
             </section>
+          </TabsContent>
+
+          <TabsContent value="autonomy" className="space-y-4">
+            <AutonomyPanel
+              task={selectedTask}
+              onTaskRefresh={() => {
+                void loadTaskDetail(selectedTask.id);
+              }}
+            />
           </TabsContent>
         </Tabs>
       </div>

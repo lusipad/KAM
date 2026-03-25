@@ -1,6 +1,10 @@
 import axios from 'axios';
 import type {
   AgentRunRecord,
+  AutonomyMetrics,
+  AutonomySession,
+  AutonomySessionCreateInput,
+  AutonomySessionListResponse,
   LegacyTaskRefInput,
   ReviewCompareResponse,
   ReviewData,
@@ -92,6 +96,18 @@ export const reviewsApi = {
   getByTaskId: (taskId: string) => get<ReviewData>(`/reviews/${taskId}`),
   compare: (taskId: string, data: { run_ids?: string[] }) =>
     post<ReviewCompareResponse, { run_ids?: string[] }>(`/reviews/${taskId}/compare`, data),
+};
+
+export const autonomyApi = {
+  listTaskSessions: (taskId: string) => get<AutonomySessionListResponse>(`/tasks/${taskId}/autonomy/sessions`),
+  createTaskSession: (taskId: string, data: AutonomySessionCreateInput) =>
+    post<AutonomySession, AutonomySessionCreateInput>(`/tasks/${taskId}/autonomy/sessions`, data),
+  createDogfoodSession: (taskId: string) => post<AutonomySession>(`/tasks/${taskId}/autonomy/dogfood`),
+  getTaskMetrics: (taskId: string) => get<AutonomyMetrics>(`/tasks/${taskId}/autonomy/metrics`),
+  getSession: (sessionId: string) => get<AutonomySession>(`/autonomy/sessions/${sessionId}`),
+  startSession: (sessionId: string) => post<AutonomySession>(`/autonomy/sessions/${sessionId}/start`),
+  interruptSession: (sessionId: string) => post<AutonomySession>(`/autonomy/sessions/${sessionId}/interrupt`),
+  getMetrics: () => get<AutonomyMetrics>('/autonomy/metrics'),
 };
 
 export default api;

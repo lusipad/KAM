@@ -3,7 +3,7 @@ Lite 任务与 Agent Run 模型
 """
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, JSON, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
@@ -31,6 +31,12 @@ class TaskCard(Base):
         order_by="ContextSnapshot.created_at.desc()",
     )
     runs = relationship("AgentRun", back_populates="task", cascade="all, delete-orphan", order_by="AgentRun.created_at.desc()")
+    autonomy_sessions = relationship(
+        "AutonomySession",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="AutonomySession.created_at.desc()",
+    )
 
     __table_args__ = (
         Index("idx_task_cards_status", "status"),
@@ -193,4 +199,105 @@ class RunArtifact(Base):
             "path": self.path,
             "metadata": self.metadata_ or {},
             "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class AutonomySession(Base):
+    __tablename__ = "autonomy_sessions"
+
+    id = Column(uuid_type(), primary_key=True, default=uuid_default)
+    task_id = Column(uuid_type(), ForeignKey("task_cards.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(200), nullable=False)
+    objective = Column(Text, default="")
+    status = Column(String(20), default="draft")  # draft, running, completed, failed, interrupted
+    repo_path = Column(String(1000), nullable=True)
+    primary_agent_name = Column(String(100), nullable=False)
+    primary_agent_type = Column(String(50), default="codex")
+    primary_agent_command = Column(Text, nullable=True)
+    max_iterations = Column(Integer, default=3)
+    current_iteration = Column(Integer, default=0)
+    interruption_count = Column(Integer, default=0)
+    success_criteria = Column(Text, default="")
+    check_commands = Column(JSON, default=list)
+    metadata_ = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    task = relationship("TaskCard", back_populates="autonomy_sessions")
+    cycles = relationship(
+        "AutonomyCycle",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="AutonomyCycle.iteration.desc()",
+    )
+
+    __table_args__ = (
+        Index("idx_autonomy_sessions_task", "task_id"),
+        Index("idx_autonomy_sessions_status", "status"),
+    )
+
+    def to_dict(self, include_cycles: bool = True):
+        data = {
+            "id": str(self.id),
+            "taskId": str(self.task_id),
+            "title": self.title,
+            "objective": self.objective,
+            "status": self.status,
+            "repoPath": self.repo_path,
+            "primaryAgentName": self.primary_agent_name,
+            "primaryAgentType": self.primary_agent_type,
+            "primaryAgentCommand": self.primary_agent_command,
+            "maxIterations": self.max_iterations,
+            "currentIteration": self.current_iteration,
+            "interruptionCount": self.interruption_count,
+            "successCriteria": self.success_criteria,
+            "checkCommands": self.check_commands or [],
+            "metadata": self.metadata_ or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+            "completedAt": self.completed_at.isoformat() if self.completed_at else None,
+        }
+        if include_cycles:
+            data["cycles"] = [cycle.to_dict() for cycle in self.cycles] if self.cycles else []
+        else:
+            data["latestCycle"] = self.cycles[0].to_dict() if self.cycles else None
+        return data
+
+
+class AutonomyCycle(Base):
+    __tablename__ = "autonomy_cycles"
+
+    id = Column(uuid_type(), primary_key=True, default=uuid_default)
+    session_id = Column(uuid_type(), ForeignKey("autonomy_sessions.id", ondelete="CASCADE"), nullable=False)
+    iteration = Column(Integer, nullable=False)
+    status = Column(String(20), default="planned")  # running, checking, passed, failed, interrupted
+    worker_run_id = Column(uuid_type(), ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True)
+    feedback_summary = Column(Text, default="")
+    check_results = Column(JSON, default=list)
+    metadata_ = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    session = relationship("AutonomySession", back_populates="cycles")
+    worker_run = relationship("AgentRun")
+
+    __table_args__ = (
+        Index("idx_autonomy_cycles_session", "session_id"),
+        Index("idx_autonomy_cycles_status", "status"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "sessionId": str(self.session_id),
+            "iteration": self.iteration,
+            "status": self.status,
+            "workerRunId": str(self.worker_run_id) if self.worker_run_id else None,
+            "workerRun": self.worker_run.to_dict(include_artifacts=False) if self.worker_run else None,
+            "feedbackSummary": self.feedback_summary,
+            "checkResults": self.check_results or [],
+            "metadata": self.metadata_ or {},
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "completedAt": self.completed_at.isoformat() if self.completed_at else None,
         }
