@@ -45,7 +45,10 @@ KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Pro
 - `GET/POST /api/v2/projects/:id/threads`
 - `GET /api/v2/threads/:id`
 - `POST /api/v2/threads/:id/messages`
+  - 默认返回 JSON
+  - 当 `Accept: text/event-stream` 时返回 SSE
 - `POST /api/v2/threads/:id/messages/stream`
+  - SSE 兼容入口
 - `GET/POST /api/v2/threads/:id/runs`
 - `POST /api/v2/threads/:id/compare`
 - `GET /api/v2/runs/:id`

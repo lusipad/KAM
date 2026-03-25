@@ -104,6 +104,7 @@ Frontend KAM Workspace
 ### 6.1 Message -> Router -> Run
 
 - 用户向 Thread 发送消息
+- `POST /api/v2/threads/:id/messages` 在普通模式下返回 JSON，在 `Accept: text/event-stream` 时直接返回消息 SSE
 - Router 判断是纯回复、执行、还是 compare
 - Context Assembler 自动拼装上下文
 - RunService 创建 Run

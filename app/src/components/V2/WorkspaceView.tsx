@@ -254,6 +254,40 @@ function checkOutputText(item: Record<string, unknown>) {
   return asString(item.stderrPreview) || asString(item.stdoutPreview) || asString(item.output);
 }
 
+function countChangedFiles(changesArtifact?: ThreadRunArtifactRecord) {
+  const metadata = (changesArtifact?.metadata || {}) as Record<string, unknown>;
+  const changed = metadata.changed;
+  if (typeof changed === 'number' && Number.isFinite(changed)) {
+    return Math.max(0, changed);
+  }
+  const files = metadata.files;
+  if (Array.isArray(files)) {
+    return files.length;
+  }
+
+  const content = changesArtifact?.content || '';
+  const match = content.match(/Changed files:\s*(\d+)/i);
+  if (!match) return 0;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+}
+
+function runCompareMetrics(run: ConversationRun) {
+  const artifactIndex = buildArtifactIndex(run.artifacts);
+  const checks = parseCheckResults(artifactIndex.check_result?.content);
+  const passedChecks = checks.filter((item) => Boolean(item.passed)).length;
+  const failedChecks = Math.max(0, checks.length - passedChecks);
+  const changedFiles = countChangedFiles(artifactIndex.changes);
+  const summary = (artifactIndex.summary?.content || run.error || '暂无摘要').trim();
+  return {
+    checksTotal: checks.length,
+    passedChecks,
+    failedChecks,
+    changedFiles,
+    summary,
+  };
+}
+
 function summaryText(run?: ConversationRun | null) {
   const artifacts = buildArtifactIndex(run?.artifacts);
   return artifacts.summary?.content?.trim() || run?.error || '暂无摘要';
@@ -580,6 +614,35 @@ export function WorkspaceView() {
     () => (selectedCompareGroup?.runs || []).filter((run) => isActiveRun(compareRunDetails[run.id] || run)).length,
     [compareRunDetails, selectedCompareGroup],
   );
+  const selectedCompareOverview = useMemo(() => {
+    if (!selectedCompareGroup) {
+      return null;
+    }
+
+    const analyzedRuns = selectedCompareGroup.runs.map((run) => {
+      const detailRun = compareRunDetails[run.id] || run;
+      return {
+        run: detailRun,
+        metrics: runCompareMetrics(detailRun),
+      };
+    });
+    const statusCounts = {
+      passed: analyzedRuns.filter((item) => item.run.status === 'passed').length,
+      failed: analyzedRuns.filter((item) => ['failed', 'cancelled'].includes(item.run.status)).length,
+      active: analyzedRuns.filter((item) => isActiveRun(item.run)).length,
+    };
+    const maxChangedFiles = analyzedRuns.reduce(
+      (current, item) => Math.max(current, item.metrics.changedFiles),
+      0,
+    );
+    return {
+      analyzedRuns,
+      statusCounts,
+      maxChangedFiles,
+      totalChecks: analyzedRuns.reduce((total, item) => total + item.metrics.checksTotal, 0),
+      totalFailedChecks: analyzedRuns.reduce((total, item) => total + item.metrics.failedChecks, 0),
+    };
+  }, [compareRunDetails, selectedCompareGroup]);
 
   useEffect(() => {
     if (!detailRounds.length) {
@@ -2334,6 +2397,33 @@ export function WorkspaceView() {
                       </div>
                       <Badge variant="secondary">{selectedCompareGroup.runs.length} 路</Badge>
                     </div>
+                    {selectedCompareOverview ? (
+                      <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+                        <div className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Passed</div>
+                          <div className="mt-1 font-medium text-foreground">{selectedCompareOverview.statusCounts.passed}</div>
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Failed</div>
+                          <div className="mt-1 font-medium text-foreground">{selectedCompareOverview.statusCounts.failed}</div>
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Active</div>
+                          <div className="mt-1 font-medium text-foreground">{selectedCompareOverview.statusCounts.active}</div>
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Checks</div>
+                          <div className="mt-1 font-medium text-foreground">
+                            {selectedCompareOverview.totalChecks}
+                            {selectedCompareOverview.totalFailedChecks ? ` · fail ${selectedCompareOverview.totalFailedChecks}` : ' · all pass'}
+                          </div>
+                        </div>
+                        <div className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Max Changed Files</div>
+                          <div className="mt-1 font-medium text-foreground">{selectedCompareOverview.maxChangedFiles}</div>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="mt-4 flex flex-wrap gap-2">
                       {compareArtifactTypes.map((type) => (
                         <button
@@ -2353,6 +2443,7 @@ export function WorkspaceView() {
                         const detailRun = compareRunDetails[run.id] || run;
                         const compareIndex = buildArtifactIndex(detailRun.artifacts);
                         const checks = parseCheckResults(compareIndex.check_result?.content);
+                        const metrics = runCompareMetrics(detailRun);
                         const compareArtifact = compareIndex[compareArtifactType];
                         const preview = compareArtifactType === 'summary'
                           ? compareArtifact?.content || summaryText(detailRun)
@@ -2386,6 +2477,21 @@ export function WorkspaceView() {
                               <div className="rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
                                 <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Artifacts</div>
                                 <div className="mt-1 font-medium text-foreground">{detailRun.artifacts?.length || 0}</div>
+                              </div>
+                            </div>
+                            <div className="mt-3 rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-xs">
+                              <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                                <span>Checks</span>
+                                <span>{metrics.checksTotal}</span>
+                                <span>·</span>
+                                <span>Pass {metrics.passedChecks}</span>
+                                <span>·</span>
+                                <span>Fail {metrics.failedChecks}</span>
+                                <span>·</span>
+                                <span>Changed Files {metrics.changedFiles}</span>
+                              </div>
+                              <div className="mt-2 text-xs leading-6 text-muted-foreground">
+                                {artifactPreview(metrics.summary, 180)}
                               </div>
                             </div>
                             {compareArtifactType === 'check_result' ? (

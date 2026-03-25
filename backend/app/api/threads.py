@@ -96,6 +96,11 @@ def _chunk_text(content: str, chunk_size: int = 36) -> list[str]:
     return [text[index:index + chunk_size] for index in range(0, len(text), chunk_size)]
 
 
+def _wants_sse_response(request: Request) -> bool:
+    accept = request.headers.get("accept", "")
+    return "text/event-stream" in accept.lower()
+
+
 def _process_thread_message(
     *,
     thread_id: str,
@@ -137,6 +142,96 @@ def _process_thread_message(
         )
 
     return message, reply, routed
+
+
+def _message_streaming_response(*, thread_id: str, data: MessageCreate, request: Request) -> StreamingResponse:
+    async def event_stream():
+        stream_db = SessionLocal()
+        try:
+            stream_thread_service = ThreadService(stream_db)
+            stream_conversation_router = ConversationRouter(stream_db)
+            message, reply, routed = _process_thread_message(
+                thread_id=thread_id,
+                data=data,
+                thread_service=stream_thread_service,
+                conversation_router=stream_conversation_router,
+            )
+
+            yield _encode_sse_event(
+                "message-saved",
+                {
+                    "message": message.to_dict(include_runs=True),
+                },
+            )
+
+            if reply:
+                accumulated = ""
+                for chunk in _chunk_text(reply.content):
+                    if await request.is_disconnected():
+                        return
+                    accumulated += chunk
+                    yield _encode_sse_event(
+                        "assistant-reply-delta",
+                        {
+                            "delta": chunk,
+                            "content": accumulated,
+                        },
+                    )
+                    await asyncio.sleep(0)
+
+                yield _encode_sse_event(
+                    "assistant-reply-complete",
+                    {
+                        "reply": reply.to_dict(include_runs=True),
+                    },
+                )
+
+            if routed.get("runs"):
+                yield _encode_sse_event(
+                    "runs-created",
+                    {
+                        "runs": routed.get("runs") or [],
+                        "compareId": routed.get("compareId"),
+                        "routerMode": routed.get("routerMode") or "heuristic",
+                    },
+                )
+
+            final_payload = _build_message_response(
+                thread_service=stream_thread_service,
+                thread_id=thread_id,
+                message=message,
+                reply=reply,
+                routed=routed,
+            )
+            yield _encode_sse_event("result", final_payload)
+            yield _encode_sse_event("done", final_payload)
+        except HTTPException as error:
+            yield _encode_sse_event(
+                "error",
+                {
+                    "message": error.detail,
+                    "statusCode": error.status_code,
+                },
+            )
+        except Exception as error:
+            yield _encode_sse_event(
+                "error",
+                {
+                    "message": str(error),
+                },
+            )
+        finally:
+            stream_db.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/projects/{project_id}/threads")
@@ -289,8 +384,15 @@ async def bootstrap_message(data: BootstrapMessageCreate, db: Session = Depends(
 
 
 @router.post("/threads/{thread_id}/messages")
-async def create_message(thread_id: str, data: MessageCreate, db: Session = Depends(get_db)):
+async def create_message(thread_id: str, data: MessageCreate, request: Request, db: Session = Depends(get_db)):
     thread_service = ThreadService(db)
+    thread = thread_service.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="线程不存在")
+
+    if _wants_sse_response(request):
+        return _message_streaming_response(thread_id=thread_id, data=data, request=request)
+
     conversation_router = ConversationRouter(db)
 
     message, reply, routed = _process_thread_message(
@@ -315,91 +417,4 @@ async def create_message_stream(thread_id: str, data: MessageCreate, request: Re
     thread = thread_service.get_thread(thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="线程不存在")
-
-    async def event_stream():
-        stream_db = SessionLocal()
-        try:
-            stream_thread_service = ThreadService(stream_db)
-            stream_conversation_router = ConversationRouter(stream_db)
-            message, reply, routed = _process_thread_message(
-                thread_id=thread_id,
-                data=data,
-                thread_service=stream_thread_service,
-                conversation_router=stream_conversation_router,
-            )
-
-            yield _encode_sse_event(
-                "message-saved",
-                {
-                    "message": message.to_dict(include_runs=True),
-                },
-            )
-
-            if reply:
-                accumulated = ""
-                for chunk in _chunk_text(reply.content):
-                    if await request.is_disconnected():
-                        return
-                    accumulated += chunk
-                    yield _encode_sse_event(
-                        "assistant-reply-delta",
-                        {
-                            "delta": chunk,
-                            "content": accumulated,
-                        },
-                    )
-                    await asyncio.sleep(0)
-
-                yield _encode_sse_event(
-                    "assistant-reply-complete",
-                    {
-                        "reply": reply.to_dict(include_runs=True),
-                    },
-                )
-
-            if routed.get("runs"):
-                yield _encode_sse_event(
-                    "runs-created",
-                    {
-                        "runs": routed.get("runs") or [],
-                        "compareId": routed.get("compareId"),
-                        "routerMode": routed.get("routerMode") or "heuristic",
-                    },
-                )
-
-            final_payload = _build_message_response(
-                thread_service=stream_thread_service,
-                thread_id=thread_id,
-                message=message,
-                reply=reply,
-                routed=routed,
-            )
-            yield _encode_sse_event("result", final_payload)
-            yield _encode_sse_event("done", final_payload)
-        except HTTPException as error:
-            yield _encode_sse_event(
-                "error",
-                {
-                    "message": error.detail,
-                    "statusCode": error.status_code,
-                },
-            )
-        except Exception as error:
-            yield _encode_sse_event(
-                "error",
-                {
-                    "message": str(error),
-                },
-            )
-        finally:
-            stream_db.close()
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return _message_streaming_response(thread_id=thread_id, data=data, request=request)
