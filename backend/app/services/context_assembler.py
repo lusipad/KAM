@@ -26,16 +26,18 @@ class ContextAssembler:
         project = thread.project
         project_id = str(project.id) if project else None
         recent_runs = [run.to_dict(include_artifacts=False) for run in self.run_service.list_runs(thread_id)[:3]]
-        preferences = [item.to_dict() for item in self.memory_service.list_preferences()[:20]]
-        decisions = [
+        recent_messages = [message.to_dict() for message in (thread.messages or [])[-10:]]
+        memory_query = self._build_memory_query(thread)
+        searched_memories = self.memory_service.search(query=memory_query, project_id=project_id) if memory_query else {}
+        preferences = searched_memories.get("preferences") or [item.to_dict() for item in self.memory_service.list_preferences()[:20]]
+        decisions = searched_memories.get("decisions") or [
             item.to_dict()
             for item in self.memory_service.list_decisions(project_id=project_id)[:5]
         ]
-        learnings = [
+        learnings = searched_memories.get("learnings") or [
             item.to_dict()
             for item in self.memory_service.list_learnings(project_id=project_id)[:8]
         ]
-        recent_messages = [message.to_dict() for message in (thread.messages or [])[-10:]]
 
         return {
             "summary": self._summarize_thread(thread),
@@ -44,9 +46,9 @@ class ContextAssembler:
             "pinnedResources": project.to_dict(include_relations=True).get("pinnedResources", []) if project else [],
             "recentMessages": recent_messages,
             "recentRuns": recent_runs,
-            "preferences": preferences,
-            "decisions": decisions,
-            "learnings": learnings,
+            "preferences": preferences[:12],
+            "decisions": decisions[:8],
+            "learnings": learnings[:8],
         }
 
     def _summarize_thread(self, thread: Thread) -> str:
@@ -58,3 +60,22 @@ class ContextAssembler:
             text = message.content.strip().replace("\n", " ")
             parts.append(f"- {role}: {text[:120]}")
         return "\n".join(parts)
+
+    def _build_memory_query(self, thread: Thread) -> str:
+        parts: list[str] = []
+        if thread.title:
+            parts.append(thread.title.strip())
+
+        user_messages = [message for message in list(thread.messages or []) if message.role == "user"]
+        for message in user_messages[-3:]:
+            text = " ".join(message.content.strip().split())
+            if text:
+                parts.append(text[:240])
+
+        if not parts:
+            summary = self._summarize_thread(thread).strip()
+            if summary:
+                parts.append(summary)
+
+        query = " ".join(part for part in parts if part).strip()
+        return query[:800]

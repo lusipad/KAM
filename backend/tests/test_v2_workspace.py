@@ -15,7 +15,8 @@ os.environ["OPENAI_API_KEY"] = ""
 
 from app.main import app
 from app.core.config import settings
-from app.db.base import Base, engine
+from app.db.base import Base, SessionLocal, engine
+from app.services.context_assembler import ContextAssembler
 
 
 class V2WorkspaceApiTests(unittest.TestCase):
@@ -470,6 +471,113 @@ class V2WorkspaceApiTests(unittest.TestCase):
                     self.assertIn("semanticScore", decisions[0])
                     self.assertIn("searchScore", decisions[0])
                     self.assertIn(decisions[0]["matchType"], {"semantic", "hybrid"})
+        finally:
+            settings.OPENAI_API_KEY = previous_key
+
+    def test_context_assembler_prioritizes_semantic_memories_for_current_thread(self):
+        class FakeEmbeddingResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    'data': [
+                        {
+                            'embedding': [1.0, 0.0],
+                        }
+                    ]
+                }
+
+        previous_key = settings.OPENAI_API_KEY
+        settings.OPENAI_API_KEY = 'test-key'
+        try:
+            with patch('app.services.memory_service.httpx.post', return_value=FakeEmbeddingResponse()):
+                with TestClient(app) as client:
+                    project = client.post(
+                        "/api/v2/projects",
+                        json={"title": "Assembler memory project"},
+                    ).json()
+                    thread = client.post(
+                        f"/api/v2/projects/{project['id']}/threads",
+                        json={"title": "Monorepo 包管理方案"},
+                    ).json()
+
+                    client.post(
+                        "/api/v2/memory/preferences",
+                        json={
+                            "category": "tool",
+                            "key": "package-manager",
+                            "value": "pnpm workspace",
+                            "sourceThreadId": thread["id"],
+                        },
+                    )
+                    client.post(
+                        "/api/v2/memory/decisions",
+                        json={
+                            "projectId": project["id"],
+                            "question": "monorepo 默认用哪个包管理器？",
+                            "decision": "pnpm workspace",
+                            "reasoning": "workspace 依赖管理更稳定",
+                            "sourceThreadId": thread["id"],
+                        },
+                    )
+                    client.post(
+                        "/api/v2/memory/learnings",
+                        json={
+                            "projectId": project["id"],
+                            "content": "Monorepo 环境里 pnpm workspace 对依赖链接和安装速度更稳定。",
+                        },
+                    )
+
+                    client.post(
+                        "/api/v2/memory/preferences",
+                        json={
+                            "category": "tool",
+                            "key": "formatter",
+                            "value": "ruff format",
+                            "embedding": [0.0, 1.0],
+                            "sourceThreadId": thread["id"],
+                        },
+                    )
+                    client.post(
+                        "/api/v2/memory/decisions",
+                        json={
+                            "projectId": project["id"],
+                            "question": "代码格式工具选什么？",
+                            "decision": "ruff format",
+                            "reasoning": "速度更快",
+                            "embedding": [0.0, 1.0],
+                            "sourceThreadId": thread["id"],
+                        },
+                    )
+                    client.post(
+                        "/api/v2/memory/learnings",
+                        json={
+                            "projectId": project["id"],
+                            "content": "Ruff format 适合统一 Python 代码风格。",
+                            "embedding": [0.0, 1.0],
+                        },
+                    )
+
+                    posted = client.post(
+                        f"/api/v2/threads/{thread['id']}/messages",
+                        json={
+                            "content": "继续整理 monorepo 的包管理器方案，这轮先不要执行。",
+                            "createRun": False,
+                        },
+                    )
+                    self.assertEqual(posted.status_code, 200)
+
+                    db = SessionLocal()
+                    try:
+                        context = ContextAssembler(db).assemble(thread["id"])
+                    finally:
+                        db.close()
+
+                    self.assertIsNotNone(context)
+                    self.assertEqual(context["preferences"][0]["key"], "package-manager")
+                    self.assertEqual(context["decisions"][0]["decision"], "pnpm workspace")
+                    self.assertIn("pnpm workspace", context["learnings"][0]["content"])
         finally:
             settings.OPENAI_API_KEY = previous_key
 
