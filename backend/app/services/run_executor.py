@@ -131,7 +131,11 @@ class RunExecutionManager:
                 **(run.metadata_ or {}),
                 "executionCwd": execution["execution_cwd"],
                 "commandLine": execution["display_command"],
+                "repoRoot": execution["repo_root"],
                 "worktree": execution["worktree"],
+                "worktreeReady": execution["worktree_ready"],
+                "worktreeReason": execution["worktree_reason"],
+                "runtimeHydration": execution["runtime_hydration"],
             }
             self._ensure_artifact(
                 db,
@@ -254,16 +258,28 @@ class RunExecutionManager:
 
         execution_cwd = run_dir
         created_worktree: Path | None = None
+        repo_root: Path | None = None
+        worktree_ready = False
+        worktree_reason = ""
+        runtime_hydration = {
+            "nodeModulesLinked": False,
+            "venvLinked": False,
+            "nodeModulesAvailable": False,
+            "venvAvailable": False,
+        }
 
         repo_path = self._resolve_repo_path(task)
         if repo_path:
+            repo_root = self._get_git_root(repo_path) or repo_path
             candidate_worktree = run_dir / "workspace"
-            if self._create_git_worktree(repo_path, candidate_worktree):
+            worktree_ready, worktree_reason = self._create_git_worktree(repo_path, candidate_worktree)
+            if worktree_ready:
                 created_worktree = candidate_worktree
                 execution_cwd = created_worktree
-                self._hydrate_worktree_runtime(repo_path, execution_cwd)
+                runtime_hydration = self._hydrate_worktree_runtime(repo_path, execution_cwd)
             else:
                 execution_cwd = repo_path
+                runtime_hydration = self._runtime_availability(repo_path)
 
         prompt_path = run_dir / "prompt.md"
         context_path = run_dir / "context.json"
@@ -289,7 +305,11 @@ class RunExecutionManager:
                 "stderr_path": stderr_path,
                 "summary_path": summary_path,
                 "shell": False,
+                "repo_root": str(repo_root or repo_path or execution_cwd),
                 "worktree": str(created_worktree) if created_worktree else None,
+                "worktree_ready": worktree_ready,
+                "worktree_reason": worktree_reason,
+                "runtime_hydration": runtime_hydration,
             }
 
         if run.agent_type == "codex":
@@ -328,7 +348,11 @@ class RunExecutionManager:
             "stderr_path": stderr_path,
             "summary_path": summary_path,
             "shell": False,
+            "repo_root": str(repo_root or repo_path or execution_cwd),
             "worktree": str(created_worktree) if created_worktree else None,
+            "worktree_ready": worktree_ready,
+            "worktree_reason": worktree_reason,
+            "runtime_hydration": runtime_hydration,
         }
 
     def _resolve_summary(self, summary_path: Path | None, stdout_text: str, stderr_text: str) -> str:
@@ -531,13 +555,13 @@ class RunExecutionManager:
                 return candidate
         return None
 
-    def _create_git_worktree(self, repo_path: Path, worktree_path: Path) -> bool:
+    def _create_git_worktree(self, repo_path: Path, worktree_path: Path) -> tuple[bool, str]:
         repo_root = self._get_git_root(repo_path)
         if not repo_root:
-            return False
+            return False, "repo-path 不是有效的 Git 仓库"
 
         if worktree_path.exists():
-            return True
+            return True, ""
 
         try:
             subprocess.run(
@@ -548,9 +572,14 @@ class RunExecutionManager:
                 encoding="utf-8",
                 errors="replace",
             )
-            return True
-        except Exception:
-            return False
+            return True, ""
+        except subprocess.CalledProcessError as exc:
+            stderr_text = (exc.stderr or "").strip()
+            stdout_text = (exc.stdout or "").strip()
+            detail = stderr_text or stdout_text or str(exc)
+            return False, detail
+        except Exception as exc:
+            return False, str(exc)
 
     def _get_git_root(self, path: Path) -> Path | None:
         try:
@@ -567,12 +596,35 @@ class RunExecutionManager:
         except Exception:
             return None
 
-    def _hydrate_worktree_runtime(self, repo_root: Path, worktree_root: Path) -> None:
+    def _hydrate_worktree_runtime(self, repo_root: Path, worktree_root: Path) -> dict[str, bool]:
+        result = {
+            "nodeModulesLinked": False,
+            "venvLinked": False,
+            "nodeModulesAvailable": False,
+            "venvAvailable": False,
+        }
         if worktree_root.resolve() == repo_root.resolve():
-            return
+            return self._runtime_availability(worktree_root)
 
-        self._link_directory(repo_root / "app" / "node_modules", worktree_root / "app" / "node_modules")
-        self._link_directory(repo_root / ".venv", worktree_root / ".venv")
+        result["nodeModulesLinked"] = self._link_directory(
+            repo_root / "app" / "node_modules",
+            worktree_root / "app" / "node_modules",
+        )
+        result["venvLinked"] = self._link_directory(
+            repo_root / ".venv",
+            worktree_root / ".venv",
+        )
+        result["nodeModulesAvailable"] = (worktree_root / "app" / "node_modules").exists()
+        result["venvAvailable"] = (worktree_root / ".venv").exists()
+        return result
+
+    def _runtime_availability(self, root: Path) -> dict[str, bool]:
+        return {
+            "nodeModulesLinked": False,
+            "venvLinked": False,
+            "nodeModulesAvailable": (root / "app" / "node_modules").exists(),
+            "venvAvailable": (root / ".venv").exists(),
+        }
 
     def _link_directory(self, source: Path, target: Path) -> bool:
         if not source.exists() or target.exists():

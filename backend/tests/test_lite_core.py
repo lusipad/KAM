@@ -101,7 +101,7 @@ class LiteCoreApiTests(unittest.TestCase):
             self.assertEqual(comparison.status_code, 200)
             self.assertEqual(comparison.json()["comparison"][0]["status"], "completed")
 
-    def test_run_worktree_hydrates_runtime_dependencies(self):
+    def test_run_execution_reports_worktree_runtime_status(self):
         command = "Set-Content -Path (Join-Path '{run_dir}' 'final.md') -Value 'runtime hydrated'"
 
         with TestClient(app) as client:
@@ -134,13 +134,26 @@ class LiteCoreApiTests(unittest.TestCase):
             self.assertEqual(run_payload["status"], "completed")
             self._wait_for_run_cleanup(run_id)
 
-            worktree_root = Path(run_payload["metadata"]["worktree"])
-            self.assertTrue(worktree_root.exists())
+            metadata = run_payload["metadata"]
+            self.assertIn("worktreeReady", metadata)
+            self.assertIn("runtimeHydration", metadata)
+            self.assertIn("executionCwd", metadata)
 
-            if Path("D:/Repos/KAM/app/node_modules").exists():
-                self.assertTrue((worktree_root / "app" / "node_modules").exists())
-            if Path("D:/Repos/KAM/.venv").exists():
-                self.assertTrue((worktree_root / ".venv").exists())
+            worktree = metadata.get("worktree")
+            if worktree:
+                worktree_root = Path(worktree)
+                self.assertTrue(metadata["worktreeReady"])
+                self.assertTrue(worktree_root.exists())
+                if Path("D:/Repos/KAM/app/node_modules").exists():
+                    self.assertTrue((worktree_root / "app" / "node_modules").exists())
+                    self.assertTrue(metadata["runtimeHydration"]["nodeModulesAvailable"])
+                if Path("D:/Repos/KAM/.venv").exists():
+                    self.assertTrue((worktree_root / ".venv").exists())
+                    self.assertTrue(metadata["runtimeHydration"]["venvAvailable"])
+            else:
+                self.assertFalse(metadata["worktreeReady"])
+                self.assertTrue(metadata.get("worktreeReason"))
+                self.assertTrue(Path(metadata["executionCwd"]).exists())
 
     def test_autonomy_session_completes_with_checks_and_updates_metrics(self):
         command = (
