@@ -155,3 +155,8 @@ export interface PostThreadMessageResponse {
   routerMode?: string;
   compareId?: string | null;
 }
+
+export interface BootstrapThreadMessageResponse extends PostThreadMessageResponse {
+  project: ProjectRecord;
+  thread: ProjectThread;
+}

@@ -21,11 +21,13 @@ import {
   Trash2,
   Undo2,
 } from 'lucide-react';
-import { getV2RunEventsUrl, v2MemoryApi, v2ProjectsApi, v2RunsApi, v2ThreadsApi } from '@/lib/api-v2';
+import { getV2RunEventsUrl, getV2ThreadEventsUrl, v2MemoryApi, v2ProjectsApi, v2RunsApi, v2ThreadsApi } from '@/lib/api-v2';
 import type {
+  BootstrapThreadMessageResponse,
   CompareAgentSpec,
   ConversationRun,
   DecisionRecord,
+  PostThreadMessageResponse,
   ProjectFileTreeRecord,
   ProjectLearningRecord,
   ProjectRecord,
@@ -48,6 +50,32 @@ type CompareGroup = {
   createdAt?: string | Date;
   runs: ConversationRun[];
 };
+
+const WORKSPACE_STORAGE_KEY = 'kam.v2.workspace';
+
+function readStoredWorkspaceState(): {
+  selectedProjectId?: string | null;
+  selectedThreadId?: string | null;
+  activePanel?: PanelTab;
+} {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as {
+      selectedProjectId?: string | null;
+      selectedThreadId?: string | null;
+      activePanel?: PanelTab;
+    };
+    return {
+      selectedProjectId: typeof parsed.selectedProjectId === 'string' ? parsed.selectedProjectId : null,
+      selectedThreadId: typeof parsed.selectedThreadId === 'string' ? parsed.selectedThreadId : null,
+      activePanel: parsed.activePanel || 'project',
+    };
+  } catch {
+    return {};
+  }
+}
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error && error.message ? error.message : '请求失败，请稍后再试。';
@@ -118,10 +146,10 @@ function commandLine(run?: ConversationRun | null) {
 
 export function WorkspaceView() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => readStoredWorkspaceState().selectedProjectId ?? null);
   const [selectedProject, setSelectedProject] = useState<ProjectRecord | null>(null);
   const [threads, setThreads] = useState<ProjectThread[]>([]);
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(() => readStoredWorkspaceState().selectedThreadId ?? null);
   const [selectedThread, setSelectedThread] = useState<ProjectThread | null>(null);
   const [projectTitle, setProjectTitle] = useState('');
   const [threadTitle, setThreadTitle] = useState('');
@@ -129,7 +157,7 @@ export function WorkspaceView() {
   const [autoRun, setAutoRun] = useState(true);
   const [agent, setAgent] = useState('codex');
   const [customCommand, setCustomCommand] = useState('');
-  const [activePanel, setActivePanel] = useState<PanelTab>('project');
+  const [activePanel, setActivePanel] = useState<PanelTab>(() => readStoredWorkspaceState().activePanel ?? 'project');
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] = useState<ConversationRun | null>(null);
   const [detailArtifactType, setDetailArtifactType] = useState('summary');
@@ -194,13 +222,51 @@ export function WorkspaceView() {
   }, [selectedThreadId]);
 
   useEffect(() => {
-    const hasActiveRuns = (selectedThread?.runs || []).some((run) => isActiveRun(run));
-    if (!selectedThreadId || !hasActiveRuns) return;
-    const timer = window.setInterval(() => {
-      void loadThread(selectedThreadId);
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [selectedThread, selectedThreadId]);
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      WORKSPACE_STORAGE_KEY,
+      JSON.stringify({
+        selectedProjectId,
+        selectedThreadId,
+        activePanel,
+      }),
+    );
+  }, [activePanel, selectedProjectId, selectedThreadId]);
+
+  useEffect(() => {
+    if (!selectedThreadId) return;
+
+    const eventSource = new EventSource(getV2ThreadEventsUrl(selectedThreadId));
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          thread?: ProjectThread;
+          hasActiveRuns?: boolean;
+        };
+        if (!payload.thread) return;
+        const nextThread = payload.thread;
+        setSelectedThread(nextThread);
+        setThreads((current) => {
+          if (current.some((item) => item.id === nextThread.id)) {
+            return current.map((item) => (item.id === nextThread.id ? { ...item, ...nextThread } : item));
+          }
+          return [nextThread, ...current];
+        });
+        if (!payload.hasActiveRuns) {
+          eventSource.close();
+        }
+      } catch {
+        eventSource.close();
+      }
+    };
+    eventSource.onerror = () => {
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [selectedThreadId]);
 
   useEffect(() => {
     if (!selectedProject) return;
@@ -565,18 +631,57 @@ export function WorkspaceView() {
   }
 
   async function handleSendMessage() {
-    if (!selectedThreadId || !messageText.trim()) return;
+    if (!messageText.trim()) return;
     setIsMutating(true);
     try {
       setErrorMessage(null);
-      const response = await v2ThreadsApi.postMessage(selectedThreadId, {
-        content: messageText.trim(),
-        createRun: autoRun,
-        agent,
-        command: agent === 'custom' ? customCommand.trim() || undefined : undefined,
-        model: agent === 'codex' ? 'gpt-5.4' : undefined,
-        reasoningEffort: agent === 'codex' ? 'xhigh' : undefined,
-      });
+
+      const command = agent === 'custom' ? customCommand.trim() || undefined : undefined;
+      const model = agent === 'codex' ? 'gpt-5.4' : undefined;
+      const reasoningEffort = agent === 'codex' ? 'xhigh' : undefined;
+
+      let nextProjectId = selectedProjectId;
+      let nextThreadId = selectedThreadId;
+      let response: PostThreadMessageResponse | BootstrapThreadMessageResponse;
+
+      if (!selectedProjectId) {
+        const bootstrapResponse = await v2ThreadsApi.bootstrapMessage({
+          content: messageText.trim(),
+          createRun: autoRun,
+          agent,
+          command,
+          model,
+          reasoningEffort,
+          projectTitle: projectTitle.trim() || undefined,
+          threadTitle: threadTitle.trim() || undefined,
+        });
+        response = bootstrapResponse;
+        nextProjectId = bootstrapResponse.project.id;
+        nextThreadId = bootstrapResponse.thread.id;
+        setSelectedProjectId(nextProjectId);
+        setSelectedThreadId(nextThreadId);
+        setProjectTitle('');
+        setThreadTitle('');
+      } else {
+        if (!selectedThreadId) {
+          const createdThread = await v2ThreadsApi.create(selectedProjectId, {
+            title: threadTitle.trim() || '新对话',
+          });
+          nextThreadId = createdThread.id;
+          setSelectedThreadId(nextThreadId);
+          setThreadTitle('');
+        }
+
+        response = await v2ThreadsApi.postMessage(nextThreadId as string, {
+          content: messageText.trim(),
+          createRun: autoRun,
+          agent,
+          command,
+          model,
+          reasoningEffort,
+        });
+      }
+
       setMessageText('');
       if (agent === 'custom') setCustomCommand('');
       if (response.runs?.length) {
@@ -589,10 +694,12 @@ export function WorkspaceView() {
           setActivePanel('detail');
         }
       }
-      await loadThread(selectedThreadId);
-      if (selectedProjectId) {
-        await loadProject(selectedProjectId, fileTreePath);
-        await loadMemory(selectedProjectId, memoryQuery);
+      if (nextThreadId) {
+        await loadThread(nextThreadId);
+      }
+      if (nextProjectId) {
+        await loadProject(nextProjectId, fileTreePath);
+        await loadMemory(nextProjectId, memoryQuery);
       }
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
@@ -985,7 +1092,7 @@ export function WorkspaceView() {
           ))}
           {!projects.length && !isLoading && (
             <div className="rounded-2xl border border-dashed border-border/60 px-3 py-5 text-sm text-muted-foreground">
-              先创建一个 Project 开始。
+              你可以先在这里手动建 Project，也可以直接在中间输入第一条任务开始。
             </div>
           )}
         </div>
@@ -1022,7 +1129,7 @@ export function WorkspaceView() {
                 </div>
               </button>
             ))}
-            {!!selectedProjectId && !threads.length && <div className="text-xs text-muted-foreground">还没有线程，先新建一个。</div>}
+            {!!selectedProjectId && !threads.length && <div className="text-xs text-muted-foreground">还没有线程，也可以直接在中间输入任务自动创建。</div>}
           </div>
         </div>
       </section>
@@ -1080,16 +1187,16 @@ export function WorkspaceView() {
           {!selectedThread && (
             <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-3 rounded-[1.75rem] border border-dashed border-border/60 bg-background/40 text-center">
               <Bot className="h-8 w-8 text-primary" />
-              <div className="text-base font-semibold">先选择 Project / Thread</div>
+              <div className="text-base font-semibold">直接开始对话或选择现有 Project / Thread</div>
               <div className="max-w-md text-sm text-muted-foreground">
-                这一版已经切到 v2 心智：Project 管持续上下文，Thread 管连续对话，Run 内联展示，右侧面板负责项目设置、记忆、详情和对比。
+                这一版已经切到 v2 心智：Project 管持续上下文，Thread 管连续对话。你现在可以直接输入第一条消息，系统会自动创建 Project、Thread，并把 Run 内联展示。
               </div>
             </div>
           )}
 
           {!!selectedThread && !selectedThread.messages?.length && (
             <div className="rounded-[1.75rem] border border-dashed border-border/60 bg-background/40 px-5 py-8 text-center text-sm text-muted-foreground">
-              这个 Thread 还没有消息，直接输入任务开始即可。
+              这个 Thread 还没有消息，直接输入任务开始即可；如果还没选中 Thread，也可以直接输入让系统自动创建。
             </div>
           )}
 
@@ -1171,12 +1278,16 @@ export function WorkspaceView() {
               <Textarea
                 value={messageText}
                 onChange={(event) => setMessageText(event.target.value)}
-                placeholder="比如：继续昨天的工作，先把 OAuth token refresh 做完。"
+                placeholder={!selectedProjectId
+                  ? "直接描述你的目标，我会先为你创建 Project 和 Thread。"
+                  : !selectedThreadId
+                    ? "直接输入任务，我会先为当前 Project 创建 Thread。"
+                    : "比如：继续昨天的工作，先把 OAuth token refresh 做完。"}
                 className="min-h-[112px] rounded-[1.3rem]"
-                disabled={!selectedThreadId || isMutating}
+                disabled={isMutating}
               />
               <div className="flex items-center justify-between gap-3 rounded-[1.2rem] border border-border/60 bg-background/50 px-3 py-2 text-xs text-muted-foreground">
-                <div>复杂并发对比放在右侧 `Compare` 面板；这里适合继续当前 Thread。</div>
+                <div>这里既能继续当前 Thread，也能在空白状态下直接启动新的 Project / Thread。</div>
                 <Button
                   type="button"
                   size="sm"
@@ -1224,10 +1335,10 @@ export function WorkspaceView() {
               <Button
                 className="w-full rounded-xl"
                 onClick={() => void handleSendMessage()}
-                disabled={!selectedThreadId || !messageText.trim() || isMutating || (agent === 'custom' && !customCommand.trim())}
+                disabled={!messageText.trim() || isMutating || (agent === 'custom' && !customCommand.trim())}
               >
                 <Send className="mr-2 h-4 w-4" />
-                发送到 Thread
+                {!selectedProjectId ? '开始新项目' : !selectedThreadId ? '开始新线程' : '发送到 Thread'}
               </Button>
             </div>
           </div>

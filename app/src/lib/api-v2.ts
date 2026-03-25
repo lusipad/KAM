@@ -1,5 +1,6 @@
 import axios from 'axios';
 import type {
+  BootstrapThreadMessageResponse,
   CompareAgentSpec,
   ConversationRun,
   DecisionRecord,
@@ -67,6 +68,22 @@ export const v2ThreadsApi = {
       reasoningEffort?: string;
     },
   ) => post<PostThreadMessageResponse, typeof data>(`/v2/threads/${threadId}/messages`, data),
+  bootstrapMessage: (data: {
+    content: string;
+    metadata?: Record<string, unknown>;
+    createRun?: boolean;
+    agent?: string;
+    command?: string;
+    model?: string;
+    reasoningEffort?: string;
+    projectTitle?: string;
+    projectDescription?: string;
+    projectStatus?: string;
+    repoPath?: string;
+    checkCommands?: string[];
+    projectSettings?: Record<string, unknown>;
+    threadTitle?: string;
+  }) => post<BootstrapThreadMessageResponse, typeof data>('/v2/bootstrap/message', data),
 };
 
 export const v2RunsApi = {
@@ -139,4 +156,8 @@ export const v2MemoryApi = {
 
 export function getV2RunEventsUrl(runId: string, tailChars = 20000) {
   return `${API_BASE_URL}/v2/runs/${runId}/events?tail_chars=${tailChars}`;
+}
+
+export function getV2ThreadEventsUrl(threadId: string) {
+  return `${API_BASE_URL}/v2/threads/${threadId}/events`;
 }

@@ -371,6 +371,14 @@ class ConversationRouter:
             memory_text = "，".join(f"{item['key']}={item['value']}" for item in recorded_preferences)
             reply_lines.append(f"我记住了这些偏好：{memory_text}。")
 
+        context_preferences = self._format_context_preferences(context.get("preferences") or [], recorded_preferences)
+        if context_preferences:
+            reply_lines.append(f"我会沿用你的历史偏好：{context_preferences}。")
+
+        context_decisions = self._format_context_decisions(context.get("decisions") or [])
+        if context_decisions:
+            reply_lines.append(f"我也会延续这些历史决策：{context_decisions}。")
+
         if runs:
             if len(runs) == 1:
                 run = runs[0]
@@ -381,7 +389,7 @@ class ConversationRouter:
                 agents = "、".join(run.agent for run in runs)
                 reply_lines.append(f"已并发创建 {len(runs)} 个 runs：{agents}。")
             if context.get("summary"):
-                reply_lines.append("我会把最近对话摘要、钉住资源、历史偏好和决策一并注入到这次执行。")
+                reply_lines.append("我已自动组装当前 Project、最近 Thread 摘要、钉住资源、历史偏好和决策作为执行上下文。")
             if router_mode == "llm":
                 reply_lines.append("本轮意图判断已优先使用 LLM 路由。")
         else:
@@ -390,3 +398,38 @@ class ConversationRouter:
                 reply_lines.append("如果你希望我直接开跑，也可以在发送时显式打开自动 Run。")
 
         return " ".join(reply_lines)
+
+    def _format_context_preferences(
+        self,
+        preferences: list[dict[str, Any]],
+        recorded_preferences: list[dict[str, Any]],
+    ) -> str:
+        recorded_keys = {
+            (str(item.get("category") or ""), str(item.get("key") or ""))
+            for item in recorded_preferences
+        }
+        items: list[str] = []
+        for item in preferences:
+            key = (str(item.get("category") or ""), str(item.get("key") or ""))
+            if key in recorded_keys:
+                continue
+            label = str(item.get("key") or "").strip()
+            value = str(item.get("value") or "").strip()
+            if not label or not value:
+                continue
+            items.append(f"{label}={value}")
+            if len(items) >= 3:
+                break
+        return "；".join(items)
+
+    def _format_context_decisions(self, decisions: list[dict[str, Any]]) -> str:
+        items: list[str] = []
+        for item in decisions:
+            question = str(item.get("question") or "").strip()
+            decision = str(item.get("decision") or "").strip()
+            if not decision:
+                continue
+            items.append(f"{question} → {decision}" if question else decision)
+            if len(items) >= 2:
+                break
+        return "；".join(items)

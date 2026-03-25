@@ -377,6 +377,150 @@ class V2WorkspaceApiTests(unittest.TestCase):
             self.assertEqual(preferences.status_code, 200)
             self.assertEqual(preferences.json()['preferences'][0]['value'], 'pnpm')
 
+    def test_bootstrap_message_creates_project_thread_and_run(self):
+        with TestClient(app) as client:
+            command = (
+                "printf '%s' 'ok' > '{run_dir}/done.txt'; printf '%s' 'bootstrap done' > '{summary_file}'"
+                if os.name != "nt"
+                else "Set-Content -Path (Join-Path '{run_dir}' 'done.txt') -Value 'ok'; Set-Content -Path '{summary_file}' -Value 'bootstrap done'"
+            )
+            created = client.post(
+                '/api/v2/bootstrap/message',
+                json={
+                    'projectTitle': '认证模块重构',
+                    'threadTitle': '首轮分析',
+                    'content': '以后默认用 pnpm，继续修复登录模块',
+                    'agent': 'custom',
+                    'command': command,
+                    'checkCommands': ["test -f '{run_dir}/done.txt'" if os.name != "nt" else "if (!(Test-Path -LiteralPath (Join-Path '{run_dir}' 'done.txt'))) { throw 'missing done.txt'; }"],
+                },
+            )
+            self.assertEqual(created.status_code, 200)
+            payload = created.json()
+            self.assertEqual(payload['project']['title'], '认证模块重构')
+            self.assertEqual(payload['thread']['title'], '首轮分析')
+            self.assertEqual(payload['message']['role'], 'user')
+            self.assertEqual(payload['reply']['role'], 'assistant')
+            self.assertEqual(len(payload['runs']), 1)
+            self.assertEqual(payload['preferences'][0]['key'], 'package-manager')
+
+            run_payload = self._wait_run(client, payload['runs'][0]['id'])
+            self.assertEqual(run_payload['status'], 'passed')
+
+            thread_detail = client.get(f"/api/v2/threads/{payload['thread']['id']}")
+            self.assertEqual(thread_detail.status_code, 200)
+            self.assertGreaterEqual(len(thread_detail.json()['messages']), 2)
+
+    def test_user_message_auto_extracts_resources_to_project(self):
+        with TestClient(app) as client:
+            project = client.post(
+                '/api/v2/projects',
+                json={'title': 'Resources project'},
+            ).json()
+            thread = client.post(
+                f"/api/v2/projects/{project['id']}/threads",
+                json={'title': '资源抽取'},
+            ).json()
+
+            posted = client.post(
+                f"/api/v2/threads/{thread['id']}/messages",
+                json={
+                    'content': '请参考 https://example.com/spec ，并查看 src/auth/refresh.py 和 docs/design/auth-flow.md',
+                    'createRun': False,
+                },
+            )
+            self.assertEqual(posted.status_code, 200)
+
+            project_detail = client.get(f"/api/v2/projects/{project['id']}")
+            self.assertEqual(project_detail.status_code, 200)
+            resources = project_detail.json()['resources']
+            uris = {item['uri'] for item in resources}
+            self.assertIn('https://example.com/spec', uris)
+            self.assertIn('src/auth/refresh.py', uris)
+            self.assertIn('docs/design/auth-flow.md', uris)
+            self.assertTrue(all(item['metadata'].get('autoExtracted') for item in resources))
+
+    def test_router_reply_references_history_preferences_and_decisions(self):
+        with TestClient(app) as client:
+            project = client.post(
+                '/api/v2/projects',
+                json={'title': 'Memory reply project'},
+            ).json()
+            thread = client.post(
+                f"/api/v2/projects/{project['id']}/threads",
+                json={'title': 'Memory reply thread'},
+            ).json()
+
+            preference = client.post(
+                '/api/v2/memory/preferences',
+                json={
+                    'category': 'tool',
+                    'key': 'package-manager',
+                    'value': 'pnpm',
+                    'sourceThreadId': thread['id'],
+                },
+            )
+            self.assertEqual(preference.status_code, 200)
+
+            decision = client.post(
+                '/api/v2/memory/decisions',
+                json={
+                    'projectId': project['id'],
+                    'question': '状态管理选什么？',
+                    'decision': 'Zustand',
+                    'reasoning': '足够轻量',
+                    'sourceThreadId': thread['id'],
+                },
+            )
+            self.assertEqual(decision.status_code, 200)
+
+            posted = client.post(
+                f"/api/v2/threads/{thread['id']}/messages",
+                json={
+                    'content': '先聊聊这个项目下一步',
+                    'createRun': False,
+                },
+            )
+            self.assertEqual(posted.status_code, 200)
+            payload = posted.json()
+            self.assertIn('package-manager=pnpm', payload['reply']['content'])
+            self.assertIn('状态管理选什么？ → Zustand', payload['reply']['content'])
+
+    def test_thread_events_endpoint_streams_payload(self):
+        with TestClient(app) as client:
+            project = client.post(
+                '/api/v2/projects',
+                json={'title': 'Thread events project'},
+            ).json()
+            thread = client.post(
+                f"/api/v2/projects/{project['id']}/threads",
+                json={'title': '事件流线程'},
+            ).json()
+
+            command = (
+                "printf '%s' 'thread event done' > '{summary_file}'"
+                if os.name != "nt"
+                else "Set-Content -Path '{summary_file}' -Value 'thread event done'"
+            )
+            created = client.post(
+                f"/api/v2/threads/{thread['id']}/runs",
+                json={
+                    'agent': 'custom',
+                    'command': command,
+                    'prompt': '线程事件流验证',
+                    'autoStart': True,
+                },
+            ).json()
+            run_payload = self._wait_run(client, created['id'])
+            self.assertEqual(run_payload['status'], 'passed')
+
+            with client.stream('GET', f"/api/v2/threads/{thread['id']}/events") as response:
+                self.assertEqual(response.status_code, 200)
+                body = ''.join(response.iter_text())
+            self.assertIn('data: ', body)
+            self.assertIn('"thread"', body)
+            self.assertIn('"runs"', body)
+
 
 if __name__ == "__main__":
     unittest.main()
