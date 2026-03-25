@@ -1,5 +1,5 @@
 """
-破坏式重置数据库，只保留 KAM Lite Core 所需表。
+重置数据库为 v1 Lite Core 旧 schema，供 Phase 1 迁移验证使用。
 """
 from __future__ import annotations
 
@@ -8,44 +8,28 @@ from pathlib import Path
 from sqlalchemy import inspect, text
 
 from app.core.config import settings
-from app.db.base import Base, engine
+from app.db.base import engine
 from app.db.types import IS_SQLITE
-from app.models import workspace  # noqa: F401
-
-LITE_TABLES = [
-    "autonomy_cycles",
-    "autonomy_sessions",
-    "run_artifacts",
-    "agent_runs",
-    "context_snapshots",
-    "task_refs",
-    "task_cards",
-]
+from scripts.legacy_schema import LEGACY_TABLE_NAMES, create_legacy_tables
 
 
 def reset_sqlite() -> None:
     engine.dispose()
-    db_path = settings.DATABASE_URL.replace("sqlite:///", "", 1)
+    db_path = settings.DATABASE_URL.replace('sqlite:///', '', 1)
     db_file = Path(db_path)
     if db_file.exists():
         db_file.unlink()
-
     Path(settings.STORAGE_PATH).mkdir(parents=True, exist_ok=True)
-    Base.metadata.create_all(bind=engine)
+    create_legacy_tables(engine)
 
 
 def reset_postgres() -> None:
     with engine.begin() as conn:
         inspector = inspect(conn)
-        table_names = [
-            table_name
-            for table_name in inspector.get_table_names()
-            if not table_name.startswith("pg_")
-        ]
+        table_names = [table_name for table_name in inspector.get_table_names() if not table_name.startswith('pg_')]
         for table_name in table_names:
             conn.execute(text(f'DROP TABLE IF EXISTS "{table_name}" CASCADE'))
-
-    Base.metadata.create_all(bind=engine)
+    create_legacy_tables(engine)
 
 
 def main() -> None:
@@ -53,11 +37,10 @@ def main() -> None:
         reset_sqlite()
     else:
         reset_postgres()
+    print('Lite Core legacy schema reset complete.')
+    print(f'DATABASE_URL={settings.DATABASE_URL}')
+    print('Tables: ' + ', '.join(LEGACY_TABLE_NAMES))
 
-    print("Lite Core schema reset complete.")
-    print(f"DATABASE_URL={settings.DATABASE_URL}")
-    print("Tables: task_cards, task_refs, context_snapshots, agent_runs, run_artifacts, autonomy_sessions, autonomy_cycles")
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
