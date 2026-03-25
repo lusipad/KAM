@@ -17,6 +17,7 @@ class UserPreference(Base):
     category = Column(String(50), nullable=False)
     key = Column(String(100), nullable=False)
     value = Column(Text, nullable=False)
+    embedding = Column(JSON, nullable=True)
     source_thread_id = Column(uuid_type(), ForeignKey("threads.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
@@ -44,6 +45,7 @@ class DecisionLog(Base):
     question = Column(Text, nullable=False)
     decision = Column(Text, nullable=False)
     reasoning = Column(Text, default="")
+    embedding = Column(JSON, nullable=True)
     source_thread_id = Column(uuid_type(), ForeignKey("threads.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 

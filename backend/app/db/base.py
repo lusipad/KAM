@@ -41,9 +41,14 @@ EXPECTED_V2_COLUMNS = {
     "runs": {"id", "thread_id", "message_id", "agent", "model", "reasoning_effort", "command", "status", "work_dir", "round", "max_rounds", "duration_ms", "error", "metadata", "created_at", "completed_at"},
     "thread_run_artifacts": {"id", "run_id", "artifact_type", "title", "content", "path", "round", "metadata", "created_at"},
     "project_resources": {"id", "project_id", "resource_type", "title", "uri", "pinned", "metadata", "created_at"},
-    "user_preferences": {"id", "category", "key", "value", "source_thread_id", "created_at"},
-    "decision_log": {"id", "project_id", "question", "decision", "reasoning", "source_thread_id", "created_at"},
+    "user_preferences": {"id", "category", "key", "value", "embedding", "source_thread_id", "created_at"},
+    "decision_log": {"id", "project_id", "question", "decision", "reasoning", "embedding", "source_thread_id", "created_at"},
     "project_learnings": {"id", "project_id", "content", "embedding", "source_thread_id", "created_at"},
+}
+
+ADDITIVE_V2_COLUMNS = {
+    "user_preferences": {"embedding": "JSON"},
+    "decision_log": {"embedding": "JSON"},
 }
 
 
@@ -56,8 +61,24 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db():
+    _ensure_additive_v2_columns()
     _repair_incompatible_v2_tables()
     Base.metadata.create_all(bind=engine)
+
+
+def _ensure_additive_v2_columns() -> None:
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    with engine.begin() as conn:
+        for table_name, columns in ADDITIVE_V2_COLUMNS.items():
+            if table_name not in existing_tables:
+                continue
+            current_columns = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, column_type in columns.items():
+                if column_name in current_columns:
+                    continue
+                conn.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_type}'))
 
 
 def _repair_incompatible_v2_tables() -> None:

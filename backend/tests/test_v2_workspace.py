@@ -377,6 +377,102 @@ class V2WorkspaceApiTests(unittest.TestCase):
         finally:
             settings.OPENAI_API_KEY = previous_key
 
+    def test_memory_search_returns_semantic_matches_for_preferences_and_decisions(self):
+        class FakeEmbeddingResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    'data': [
+                        {
+                            'embedding': [1.0, 0.0],
+                        }
+                    ]
+                }
+
+        previous_key = settings.OPENAI_API_KEY
+        settings.OPENAI_API_KEY = 'test-key'
+        try:
+            with patch('app.services.memory_service.httpx.post', return_value=FakeEmbeddingResponse()):
+                with TestClient(app) as client:
+                    project = client.post(
+                        "/api/v2/projects",
+                        json={"title": "Semantic search memory project"},
+                    ).json()
+                    thread = client.post(
+                        f"/api/v2/projects/{project['id']}/threads",
+                        json={"title": "记忆搜索"},
+                    ).json()
+
+                    preference = client.post(
+                        "/api/v2/memory/preferences",
+                        json={
+                            "category": "tool",
+                            "key": "package-manager",
+                            "value": "pnpm workspace",
+                            "sourceThreadId": thread["id"],
+                        },
+                    )
+                    unrelated_preference = client.post(
+                        "/api/v2/memory/preferences",
+                        json={
+                            "category": "tool",
+                            "key": "formatter",
+                            "value": "ruff format",
+                            "embedding": [0.0, 1.0],
+                            "sourceThreadId": thread["id"],
+                        },
+                    )
+                    decision = client.post(
+                        "/api/v2/memory/decisions",
+                        json={
+                            "projectId": project["id"],
+                            "question": "monorepo 默认用哪个包管理器？",
+                            "decision": "pnpm workspace",
+                            "reasoning": "workspace 依赖管理更稳定",
+                            "sourceThreadId": thread["id"],
+                        },
+                    )
+                    unrelated_decision = client.post(
+                        "/api/v2/memory/decisions",
+                        json={
+                            "projectId": project["id"],
+                            "question": "代码格式工具选什么？",
+                            "decision": "ruff format",
+                            "reasoning": "速度更快",
+                            "embedding": [0.0, 1.0],
+                            "sourceThreadId": thread["id"],
+                        },
+                    )
+                    self.assertEqual(preference.status_code, 200)
+                    self.assertEqual(unrelated_preference.status_code, 200)
+                    self.assertEqual(decision.status_code, 200)
+                    self.assertEqual(unrelated_decision.status_code, 200)
+
+                    result = client.get(
+                        "/api/v2/memory/search",
+                        params={"query": "monorepo 默认用什么包管理器", "project_id": project["id"]},
+                    )
+                    self.assertEqual(result.status_code, 200)
+                    payload = result.json()
+
+                    preferences = payload["preferences"]
+                    decisions = payload["decisions"]
+                    self.assertGreaterEqual(len(preferences), 1)
+                    self.assertGreaterEqual(len(decisions), 1)
+                    self.assertEqual(preferences[0]["key"], "package-manager")
+                    self.assertEqual(preferences[0]["value"], "pnpm workspace")
+                    self.assertIn("semanticScore", preferences[0])
+                    self.assertIn("searchScore", preferences[0])
+                    self.assertIn(preferences[0]["matchType"], {"semantic", "hybrid"})
+                    self.assertEqual(decisions[0]["decision"], "pnpm workspace")
+                    self.assertIn("semanticScore", decisions[0])
+                    self.assertIn("searchScore", decisions[0])
+                    self.assertIn(decisions[0]["matchType"], {"semantic", "hybrid"})
+        finally:
+            settings.OPENAI_API_KEY = previous_key
+
     def test_compare_endpoint_creates_grouped_runs(self):
         with TestClient(app) as client:
             project = client.post(

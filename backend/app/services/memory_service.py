@@ -24,22 +24,31 @@ class MemoryService:
         return query.order_by(UserPreference.created_at.desc()).all()
 
     def create_preference(self, data: dict[str, Any]) -> UserPreference:
+        category = str(data["category"]).strip()
+        key = str(data["key"]).strip()
+        value = str(data["value"]).strip()
+        embedding_text = self._preference_embedding_text(category=category, key=key, value=value)
+
         existing = (
             self.db.query(UserPreference)
-            .filter(UserPreference.category == data["category"], UserPreference.key == data["key"])
+            .filter(UserPreference.category == category, UserPreference.key == key)
             .first()
         )
         if existing:
-            existing.value = data["value"]
+            existing.category = category
+            existing.key = key
+            existing.value = value
+            existing.embedding = self._resolve_embedding(content=embedding_text, embedding=data.get("embedding"))
             existing.source_thread_id = data.get("sourceThreadId") or data.get("source_thread_id")
             self.db.commit()
             self.db.refresh(existing)
             return existing
 
         preference = UserPreference(
-            category=data["category"],
-            key=data["key"],
-            value=data["value"],
+            category=category,
+            key=key,
+            value=value,
+            embedding=self._resolve_embedding(content=embedding_text, embedding=data.get("embedding")),
             source_thread_id=data.get("sourceThreadId") or data.get("source_thread_id"),
         )
         self.db.add(preference)
@@ -51,10 +60,24 @@ class MemoryService:
         preference = self.db.query(UserPreference).filter(UserPreference.id == preference_id).first()
         if not preference:
             return None
+
+        should_refresh_embedding = False
         if "value" in data:
-            preference.value = data["value"]
+            preference.value = str(data["value"]).strip()
+            should_refresh_embedding = True
+        if "embedding" in data:
+            should_refresh_embedding = True
         if "sourceThreadId" in data or "source_thread_id" in data:
             preference.source_thread_id = data.get("sourceThreadId") or data.get("source_thread_id")
+        if should_refresh_embedding:
+            preference.embedding = self._resolve_embedding(
+                content=self._preference_embedding_text(
+                    category=preference.category,
+                    key=preference.key,
+                    value=preference.value,
+                ),
+                embedding=data.get("embedding"),
+            )
         self.db.commit()
         self.db.refresh(preference)
         return preference
@@ -66,11 +89,22 @@ class MemoryService:
         return query.order_by(DecisionLog.created_at.desc()).all()
 
     def create_decision(self, data: dict[str, Any]) -> DecisionLog:
+        question = str(data["question"]).strip()
+        decision_value = str(data["decision"]).strip()
+        reasoning = str(data.get("reasoning") or "").strip()
         decision = DecisionLog(
             project_id=data.get("projectId") or data.get("project_id"),
-            question=data["question"],
-            decision=data["decision"],
-            reasoning=data.get("reasoning", ""),
+            question=question,
+            decision=decision_value,
+            reasoning=reasoning,
+            embedding=self._resolve_embedding(
+                content=self._decision_embedding_text(
+                    question=question,
+                    decision=decision_value,
+                    reasoning=reasoning,
+                ),
+                embedding=data.get("embedding"),
+            ),
             source_thread_id=data.get("sourceThreadId") or data.get("source_thread_id"),
         )
         self.db.add(decision)
@@ -99,6 +133,14 @@ class MemoryService:
             existing.decision = decision_value or existing.decision
             if reasoning:
                 existing.reasoning = reasoning
+            existing.embedding = self._resolve_embedding(
+                content=self._decision_embedding_text(
+                    question=existing.question,
+                    decision=existing.decision,
+                    reasoning=existing.reasoning,
+                ),
+                embedding=data.get("embedding"),
+            )
             self.db.commit()
             self.db.refresh(existing)
             return existing
@@ -108,14 +150,30 @@ class MemoryService:
         decision = self.db.query(DecisionLog).filter(DecisionLog.id == decision_id).first()
         if not decision:
             return None
+
+        should_refresh_embedding = False
         if "question" in data:
-            decision.question = data["question"]
+            decision.question = str(data["question"]).strip()
+            should_refresh_embedding = True
         if "decision" in data:
-            decision.decision = data["decision"]
+            decision.decision = str(data["decision"]).strip()
+            should_refresh_embedding = True
         if "reasoning" in data:
-            decision.reasoning = data.get("reasoning", "")
+            decision.reasoning = str(data.get("reasoning") or "").strip()
+            should_refresh_embedding = True
+        if "embedding" in data:
+            should_refresh_embedding = True
         if "sourceThreadId" in data or "source_thread_id" in data:
             decision.source_thread_id = data.get("sourceThreadId") or data.get("source_thread_id")
+        if should_refresh_embedding:
+            decision.embedding = self._resolve_embedding(
+                content=self._decision_embedding_text(
+                    question=decision.question,
+                    decision=decision.decision,
+                    reasoning=decision.reasoning,
+                ),
+                embedding=data.get("embedding"),
+            )
         self.db.commit()
         self.db.refresh(decision)
         return decision
@@ -133,7 +191,7 @@ class MemoryService:
         learning = ProjectLearning(
             project_id=data.get("projectId") or data.get("project_id"),
             content=content,
-            embedding=self._resolve_learning_embedding(content=content, embedding=data.get("embedding")),
+            embedding=self._resolve_embedding(content=content, embedding=data.get("embedding")),
             source_thread_id=data.get("sourceThreadId") or data.get("source_thread_id"),
         )
         self.db.add(learning)
@@ -182,7 +240,7 @@ class MemoryService:
         if "content" in data:
             learning.content = str(data["content"]).strip()
         if "content" in data or "embedding" in data:
-            learning.embedding = self._resolve_learning_embedding(
+            learning.embedding = self._resolve_embedding(
                 content=learning.content,
                 embedding=data.get("embedding") if "embedding" in data else None,
             )
@@ -196,37 +254,285 @@ class MemoryService:
         preferences_query = self.db.query(UserPreference)
         decisions_query = self.db.query(DecisionLog)
         learnings_query = self.db.query(ProjectLearning)
+        normalized_query = str(query or "").strip()
 
         if project_id:
             decisions_query = decisions_query.filter(DecisionLog.project_id == project_id)
             learnings_query = learnings_query.filter(ProjectLearning.project_id == project_id)
 
-        if query:
-            preferences_query = preferences_query.filter(
-                (UserPreference.key.contains(query)) | (UserPreference.value.contains(query))
+        if normalized_query:
+            lexical_preferences = (
+                preferences_query.filter(
+                    (UserPreference.category.contains(normalized_query))
+                    | (UserPreference.key.contains(normalized_query))
+                    | (UserPreference.value.contains(normalized_query))
+                )
+                .order_by(UserPreference.created_at.desc())
+                .limit(20)
+                .all()
             )
-            decisions_query = decisions_query.filter(
-                (DecisionLog.question.contains(query))
-                | (DecisionLog.decision.contains(query))
-                | (DecisionLog.reasoning.contains(query))
+            lexical_decisions = (
+                decisions_query.filter(
+                    (DecisionLog.question.contains(normalized_query))
+                    | (DecisionLog.decision.contains(normalized_query))
+                    | (DecisionLog.reasoning.contains(normalized_query))
+                )
+                .order_by(DecisionLog.created_at.desc())
+                .limit(20)
+                .all()
             )
-            learnings_query = learnings_query.filter(ProjectLearning.content.contains(query))
+            lexical_learnings = (
+                learnings_query.filter(ProjectLearning.content.contains(normalized_query))
+                .order_by(ProjectLearning.created_at.desc())
+                .limit(20)
+                .all()
+            )
 
-        lexical_learnings = learnings_query.order_by(ProjectLearning.created_at.desc()).limit(20).all()
-        semantic_learnings = self._semantic_search_learnings(query=query, project_id=project_id)
+            query_embedding = self._query_embedding(normalized_query)
+            semantic_preferences = self._semantic_search_preferences(query_embedding=query_embedding)
+            semantic_decisions = self._semantic_search_decisions(query_embedding=query_embedding, project_id=project_id)
+            semantic_learnings = self._semantic_search_learnings(query_embedding=query_embedding, project_id=project_id)
+            return {
+                "preferences": self._merge_search_results(
+                    semantic_items=semantic_preferences,
+                    lexical_items=lexical_preferences,
+                    serializer=self._preference_search_item,
+                    identity=self._preference_search_identity,
+                ),
+                "decisions": self._merge_search_results(
+                    semantic_items=semantic_decisions,
+                    lexical_items=lexical_decisions,
+                    serializer=self._decision_search_item,
+                    identity=self._record_search_identity,
+                ),
+                "learnings": self._merge_search_results(
+                    semantic_items=semantic_learnings,
+                    lexical_items=lexical_learnings,
+                    serializer=self._learning_search_item,
+                    identity=self._record_search_identity,
+                ),
+            }
+
         return {
             "preferences": [item.to_dict() for item in preferences_query.order_by(UserPreference.created_at.desc()).limit(20).all()],
             "decisions": [item.to_dict() for item in decisions_query.order_by(DecisionLog.created_at.desc()).limit(20).all()],
-            "learnings": self._merge_learning_results(semantic_learnings, lexical_learnings),
+            "learnings": [item.to_dict() for item in learnings_query.order_by(ProjectLearning.created_at.desc()).limit(20).all()],
         }
 
-    def _resolve_learning_embedding(self, *, content: str, embedding: Any) -> list[float] | None:
+    def _resolve_embedding(self, *, content: str, embedding: Any) -> list[float] | None:
         if isinstance(embedding, list) and embedding:
             values = [float(item) for item in embedding]
             return values or None
         if not content or not settings.OPENAI_API_KEY.strip():
             return None
         return self._embed_text(content)
+
+    def _query_embedding(self, query: str) -> list[float] | None:
+        normalized_query = str(query or "").strip()
+        if not normalized_query or not settings.OPENAI_API_KEY.strip():
+            return None
+        return self._embed_text(normalized_query)
+
+    def _preference_embedding_text(self, *, category: str, key: str, value: str) -> str:
+        return " ".join(part for part in [category.strip(), key.strip(), value.strip()] if part)
+
+    def _decision_embedding_text(self, *, question: str, decision: str, reasoning: str) -> str:
+        return " ".join(part for part in [question.strip(), decision.strip(), reasoning.strip()] if part)
+
+    def _preference_search_item(
+        self,
+        preference: UserPreference,
+        *,
+        search_score: float | None = None,
+        semantic_score: float | None = None,
+        match_type: str | None = None,
+    ) -> dict[str, Any]:
+        return self._decorate_search_item(
+            preference.to_dict(),
+            search_score=search_score,
+            semantic_score=semantic_score,
+            match_type=match_type,
+        )
+
+    def _decision_search_item(
+        self,
+        decision: DecisionLog,
+        *,
+        search_score: float | None = None,
+        semantic_score: float | None = None,
+        match_type: str | None = None,
+    ) -> dict[str, Any]:
+        return self._decorate_search_item(
+            decision.to_dict(),
+            search_score=search_score,
+            semantic_score=semantic_score,
+            match_type=match_type,
+        )
+
+    def _learning_search_item(
+        self,
+        learning: ProjectLearning,
+        *,
+        search_score: float | None = None,
+        semantic_score: float | None = None,
+        match_type: str | None = None,
+    ) -> dict[str, Any]:
+        return self._decorate_search_item(
+            learning.to_dict(),
+            search_score=search_score,
+            semantic_score=semantic_score,
+            match_type=match_type,
+        )
+
+    def _decorate_search_item(
+        self,
+        payload: dict[str, Any],
+        *,
+        search_score: float | None,
+        semantic_score: float | None,
+        match_type: str | None,
+    ) -> dict[str, Any]:
+        item = dict(payload)
+        if search_score is not None:
+            item["searchScore"] = round(float(search_score), 6)
+        if semantic_score is not None:
+            item["semanticScore"] = round(float(semantic_score), 6)
+        if match_type:
+            item["matchType"] = match_type
+        return item
+
+    def _preference_search_identity(self, payload: dict[str, Any]) -> str:
+        return f"{payload.get('category') or ''}::{payload.get('key') or ''}"
+
+    def _record_search_identity(self, payload: dict[str, Any]) -> str:
+        return str(payload.get("id") or "")
+
+    def _merge_search_results(
+        self,
+        *,
+        semantic_items: list[dict[str, Any]],
+        lexical_items: list[Any],
+        serializer,
+        identity,
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: dict[str, int] = {}
+
+        for item in semantic_items:
+            item_id = identity(item)
+            if not item_id or item_id in seen:
+                continue
+            seen[item_id] = len(merged)
+            merged.append(item)
+
+        for record in lexical_items:
+            item = serializer(record, search_score=1.0, match_type="lexical")
+            item_id = identity(item)
+            if not item_id:
+                continue
+            existing_index = seen.get(item_id)
+            if existing_index is not None:
+                existing = merged[existing_index]
+                existing["matchType"] = "hybrid"
+                existing["searchScore"] = round(max(float(existing.get("searchScore") or 0.0), 1.0), 6)
+                continue
+            seen[item_id] = len(merged)
+            merged.append(item)
+
+        return merged[:20]
+
+    def _semantic_search_preferences(self, *, query_embedding: list[float] | None) -> list[dict[str, Any]]:
+        if not query_embedding:
+            return []
+
+        ranked: list[tuple[float, UserPreference]] = []
+        for preference in self.db.query(UserPreference).order_by(UserPreference.created_at.desc()).limit(200).all():
+            embedding = preference.embedding
+            if not isinstance(embedding, list) or not embedding:
+                continue
+            score = self._cosine_similarity(query_embedding, embedding)
+            if score <= 0:
+                continue
+            ranked.append((score, preference))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [
+            self._preference_search_item(
+                preference,
+                search_score=score,
+                semantic_score=score,
+                match_type="semantic",
+            )
+            for score, preference in ranked[:20]
+        ]
+
+    def _semantic_search_decisions(
+        self,
+        *,
+        query_embedding: list[float] | None,
+        project_id: str | None,
+    ) -> list[dict[str, Any]]:
+        if not query_embedding:
+            return []
+
+        statement = self.db.query(DecisionLog)
+        if project_id:
+            statement = statement.filter(DecisionLog.project_id == project_id)
+
+        ranked: list[tuple[float, DecisionLog]] = []
+        for decision in statement.order_by(DecisionLog.created_at.desc()).limit(200).all():
+            embedding = decision.embedding
+            if not isinstance(embedding, list) or not embedding:
+                continue
+            score = self._cosine_similarity(query_embedding, embedding)
+            if score <= 0:
+                continue
+            ranked.append((score, decision))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [
+            self._decision_search_item(
+                decision,
+                search_score=score,
+                semantic_score=score,
+                match_type="semantic",
+            )
+            for score, decision in ranked[:20]
+        ]
+
+    def _semantic_search_learnings(
+        self,
+        *,
+        query_embedding: list[float] | None,
+        project_id: str | None,
+    ) -> list[dict[str, Any]]:
+        if not query_embedding:
+            return []
+
+        statement = self.db.query(ProjectLearning)
+        if project_id:
+            statement = statement.filter(ProjectLearning.project_id == project_id)
+
+        ranked: list[tuple[float, ProjectLearning]] = []
+        for learning in statement.order_by(ProjectLearning.created_at.desc()).limit(200).all():
+            embedding = learning.embedding
+            if not isinstance(embedding, list) or not embedding:
+                continue
+            score = self._cosine_similarity(query_embedding, embedding)
+            if score <= 0:
+                continue
+            ranked.append((score, learning))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [
+            self._learning_search_item(
+                learning,
+                search_score=score,
+                semantic_score=score,
+                match_type="semantic",
+            )
+            for score, learning in ranked[:20]
+        ]
 
     def _embed_text(self, text: str) -> list[float] | None:
         try:
@@ -253,63 +559,6 @@ class MemoryService:
             return [float(item) for item in embedding]
         except Exception:
             return None
-
-    def _semantic_search_learnings(self, *, query: str, project_id: str | None) -> list[dict[str, Any]]:
-        normalized_query = str(query or "").strip()
-        if not normalized_query or not settings.OPENAI_API_KEY.strip():
-            return []
-
-        query_embedding = self._embed_text(normalized_query)
-        if not query_embedding:
-            return []
-
-        statement = self.db.query(ProjectLearning)
-        if project_id:
-            statement = statement.filter(ProjectLearning.project_id == project_id)
-
-        ranked: list[tuple[float, ProjectLearning]] = []
-        for learning in statement.order_by(ProjectLearning.created_at.desc()).limit(200).all():
-            embedding = learning.embedding
-            if not isinstance(embedding, list) or not embedding:
-                continue
-            score = self._cosine_similarity(query_embedding, embedding)
-            if score <= 0:
-                continue
-            ranked.append((score, learning))
-
-        ranked.sort(key=lambda item: item[0], reverse=True)
-        return [
-            {
-                **learning.to_dict(),
-                "semanticScore": round(score, 6),
-            }
-            for score, learning in ranked[:20]
-        ]
-
-    def _merge_learning_results(
-        self,
-        semantic_learnings: list[dict[str, Any]],
-        lexical_learnings: list[ProjectLearning],
-    ) -> list[dict[str, Any]]:
-        merged: list[dict[str, Any]] = []
-        seen: set[str] = set()
-
-        for item in semantic_learnings:
-            item_id = str(item.get("id") or "")
-            if not item_id or item_id in seen:
-                continue
-            seen.add(item_id)
-            merged.append(item)
-
-        for learning in lexical_learnings:
-            item = learning.to_dict()
-            item_id = item["id"]
-            if item_id in seen:
-                continue
-            seen.add(item_id)
-            merged.append(item)
-
-        return merged[:20]
 
     def _cosine_similarity(self, left: list[float], right: list[float]) -> float:
         size = min(len(left), len(right))
