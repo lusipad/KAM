@@ -2,15 +2,15 @@
 
 ## Now
 
-- 降低自治平均轮次，把 `Backend unit` 高频失败前移为 preflight / scoped checks
 - 把 campaign history 做成可对比的趋势记录，而不是只看单次 `report.json`
 - 给自治会话补“验收 Agent”，区分规则检查与语义检查
+- 给成功 worktree 增加 promotion 路径，输出可审阅 patch / PR 输入物
+- 在 UI 中展示战役趋势：完成率、打断率、成功率、平均轮次、top failed checks
 - 让自治会话支持失败后继续新开样本，而不是只保留单一终态
 - 把 dogfooding 样本沉淀成可筛选的失败画像
 
 ## Next
 
-- 给成功 worktree 增加 promotion 路径，输出可审阅 patch / PR 输入物
 - 让长时间自治支持定时调度、自动续样本、按失败画像调策略
 - 任务详情支持编辑标题、描述、优先级
 - 自治会话支持模板化检查清单
