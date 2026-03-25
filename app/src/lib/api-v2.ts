@@ -228,7 +228,7 @@ export const v2ThreadsApi = {
       signal?: AbortSignal;
       onEvent?: (event: ThreadMessageStreamEvent) => void;
     },
-  ) => streamJsonPost<PostThreadMessageResponse>(`/v2/threads/${threadId}/messages/stream`, data, options),
+  ) => streamJsonPost<PostThreadMessageResponse>(`/v2/threads/${threadId}/messages`, data, options),
   bootstrapMessage: (data: {
     content: string;
     metadata?: Record<string, unknown>;
