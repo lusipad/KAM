@@ -114,5 +114,6 @@ python scripts/reset_lite_core_schema.py
   - [Backlog](MVP_BACKLOG.md)
   - [Autonomy V2](docs/autonomy-v2.md)
   - [Optimization Campaign](docs/optimization-campaign.md)
+  - [Autonomy Optimization Report 2026-03-25](docs/campaigns/2026-03-25-autonomy-optimization-report.md)
 - 历史方案：
   - `docs/archive/legacy/`
