@@ -45,7 +45,7 @@ export const v2ProjectsApi = {
   addResource: (projectId: string, data: Partial<ProjectResourceRecord> & { type: string; uri: string }) =>
     post<ProjectResourceRecord, typeof data>(`/v2/projects/${projectId}/resources`, data),
   deleteResource: (projectId: string, resourceId: string) => del<{ message: string }>(`/v2/projects/${projectId}/resources/${resourceId}`),
-  listFiles: (projectId: string, params?: { path?: string; include_hidden?: boolean }) =>
+  listFiles: (projectId: string, params?: { path?: string; include_hidden?: boolean; query?: string; entry_type?: string }) =>
     get<ProjectFileTreeRecord>(`/v2/projects/${projectId}/files`, params),
 };
 

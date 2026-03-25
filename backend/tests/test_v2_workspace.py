@@ -101,7 +101,11 @@ class V2WorkspaceApiTests(unittest.TestCase):
 
             thread_detail = client.get(f"/api/v2/threads/{thread_payload['id']}")
             self.assertEqual(thread_detail.status_code, 200)
-            self.assertGreaterEqual(len(thread_detail.json()["runs"]), 1)
+            thread_payload_detail = thread_detail.json()
+            self.assertGreaterEqual(len(thread_payload_detail["runs"]), 1)
+            event_types = {item.get("metadata", {}).get("eventType") for item in thread_payload_detail["messages"]}
+            self.assertIn("run-created", event_types)
+            self.assertIn("run-passed", event_types)
 
     def test_project_file_tree_endpoint(self):
         with tempfile.TemporaryDirectory() as repo_dir:
@@ -147,6 +151,16 @@ class V2WorkspaceApiTests(unittest.TestCase):
                 self.assertEqual(hidden_listing.status_code, 200)
                 hidden_names = [item['name'] for item in hidden_listing.json()['entries']]
                 self.assertIn('.secret', hidden_names)
+
+                filtered_listing = client.get(
+                    f"/api/v2/projects/{project['id']}/files",
+                    params={'query': 'src', 'entry_type': 'dir'},
+                )
+                self.assertEqual(filtered_listing.status_code, 200)
+                filtered_payload = filtered_listing.json()
+                self.assertEqual(filtered_payload['totalEntries'], 2)
+                self.assertEqual(filtered_payload['filteredEntries'], 1)
+                self.assertEqual(filtered_payload['entries'][0]['name'], 'src')
 
     def test_run_events_endpoint_streams_payload(self):
         with TestClient(app) as client:

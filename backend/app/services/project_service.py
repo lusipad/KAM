@@ -117,7 +117,14 @@ class ProjectService:
         self.db.commit()
         return True
 
-    def list_files(self, project_id: str, relative_path: str = "", include_hidden: bool = False) -> dict[str, Any] | None:
+    def list_files(
+        self,
+        project_id: str,
+        relative_path: str = "",
+        include_hidden: bool = False,
+        query: str | None = None,
+        entry_type: str | None = None,
+    ) -> dict[str, Any] | None:
         project = self.get_project(project_id)
         if not project:
             return None
@@ -134,7 +141,12 @@ class ProjectService:
         if target_dir != repo_root:
             parent_path = self._relative(repo_root, target_dir.parent)
 
-        entries: list[dict[str, Any]] = []
+        normalized_query = (query or "").strip().lower()
+        normalized_type = (entry_type or "").strip().lower()
+        if normalized_type not in {"dir", "file"}:
+            normalized_type = ""
+
+        all_entries: list[dict[str, Any]] = []
         for child in sorted(target_dir.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
             if not include_hidden and child.name.startswith('.'):
                 continue
@@ -144,7 +156,7 @@ class ProjectService:
                 size = stat.st_size if child.is_file() else None
             except OSError:
                 size = None
-            entries.append(
+            all_entries.append(
                 {
                     "name": child.name,
                     "path": child_path,
@@ -153,11 +165,27 @@ class ProjectService:
                 }
             )
 
+        filtered_entries = [
+            entry
+            for entry in all_entries
+            if (not normalized_type or entry["type"] == normalized_type)
+            and (
+                not normalized_query
+                or normalized_query in entry["name"].lower()
+                or normalized_query in entry["path"].lower()
+            )
+        ]
+
         return {
             "rootPath": str(repo_root),
             "currentPath": current_path,
             "parentPath": parent_path,
-            "entries": entries,
+            "entries": filtered_entries,
+            "totalEntries": len(all_entries),
+            "filteredEntries": len(filtered_entries),
+            "query": normalized_query,
+            "entryType": normalized_type or None,
+            "includeHidden": include_hidden,
         }
 
     def _resolve_repo_root(self, project: Project) -> Path:

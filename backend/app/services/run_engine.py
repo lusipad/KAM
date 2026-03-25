@@ -15,7 +15,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.db.base import SessionLocal
-from app.models.conversation import Run, Thread, ThreadRunArtifact
+from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.models.project import Project, ProjectResource
 
 
@@ -164,6 +164,13 @@ class V2RunExecutionManager:
                 }
                 if round_number == 1:
                     run.completed_at = None
+                self._record_thread_event(
+                    db,
+                    run,
+                    f"{run.agent} 第 {round_number} 轮开始执行",
+                    "run-started",
+                    metadata={"commandLine": display_command},
+                )
                 db.commit()
 
                 with open(stdout_path, "w", encoding="utf-8") as stdout_file, open(stderr_path, "w", encoding="utf-8") as stderr_file:
@@ -207,10 +214,24 @@ class V2RunExecutionManager:
                     run.status = "failed"
                     run.error = stderr_text or f"进程退出码 {return_code}"
                     run.completed_at = datetime.utcnow()
+                    run.duration_ms = self._duration_ms(run)
+                    self._record_thread_event(
+                        db,
+                        run,
+                        f"{run.agent} 第 {round_number} 轮执行失败",
+                        "run-failed",
+                        metadata={"errorPreview": _tail_text(run.error or "", 600)},
+                    )
                     db.commit()
                     return
 
                 run.status = "checking"
+                self._record_thread_event(
+                    db,
+                    run,
+                    f"{run.agent} 第 {round_number} 轮进入检查",
+                    "run-checking",
+                )
                 db.commit()
 
                 check_results = self._execute_checks(
@@ -240,6 +261,13 @@ class V2RunExecutionManager:
                     run.error = None
                     run.completed_at = datetime.utcnow()
                     run.duration_ms = self._duration_ms(run)
+                    self._record_thread_event(
+                        db,
+                        run,
+                        f"{run.agent} 第 {round_number} 轮检查通过",
+                        "run-passed",
+                        metadata={"durationMs": run.duration_ms},
+                    )
                     db.commit()
                     return
 
@@ -248,6 +276,13 @@ class V2RunExecutionManager:
                     run.error = self._build_retry_feedback(check_results)
                     run.completed_at = datetime.utcnow()
                     run.duration_ms = self._duration_ms(run)
+                    self._record_thread_event(
+                        db,
+                        run,
+                        f"{run.agent} 在第 {round_number} 轮后仍未通过检查",
+                        "run-failed",
+                        metadata={"errorPreview": _tail_text(run.error or "", 600)},
+                    )
                     db.commit()
                     return
 
@@ -267,6 +302,13 @@ class V2RunExecutionManager:
                     "lastFeedback": feedback_text,
                 }
                 run.status = "pending"
+                self._record_thread_event(
+                    db,
+                    run,
+                    f"{run.agent} 第 {round_number} 轮未通过，准备重试",
+                    "run-retrying",
+                    metadata={"nextRound": round_number + 1, "errorPreview": _tail_text(feedback_text, 600)},
+                )
                 db.commit()
                 round_number += 1
         except Exception as exc:
@@ -276,6 +318,13 @@ class V2RunExecutionManager:
                 run.error = str(exc)
                 run.completed_at = datetime.utcnow()
                 run.duration_ms = self._duration_ms(run)
+                self._record_thread_event(
+                    db,
+                    run,
+                    f"{run.agent} 执行异常终止",
+                    "run-failed",
+                    metadata={"errorPreview": _tail_text(run.error or "", 600)},
+                )
                 db.commit()
         finally:
             with self._lock:
@@ -719,6 +768,34 @@ class V2RunExecutionManager:
         with self._lock:
             return run_id in self._cancel_flags
 
+    def _record_thread_event(
+        self,
+        db,
+        run: Run | None,
+        content: str,
+        event_type: str,
+        metadata: dict[str, Any] | None = None,
+    ):
+        if not run:
+            return
+        thread = db.query(Thread).filter(Thread.id == run.thread_id).first()
+        if thread:
+            thread.updated_at = datetime.utcnow()
+        event = Message(
+            thread_id=run.thread_id,
+            role="system",
+            content=content,
+            metadata_={
+                "eventType": event_type,
+                "runId": str(run.id),
+                "agent": run.agent,
+                "status": run.status,
+                "round": run.round,
+                **(metadata or {}),
+            },
+        )
+        db.add(event)
+
     def _mark_cancelled(self, db, run_id: str, message: str):
         run = db.query(Run).filter(Run.id == run_id).first()
         if not run:
@@ -727,6 +804,7 @@ class V2RunExecutionManager:
         run.error = message
         run.completed_at = datetime.utcnow()
         run.duration_ms = self._duration_ms(run)
+        self._record_thread_event(db, run, f"{run.agent} 已取消", "run-cancelled")
         db.commit()
 
     def _duration_ms(self, run: Run | None) -> int | None:

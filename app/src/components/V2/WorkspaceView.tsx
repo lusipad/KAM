@@ -30,6 +30,7 @@ import type {
   ProjectLearningRecord,
   ProjectRecord,
   ProjectThread,
+  ThreadMessageRecord,
   ThreadRunArtifactRecord,
   UserPreferenceRecord,
 } from '@/types/v2';
@@ -157,6 +158,9 @@ export function WorkspaceView() {
   const [comparePrompt, setComparePrompt] = useState('');
   const [fileTreePath, setFileTreePath] = useState('');
   const [fileTree, setFileTree] = useState<ProjectFileTreeRecord | null>(null);
+  const [fileTreeQuery, setFileTreeQuery] = useState('');
+  const [fileTreeEntryType, setFileTreeEntryType] = useState('all');
+  const [fileTreeIncludeHidden, setFileTreeIncludeHidden] = useState(false);
   const [compareAgents, setCompareAgents] = useState({ codex: true, claude: true, custom: false });
   const [compareCustomLabel, setCompareCustomLabel] = useState('Custom Command');
   const [compareCustomCommand, setCompareCustomCommand] = useState('');
@@ -447,11 +451,23 @@ export function WorkspaceView() {
     }
   }
 
-  async function loadProjectFiles(projectId: string, path = '') {
+  async function loadProjectFiles(
+    projectId: string,
+    path = '',
+    options?: { query?: string; entryType?: string; includeHidden?: boolean },
+  ) {
     setIsFilesLoading(true);
     try {
       setErrorMessage(null);
-      const tree = await v2ProjectsApi.listFiles(projectId, { path });
+      const query = options?.query ?? fileTreeQuery;
+      const entryType = options?.entryType ?? fileTreeEntryType;
+      const includeHidden = options?.includeHidden ?? fileTreeIncludeHidden;
+      const tree = await v2ProjectsApi.listFiles(projectId, {
+        path,
+        include_hidden: includeHidden,
+        query: query.trim() || undefined,
+        entry_type: entryType !== 'all' ? entryType : undefined,
+      });
       setFileTree(tree);
       setFileTreePath(tree.currentPath || '');
     } catch (error) {
@@ -1001,12 +1017,64 @@ export function WorkspaceView() {
             </div>
           )}
 
-          {selectedThread?.messages?.map((message) => {
+          {selectedThread?.messages?.map((message: ThreadMessageRecord) => {
+            const systemEventType = asString(message.metadata?.eventType);
+            const systemEventStatus = asString(message.metadata?.status);
+            const isSystemEvent = message.role === 'system' && !!systemEventType;
             const bubbleClass = message.role === 'user'
               ? 'bg-primary text-primary-foreground'
               : message.role === 'system'
                 ? 'border border-primary/20 bg-primary/5'
                 : 'border border-border/60 bg-background/70';
+
+            const renderRuns = !!message.runs?.length && (
+              <div className="mt-3 space-y-2">
+                {message.runs.map((run) => (
+                  <RunInlineCard
+                    key={run.id}
+                    run={run}
+                    selected={selectedRunId === run.id}
+                    onSelect={() => {
+                      setSelectedRunId(run.id);
+                      const compareId = asString(run.metadata?.compareGroupId);
+                      if (compareId) setSelectedCompareId(compareId);
+                      setActivePanel(compareId ? 'compare' : 'detail');
+                    }}
+                    onAdopt={() => void handleAdoptRun(run.id)}
+                    onCancel={() => void handleCancelRun(run.id)}
+                    onRetry={() => void handleRetryRun(run.id)}
+                  />
+                ))}
+              </div>
+            );
+
+            if (isSystemEvent) {
+              const eventLabel = ({
+                'run-created': 'Run Created',
+                'compare-created': 'Compare',
+                'run-started': 'Running',
+                'run-checking': 'Checking',
+                'run-retrying': 'Retrying',
+                'run-passed': 'Passed',
+                'run-failed': 'Failed',
+                'run-cancelled': 'Cancelled',
+              } as Record<string, string>)[systemEventType] || 'System';
+              const round = typeof message.metadata?.round === 'number' ? `R${message.metadata.round}` : '';
+              return (
+                <div key={message.id} className="flex justify-start">
+                  <div className="max-w-[82%] rounded-[1.5rem] border border-border/60 bg-background/70 px-4 py-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={runTone(systemEventStatus || 'pending')}>{eventLabel}</Badge>
+                      {asString(message.metadata?.agent) ? <Badge variant="outline">{asString(message.metadata?.agent)}</Badge> : null}
+                      {round ? <Badge variant="outline">{round}</Badge> : null}
+                      <div className="text-[11px] text-muted-foreground">{fmtTime(message.createdAt)}</div>
+                    </div>
+                    <div className="mt-2 whitespace-pre-wrap text-sm leading-6">{message.content}</div>
+                    {renderRuns}
+                  </div>
+                </div>
+              );
+            }
 
             return (
               <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -1014,26 +1082,7 @@ export function WorkspaceView() {
                   <div className="text-[11px] uppercase tracking-[0.22em] opacity-70">{message.role}</div>
                   <div className="mt-2 whitespace-pre-wrap text-sm leading-6">{message.content}</div>
                   <div className="mt-2 text-[11px] opacity-70">{fmtTime(message.createdAt)}</div>
-                  {!!message.runs?.length && (
-                    <div className="mt-3 space-y-2">
-                      {message.runs.map((run) => (
-                        <RunInlineCard
-                          key={run.id}
-                          run={run}
-                          selected={selectedRunId === run.id}
-                          onSelect={() => {
-                            setSelectedRunId(run.id);
-                            const compareId = asString(run.metadata?.compareGroupId);
-                            if (compareId) setSelectedCompareId(compareId);
-                            setActivePanel(compareId ? 'compare' : 'detail');
-                          }}
-                          onAdopt={() => void handleAdoptRun(run.id)}
-                          onCancel={() => void handleCancelRun(run.id)}
-                          onRetry={() => void handleRetryRun(run.id)}
-                        />
-                      ))}
-                    </div>
-                  )}
+                  {renderRuns}
                 </div>
               </div>
             );
@@ -1242,7 +1291,14 @@ export function WorkspaceView() {
                       <div className="text-sm font-medium">File Tree</div>
                       <div className="mt-1 text-xs text-muted-foreground">项目 repoPath 对应的文件上下文浏览器。</div>
                     </div>
-                    {isFilesLoading ? <Badge variant="secondary">加载中</Badge> : <Badge variant="secondary">{fileTree?.entries.length || 0}</Badge>}
+                    {isFilesLoading ? (
+                      <Badge variant="secondary">加载中</Badge>
+                    ) : (
+                      <Badge variant="secondary">
+                        {(fileTree?.filteredEntries ?? fileTree?.entries.length) || 0}
+                        {typeof fileTree?.totalEntries === 'number' && (fileTree.filteredEntries ?? fileTree.entries.length) !== fileTree.totalEntries ? ` / ${fileTree.totalEntries}` : ''}
+                      </Badge>
+                    )}
                   </div>
                   {!selectedProject.repoPath ? (
                     <div className="mt-4 rounded-2xl border border-dashed border-border/60 px-3 py-5 text-xs text-muted-foreground">
@@ -1253,7 +1309,7 @@ export function WorkspaceView() {
                       <div className="mt-4 rounded-2xl border border-border/60 bg-background/70 px-3 py-3">
                         <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">Repo Root</div>
                         <div className="mt-2 break-all text-xs text-muted-foreground">{selectedProject.repoPath}</div>
-                        <div className="mt-3 flex items-center gap-2">
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
                           <Button
                             size="sm"
                             variant="outline"
@@ -1268,11 +1324,59 @@ export function WorkspaceView() {
                             刷新
                           </Button>
                         </div>
+                        <div className="mt-3 grid gap-2 lg:grid-cols-[minmax(0,1fr)_120px_auto_auto]">
+                          <Input
+                            value={fileTreeQuery}
+                            onChange={(event) => setFileTreeQuery(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') void loadProjectFiles(selectedProject.id, fileTreePath);
+                            }}
+                            placeholder="搜索当前目录中的文件/文件夹"
+                          />
+                          <select
+                            value={fileTreeEntryType}
+                            onChange={(event) => setFileTreeEntryType(event.target.value)}
+                            className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+                          >
+                            <option value="all">全部</option>
+                            <option value="dir">目录</option>
+                            <option value="file">文件</option>
+                          </select>
+                          <label className="flex items-center gap-2 rounded-xl border border-border/60 px-3 text-sm text-muted-foreground">
+                            <input
+                              type="checkbox"
+                              checked={fileTreeIncludeHidden}
+                              onChange={(event) => setFileTreeIncludeHidden(event.target.checked)}
+                            />
+                            隐藏项
+                          </label>
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="outline" onClick={() => void loadProjectFiles(selectedProject.id, fileTreePath)} disabled={isFilesLoading}>
+                              <Search className="mr-1 h-3.5 w-3.5" />
+                              筛选
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setFileTreeQuery('');
+                                setFileTreeEntryType('all');
+                                setFileTreeIncludeHidden(false);
+                                void loadProjectFiles(selectedProject.id, fileTreePath, { query: '', entryType: 'all', includeHidden: false });
+                              }}
+                              disabled={isFilesLoading}
+                            >
+                              清空
+                            </Button>
+                          </div>
+                        </div>
                       </div>
 
                       <div className="mt-4 rounded-2xl border border-border/60 bg-background/70">
                         <div className="border-b border-border/60 px-3 py-2 text-xs text-muted-foreground">
                           当前路径：/{fileTree?.currentPath || ''}
+                          {fileTree?.query ? ` · 过滤：${fileTree.query}` : ''}
+                          {fileTree?.entryType ? ` · 类型：${fileTree.entryType}` : ''}
                         </div>
                         <div className="divide-y divide-border/50">
                           {fileTree?.entries.map((entry) => (
@@ -1299,7 +1403,7 @@ export function WorkspaceView() {
                             </div>
                           ))}
                           {!fileTree?.entries.length && (
-                            <div className="px-3 py-5 text-xs text-muted-foreground">当前目录下没有可显示的文件。</div>
+                            <div className="px-3 py-5 text-xs text-muted-foreground">当前目录下没有匹配的文件或目录。</div>
                           )}
                         </div>
                       </div>

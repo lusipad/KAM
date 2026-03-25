@@ -113,11 +113,19 @@ async def list_project_files(
     project_id: str,
     path: str = Query(default=""),
     include_hidden: bool = Query(default=False),
+    query: str = Query(default=""),
+    entry_type: str = Query(default=""),
     db: Session = Depends(get_db),
 ):
     service = ProjectService(db)
     try:
-        tree = service.list_files(project_id, relative_path=path, include_hidden=include_hidden)
+        tree = service.list_files(
+            project_id,
+            relative_path=path,
+            include_hidden=include_hidden,
+            query=query,
+            entry_type=entry_type,
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     if not tree:

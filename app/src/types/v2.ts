@@ -48,6 +48,7 @@ export interface ThreadRunArtifactRecord {
   path?: string | null;
   round: number;
   metadata: Record<string, unknown>;
+  truncated?: boolean;
   createdAt: Date | string;
 }
 
@@ -121,6 +122,11 @@ export interface ProjectFileTreeRecord {
   currentPath: string;
   parentPath?: string | null;
   entries: ProjectFileEntryRecord[];
+  totalEntries?: number;
+  filteredEntries?: number;
+  query?: string;
+  entryType?: 'dir' | 'file' | string | null;
+  includeHidden?: boolean;
 }
 
 export interface CompareAgentSpec {

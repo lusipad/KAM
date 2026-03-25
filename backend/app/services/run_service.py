@@ -58,6 +58,7 @@ class RunService:
 
         work_dir = self._create_workdir(thread_id, agent)
         prompt = data.get("prompt") or self._resolve_message_prompt(message_id)
+        message_id = self._ensure_run_message_id(thread, message_id, prompt, agent, data.get("metadata") or {})
         run = Run(
             thread_id=thread.id,
             message_id=message_id,
@@ -135,6 +136,8 @@ class RunService:
             role="system",
             content=f"并发对比：{prompt}",
             metadata_={
+                "eventType": "compare-created",
+                "status": "pending",
                 "compareGroupId": compare_id,
                 "requestedAgents": prepared_agents,
             },
@@ -270,6 +273,36 @@ class RunService:
             return ""
         message = self.db.query(Message).filter(Message.id == message_id).first()
         return message.content if message else ""
+
+    def _ensure_run_message_id(
+        self,
+        thread: Thread,
+        message_id: str | None,
+        prompt: str,
+        agent: str,
+        metadata: dict[str, Any],
+    ) -> str | None:
+        if message_id:
+            return message_id
+
+        snippet = (prompt or "").strip() or f"启动 {agent} run"
+        snippet = snippet.replace("\n", " ").strip()
+        if len(snippet) > 120:
+            snippet = f"{snippet[:117]}..."
+        message = Message(
+            thread_id=thread.id,
+            role="system",
+            content=f"创建执行：{snippet}",
+            metadata_={
+                "eventType": "run-created",
+                "status": "pending",
+                "agent": agent,
+                **({"compareGroupId": metadata.get("compareGroupId")} if metadata.get("compareGroupId") else {}),
+            },
+        )
+        self.db.add(message)
+        self.db.flush()
+        return str(message.id)
 
     def _build_context(self, thread: Thread) -> dict[str, Any]:
         recent_messages = [message.to_dict() for message in (thread.messages or [])[-10:]]
