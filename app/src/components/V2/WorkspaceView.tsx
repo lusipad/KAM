@@ -2773,8 +2773,8 @@ export function WorkspaceView() {
 
   return (
     <>
-      <div className="grid min-h-[calc(100dvh-2rem)] gap-4 lg:grid-cols-[290px_minmax(0,1fr)]">
-        <aside className="lite-panel flex min-h-[calc(100dvh-2rem)] flex-col rounded-[1.9rem] p-4 lg:p-5">
+      <div className="grid h-full min-h-0 gap-4 lg:grid-cols-[290px_minmax(0,1fr)]">
+        <aside className="lite-panel flex h-full min-h-0 flex-col rounded-[1.9rem] p-4 lg:p-5">
           <button
             type="button"
             onClick={() => setWorkspaceMode('workspace')}
@@ -2899,7 +2899,7 @@ export function WorkspaceView() {
           </div>
         </aside>
 
-        <section className="lite-panel flex min-h-[calc(100dvh-2rem)] min-w-0 flex-col rounded-[1.9rem]">
+        <section className="lite-panel flex h-full min-h-0 min-w-0 flex-col rounded-[1.9rem]">
           {workspaceMode === 'memory' ? (
             <MemoryScreen
               selectedProject={selectedProject}
