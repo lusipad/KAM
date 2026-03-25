@@ -453,6 +453,7 @@ export function WorkspaceView() {
     if (!selectedCompareGroup) return;
 
     let cancelled = false;
+    const eventSources: EventSource[] = [];
     const loadCompareRuns = async () => {
       const results = await Promise.all(
         selectedCompareGroup.runs.map(async (run) => {
@@ -474,18 +475,43 @@ export function WorkspaceView() {
     };
 
     void loadCompareRuns();
-    if (!selectedCompareGroup.runs.some((run) => isActiveRun(run))) {
-      return () => {
-        cancelled = true;
-      };
-    }
+    selectedCompareGroup.runs.forEach((run) => {
+      if (!isActiveRun(run)) {
+        return;
+      }
 
-    const timer = window.setInterval(() => {
-      void loadCompareRuns();
-    }, 2000);
+      const eventSource = new EventSource(getV2RunEventsUrl(run.id, 60_000));
+      eventSource.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data) as {
+            run?: ConversationRun;
+            artifacts?: ThreadRunArtifactRecord[];
+          };
+          if (!payload.run) return;
+          const nextRun: ConversationRun = {
+            ...payload.run,
+            artifacts: payload.artifacts || [],
+          };
+          setCompareRunDetails((current) => ({
+            ...current,
+            [nextRun.id]: nextRun,
+          }));
+          if (!isActiveRun(nextRun)) {
+            eventSource.close();
+          }
+        } catch {
+          eventSource.close();
+        }
+      };
+      eventSource.onerror = () => {
+        eventSource.close();
+      };
+      eventSources.push(eventSource);
+    });
+
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      eventSources.forEach((eventSource) => eventSource.close());
     };
   }, [selectedCompareGroup]);
 
