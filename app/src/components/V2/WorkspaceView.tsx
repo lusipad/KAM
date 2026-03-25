@@ -1095,6 +1095,7 @@ function ConversationScreen({
   runDetailsById,
 }: ConversationScreenProps) {
   const messages = selectedThread?.messages || [];
+  const isThreadEmpty = !messages.length && !streamingReplyText;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1248,7 +1249,7 @@ function ConversationScreen({
         </div>
       </ScrollArea>
 
-      <div className="border-t border-border/70 px-5 py-5">
+      <div className="border-t border-border/70 px-4 py-4 lg:px-5 lg:py-4">
         <div className="mx-auto w-full max-w-4xl rounded-[1.6rem] border border-border/70 bg-background/80 shadow-[0_14px_40px_rgba(15,23,42,0.06)]">
           <Textarea
             value={messageText}
@@ -1261,12 +1262,15 @@ function ConversationScreen({
               onSendMessage();
             }}
             placeholder="描述你的目标..."
-            className="min-h-[160px] resize-none border-0 bg-transparent px-5 py-5 text-sm leading-7 shadow-none focus-visible:ring-0"
+            className={cn(
+              'max-h-[32vh] resize-none overflow-y-auto border-0 bg-transparent px-5 py-4 text-sm leading-6 shadow-none focus-visible:ring-0',
+              isThreadEmpty ? 'min-h-[104px] md:min-h-[112px]' : 'min-h-[88px] md:min-h-[96px]',
+            )}
             disabled={isMutating}
           />
 
           {agent === 'custom' ? (
-            <div className="px-5 pb-4">
+            <div className="px-5 pb-3">
               <Input
                 value={customCommand}
                 onChange={(event) => onCustomCommandChange(event.target.value)}
