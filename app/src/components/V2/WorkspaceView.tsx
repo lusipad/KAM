@@ -44,6 +44,7 @@ import type {
   ThreadRunArtifactRecord,
   UserPreferenceRecord,
 } from '@/types/v2';
+import { RunChangePreview, collectRunChangeFiles } from '@/components/V2/RunChangePreview';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -231,6 +232,10 @@ function artifactPreview(content?: string, maxChars = 520) {
   return `${normalized.slice(0, maxChars)}…`;
 }
 
+function formatScore(value?: number) {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(3) : null;
+}
+
 function fmtDuration(value?: number | null) {
   if (typeof value !== 'number' || Number.isNaN(value)) return '—';
   if (value < 1000) return `${value}ms`;
@@ -315,8 +320,10 @@ export function WorkspaceView() {
   const [selectedRunDetail, setSelectedRunDetail] = useState<ConversationRun | null>(null);
   const [detailRound, setDetailRound] = useState<number | null>(null);
   const [detailArtifactType, setDetailArtifactType] = useState('summary');
+  const [detailChangePath, setDetailChangePath] = useState<string | null>(null);
   const [selectedCompareId, setSelectedCompareId] = useState<string | null>(null);
   const [compareArtifactType, setCompareArtifactType] = useState('summary');
+  const [compareChangePath, setCompareChangePath] = useState<string | null>(null);
   const [compareRunDetails, setCompareRunDetails] = useState<Record<string, ConversationRun>>({});
 
   const [projectForm, setProjectForm] = useState({
@@ -643,6 +650,20 @@ export function WorkspaceView() {
       totalFailedChecks: analyzedRuns.reduce((total, item) => total + item.metrics.failedChecks, 0),
     };
   }, [compareRunDetails, selectedCompareGroup]);
+  const compareChangeFiles = useMemo(() => {
+    if (!selectedCompareGroup) return [];
+    const files = new Map<string, ReturnType<typeof collectRunChangeFiles>[number]>();
+    selectedCompareGroup.runs.forEach((run) => {
+      const detailRun = compareRunDetails[run.id] || run;
+      const detailIndex = buildArtifactIndex(detailRun.artifacts);
+      collectRunChangeFiles(detailIndex.changes, detailIndex.patch).forEach((file) => {
+        if (!files.has(file.path)) {
+          files.set(file.path, file);
+        }
+      });
+    });
+    return Array.from(files.values());
+  }, [compareRunDetails, selectedCompareGroup]);
 
   useEffect(() => {
     if (!detailRounds.length) {
@@ -673,6 +694,21 @@ export function WorkspaceView() {
       setCompareArtifactType(compareArtifactTypes[0]);
     }
   }, [compareArtifactType, compareArtifactTypes]);
+
+  useEffect(() => {
+    setDetailChangePath(null);
+  }, [selectedRunDetail?.id, selectedDetailRoundGroup?.round]);
+
+  useEffect(() => {
+    if (!compareChangeFiles.length) {
+      setCompareChangePath(null);
+      return;
+    }
+    if (compareChangePath && compareChangeFiles.some((file) => file.path === compareChangePath)) {
+      return;
+    }
+    setCompareChangePath(compareChangeFiles[0].path);
+  }, [compareChangeFiles, compareChangePath]);
 
   async function loadProjects() {
     setIsLoading(true);
@@ -2017,6 +2053,11 @@ export function WorkspaceView() {
                             保存
                           </Button>
                         </div>
+                        <MemorySearchBadges
+                          matchType={preference.matchType}
+                          searchScore={preference.searchScore}
+                          semanticScore={preference.semanticScore}
+                        />
                         <Input
                           className="mt-3"
                           value={preferenceDrafts[preference.id] ?? preference.value}
@@ -2045,6 +2086,11 @@ export function WorkspaceView() {
                   <div className="mt-4 space-y-2">
                     {decisions.map((decision) => (
                       <div key={decision.id} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                        <MemorySearchBadges
+                          matchType={decision.matchType}
+                          searchScore={decision.searchScore}
+                          semanticScore={decision.semanticScore}
+                        />
                         <div className="grid gap-2">
                           <Input
                             value={decisionDrafts[decision.id]?.question ?? decision.question}
@@ -2112,6 +2158,11 @@ export function WorkspaceView() {
                   <div className="mt-4 space-y-2">
                     {learnings.map((learning) => (
                       <div key={learning.id} className="rounded-2xl border border-border/60 bg-background/70 p-3">
+                        <MemorySearchBadges
+                          matchType={learning.matchType}
+                          searchScore={learning.searchScore}
+                          semanticScore={learning.semanticScore}
+                        />
                         <Textarea
                           value={learningDrafts[learning.id] ?? learning.content}
                           onChange={(event) => setLearningDrafts((current) => ({ ...current, [learning.id]: event.target.value }))}
@@ -2306,9 +2357,18 @@ export function WorkspaceView() {
                       <div className="text-xs text-muted-foreground">Round {selectedDetailRoundGroup?.round || selectedRunDetail.round}</div>
                     </div>
                     {selectedArtifact ? (
-                      <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">
-                        {selectedArtifact.content || '（空）'}
-                      </pre>
+                      detailArtifactType === 'changes' || detailArtifactType === 'patch' ? (
+                        <RunChangePreview
+                          changesArtifact={artifactIndex.changes}
+                          patchArtifact={artifactIndex.patch}
+                          selectedPath={detailChangePath}
+                          onSelectPath={setDetailChangePath}
+                        />
+                      ) : (
+                        <pre className="max-h-[420px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">
+                          {selectedArtifact.content || '（空）'}
+                        </pre>
+                      )
                     ) : (
                       <div className="text-xs text-muted-foreground">当前 Round 没有这个 artifact。</div>
                     )}
@@ -2438,6 +2498,22 @@ export function WorkspaceView() {
                         </button>
                       ))}
                     </div>
+                    {(compareArtifactType === 'changes' || compareArtifactType === 'patch') && compareChangeFiles.length ? (
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {compareChangeFiles.map((file) => (
+                          <button
+                            key={file.path}
+                            type="button"
+                            onClick={() => setCompareChangePath(file.path)}
+                            className={`rounded-full border px-3 py-1 text-[11px] transition ${
+                              compareChangePath === file.path ? 'border-primary/50 bg-primary/10 text-primary' : 'border-border/60 bg-background/80 text-muted-foreground'
+                            }`}
+                          >
+                            <span className="font-mono">{file.path}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                     <div className="mt-4 flex gap-3 overflow-x-auto pb-1">
                       {selectedCompareGroup.runs.map((run) => {
                         const detailRun = compareRunDetails[run.id] || run;
@@ -2513,7 +2589,20 @@ export function WorkspaceView() {
                             ) : (
                               <div className="mt-3 rounded-xl border border-border/50 bg-background/80 px-3 py-3">
                                 <div className="text-xs font-medium text-foreground">{compareArtifact?.title || compareArtifactType}</div>
-                                <pre className="mt-2 max-h-[260px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">{artifactPreview(preview, compareArtifactType === 'patch' ? 1200 : 520)}</pre>
+                                {compareArtifactType === 'changes' || compareArtifactType === 'patch' ? (
+                                  <div className="mt-2">
+                                    <RunChangePreview
+                                      changesArtifact={compareIndex.changes}
+                                      patchArtifact={compareIndex.patch}
+                                      selectedPath={compareChangePath}
+                                      showSelector={false}
+                                      strictPath={!!compareChangePath}
+                                      compact
+                                    />
+                                  </div>
+                                ) : (
+                                  <pre className="mt-2 max-h-[260px] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">{artifactPreview(preview, compareArtifactType === 'patch' ? 1200 : 520)}</pre>
+                                )}
                               </div>
                             )}
                             <div className="mt-3 flex flex-wrap gap-2">
@@ -2553,6 +2642,30 @@ function PanelEmpty({
       <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">{icon}</div>
       <div className="text-sm font-medium">{title}</div>
       <div className="max-w-xs text-xs leading-6 text-muted-foreground">{description}</div>
+    </div>
+  );
+}
+
+function MemorySearchBadges({
+  matchType,
+  searchScore,
+  semanticScore,
+}: {
+  matchType?: string;
+  searchScore?: number;
+  semanticScore?: number;
+}) {
+  const scoreText = formatScore(searchScore);
+  const semanticText = formatScore(semanticScore);
+  if (!matchType && !scoreText && !semanticText) {
+    return null;
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {matchType ? <Badge variant="outline">{matchType}</Badge> : null}
+      {scoreText ? <Badge variant="secondary">score {scoreText}</Badge> : null}
+      {semanticText ? <Badge variant="secondary">semantic {semanticText}</Badge> : null}
     </div>
   );
 }

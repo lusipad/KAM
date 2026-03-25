@@ -1,3 +1,25 @@
+export interface MemorySearchMeta {
+  searchScore?: number;
+  semanticScore?: number;
+  matchType?: 'semantic' | 'lexical' | 'hybrid' | string;
+}
+
+export interface GitChangedFileRecord {
+  status: string;
+  label: string;
+  path: string;
+  originalPath?: string | null;
+}
+
+export interface GitArtifactMetadata {
+  repoRoot?: string;
+  executionCwd?: string;
+  files?: Array<GitChangedFileRecord | string>;
+  changed?: number;
+  untracked?: number;
+  trackedDiff?: boolean;
+}
+
 export interface ProjectResourceRecord {
   id: string;
   projectId: string;
@@ -47,7 +69,7 @@ export interface ThreadRunArtifactRecord {
   content: string;
   path?: string | null;
   round: number;
-  metadata: Record<string, unknown>;
+  metadata: Record<string, unknown> & Partial<GitArtifactMetadata>;
   truncated?: boolean;
   createdAt: Date | string;
 }
@@ -82,7 +104,7 @@ export interface ThreadMessageRecord {
   createdAt: Date | string;
 }
 
-export interface UserPreferenceRecord {
+export interface UserPreferenceRecord extends MemorySearchMeta {
   id: string;
   category: string;
   key: string;
@@ -91,7 +113,7 @@ export interface UserPreferenceRecord {
   createdAt: Date | string;
 }
 
-export interface DecisionRecord {
+export interface DecisionRecord extends MemorySearchMeta {
   id: string;
   projectId?: string | null;
   question: string;
@@ -101,7 +123,7 @@ export interface DecisionRecord {
   createdAt: Date | string;
 }
 
-export interface ProjectLearningRecord {
+export interface ProjectLearningRecord extends MemorySearchMeta {
   id: string;
   projectId: string;
   content: string;
