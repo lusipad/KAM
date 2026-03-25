@@ -202,6 +202,10 @@ class LiteCoreApiTests(unittest.TestCase):
             self.assertEqual(task_metrics.json()["interruptedSessions"], 1)
             self.assertEqual(task_metrics.json()["interruptionRate"], 1)
 
+            # Windows 下打断后也必须释放日志文件句柄，否则下一轮自治检查会被测试清理卡住。
+            self._remove_workroot()
+            self.workroot.mkdir(parents=True, exist_ok=True)
+
     def test_api_surface_is_lite_core_only(self):
         expected_routes = {
             ("GET", "/api/tasks"),

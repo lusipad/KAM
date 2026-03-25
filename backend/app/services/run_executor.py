@@ -35,10 +35,11 @@ class RunExecutionManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._processes: dict[str, subprocess.Popen] = {}
+        self._threads: dict[str, threading.Thread] = {}
 
     def launch_run(self, run_id: str) -> bool:
         with self._lock:
-            if run_id in self._processes:
+            if run_id in self._threads:
                 return False
 
         db = SessionLocal()
@@ -53,20 +54,33 @@ class RunExecutionManager:
             db.close()
 
         thread = threading.Thread(target=self._execute_run, args=(run_id,), daemon=True)
+        with self._lock:
+            self._threads[run_id] = thread
         thread.start()
         return True
 
     def cancel_run(self, run_id: str) -> bool:
         with self._lock:
             process = self._processes.get(run_id)
+            thread = self._threads.get(run_id)
 
         if not process:
+            if thread and thread.is_alive():
+                thread.join(timeout=5)
+                return True
             return False
 
         if process.poll() is None:
             process.terminate()
-            return True
-        return False
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+        if thread and thread.is_alive():
+            thread.join(timeout=5)
+        return True
 
     def _execute_run(self, run_id: str):
         db = SessionLocal()
@@ -142,9 +156,6 @@ class RunExecutionManager:
                 stdout_file.close()
                 stderr_file.close()
 
-            with self._lock:
-                self._processes.pop(str(run.id), None)
-
             db.expire_all()
             run = db.query(AgentRun).filter(AgentRun.id == run_id).first()
             if not run:
@@ -211,6 +222,9 @@ class RunExecutionManager:
                 self._refresh_task_status(db, task_id=str(run.task_id))
                 db.commit()
         finally:
+            with self._lock:
+                self._processes.pop(run_id, None)
+                self._threads.pop(run_id, None)
             db.close()
 
     def _prepare_execution(self, db: Session, run: AgentRun, task: TaskCard) -> dict[str, Any]:
