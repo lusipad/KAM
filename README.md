@@ -115,6 +115,8 @@ cd backend
 python3 -m unittest discover -s tests -v
 ```
 
+其中 `tests.test_v2_workspace` 已包含一个真实仓库场景回归：通过 `bootstrap/message` 生成并验收一个静态天气页面，用来验证 Project / Thread / Run / checks 的端到端链路。
+
 前端构建：
 
 ```bash

@@ -1,6 +1,8 @@
 import os
 import shutil
+import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from pathlib import Path
@@ -51,6 +53,543 @@ class V2WorkspaceApiTests(unittest.TestCase):
                 return last_payload
             time.sleep(0.25)
         self.fail(f"run {run_id} not finished in time, last={last_payload}")
+
+    def _write_fixture(self, path: Path, content: str):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
+
+    def _python_script_command(self, script_path: str, *args: str) -> str:
+        quoted_python = f"'{sys.executable}'"
+        if os.name == "nt":
+            return " ".join(["&", quoted_python, script_path, *args])
+        return " ".join([quoted_python, script_path, *args])
+
+    def _create_weather_page_fixture(self, repo_root: Path):
+        self._write_fixture(
+            repo_root / "README.md",
+            """
+            # Weather Pulse
+
+            This fixture represents a tiny static frontend app.
+
+            - Keep the entrypoints stable: `index.html`, `styles.css`, `app.js`
+            - Do not add external dependencies
+            - Render a weather dashboard with local mock data
+            """,
+        )
+        self._write_fixture(
+            repo_root / "AGENTS.md",
+            """
+            # Repo Workflow
+
+            - Preserve semantic HTML and accessible button labels
+            - Keep the UI in a single static page
+            - Support at least three cities: Beijing, Shanghai, Shenzhen
+            - Show current weather, quick metrics, and a 3-day forecast
+            """,
+        )
+        self._write_fixture(
+            repo_root / "index.html",
+            """
+            <!DOCTYPE html>
+            <html lang="en">
+              <head>
+                <meta charset="UTF-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+                <title>Starter</title>
+                <link rel="stylesheet" href="./styles.css" />
+              </head>
+              <body>
+                <main class="app-shell">
+                  <h1>Starter app</h1>
+                  <p>Replace this placeholder with a real page.</p>
+                </main>
+                <script type="module" src="./app.js"></script>
+              </body>
+            </html>
+            """,
+        )
+        self._write_fixture(
+            repo_root / "styles.css",
+            """
+            :root {
+              color-scheme: light;
+              font-family: Arial, sans-serif;
+            }
+
+            body {
+              margin: 0;
+              padding: 32px;
+              background: #f6f6f6;
+            }
+            """,
+        )
+        self._write_fixture(
+            repo_root / "app.js",
+            """
+            console.log("starter");
+            """,
+        )
+        self._write_fixture(
+            repo_root / "validate_weather_page.py",
+            """
+            from pathlib import Path
+
+
+            root = Path(__file__).resolve().parent
+            html = (root / "index.html").read_text(encoding="utf-8")
+            css = (root / "styles.css").read_text(encoding="utf-8")
+            js = (root / "app.js").read_text(encoding="utf-8")
+
+            errors: list[str] = []
+
+            def expect(text: str, content: str, message: str):
+                if text not in content:
+                    errors.append(message)
+
+
+            expect("<title>Weather Pulse</title>", html, "missing weather page title")
+            expect('id="city-switcher"', html, "missing city switcher")
+            expect('id="current-weather"', html, "missing current weather section")
+            expect('id="forecast-list"', html, "missing forecast list")
+            expect('id="metric-grid"', html, "missing metric grid")
+            expect('<script type="module" src="./app.js"></script>', html, "missing app script")
+            expect('weather-shell', css, "missing shell styles")
+            expect('forecast-card', css, "missing forecast card styles")
+            expect('const weatherByCity', js, "missing weather data map")
+            expect('function renderCity', js, "missing render function")
+            expect('const citySwitcher = document.querySelector', js, "missing city switcher binding")
+
+            for city in ("Beijing", "Shanghai", "Shenzhen"):
+                expect(city, html + js, f"missing city {city}")
+
+            if errors:
+                raise SystemExit("\\n".join(errors))
+
+            print("weather page validation ok")
+            """,
+        )
+        self._write_fixture(
+            repo_root / "tools" / "generate_weather_page.py",
+            """
+            from __future__ import annotations
+
+            import argparse
+            from pathlib import Path
+
+
+            HTML = \"\"\"<!DOCTYPE html>
+            <html lang="en">
+              <head>
+                <meta charset="UTF-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+                <title>Weather Pulse</title>
+                <link rel="stylesheet" href="./styles.css" />
+              </head>
+              <body>
+                <main class="weather-shell">
+                  <section class="hero">
+                    <p class="eyebrow">Local mock weather</p>
+                    <h1>Weather Pulse</h1>
+                    <p class="hero-copy">A compact city weather dashboard with current conditions, quick metrics, and a 3-day forecast.</p>
+                  </section>
+
+                  <section class="panel">
+                    <div id="city-switcher" class="city-switcher" aria-label="City switcher">
+                      <button type="button" class="city-pill is-active" data-city="Beijing">Beijing</button>
+                      <button type="button" class="city-pill" data-city="Shanghai">Shanghai</button>
+                      <button type="button" class="city-pill" data-city="Shenzhen">Shenzhen</button>
+                    </div>
+
+                    <div class="current-layout">
+                      <article id="current-weather" class="current-card" aria-live="polite"></article>
+                      <div id="metric-grid" class="metric-grid"></div>
+                    </div>
+
+                    <section class="forecast-panel">
+                      <div class="section-heading">
+                        <h2>3-day forecast</h2>
+                        <p>Updated from local mock weather snapshots.</p>
+                      </div>
+                      <div id="forecast-list" class="forecast-list"></div>
+                    </section>
+                  </section>
+                </main>
+                <script type="module" src="./app.js"></script>
+              </body>
+            </html>
+            \"\"\"
+
+            CSS = \"\"\":root {
+              color-scheme: light;
+              font-family: "Segoe UI", Arial, sans-serif;
+              --bg: #f4f7fb;
+              --panel: rgba(255, 255, 255, 0.82);
+              --line: rgba(33, 44, 65, 0.12);
+              --text: #172033;
+              --muted: #5f6f86;
+              --accent: #1d74f5;
+              --accent-soft: rgba(29, 116, 245, 0.12);
+            }
+
+            * {
+              box-sizing: border-box;
+            }
+
+            body {
+              margin: 0;
+              min-height: 100vh;
+              background:
+                radial-gradient(circle at top left, rgba(29, 116, 245, 0.18), transparent 30%),
+                linear-gradient(180deg, #f8fbff 0%, var(--bg) 100%);
+              color: var(--text);
+            }
+
+            .weather-shell {
+              width: min(1120px, calc(100% - 48px));
+              margin: 0 auto;
+              padding: 48px 0 72px;
+            }
+
+            .hero {
+              display: grid;
+              gap: 10px;
+              margin-bottom: 28px;
+            }
+
+            .eyebrow {
+              margin: 0;
+              font-size: 12px;
+              letter-spacing: 0.18em;
+              text-transform: uppercase;
+              color: var(--muted);
+            }
+
+            .hero h1 {
+              margin: 0;
+              font-size: clamp(2.4rem, 4vw, 4rem);
+            }
+
+            .hero-copy {
+              margin: 0;
+              max-width: 62ch;
+              line-height: 1.65;
+              color: var(--muted);
+            }
+
+            .panel {
+              border: 1px solid var(--line);
+              border-radius: 28px;
+              background: var(--panel);
+              backdrop-filter: blur(14px);
+              box-shadow: 0 24px 70px rgba(20, 33, 61, 0.08);
+              padding: 24px;
+            }
+
+            .city-switcher {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 12px;
+              margin-bottom: 24px;
+            }
+
+            .city-pill {
+              border: 0;
+              border-radius: 999px;
+              padding: 10px 16px;
+              background: rgba(23, 32, 51, 0.06);
+              color: var(--text);
+              cursor: pointer;
+              font: inherit;
+            }
+
+            .city-pill.is-active {
+              background: var(--accent);
+              color: white;
+            }
+
+            .current-layout {
+              display: grid;
+              gap: 18px;
+              grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.9fr);
+              align-items: stretch;
+            }
+
+            .current-card,
+            .metric-grid,
+            .forecast-panel {
+              border: 1px solid rgba(23, 32, 51, 0.08);
+              border-radius: 22px;
+              background: rgba(255, 255, 255, 0.88);
+            }
+
+            .current-card {
+              padding: 22px;
+              display: grid;
+              gap: 16px;
+            }
+
+            .current-meta {
+              display: flex;
+              justify-content: space-between;
+              gap: 12px;
+              color: var(--muted);
+              font-size: 14px;
+            }
+
+            .current-temp {
+              font-size: clamp(3rem, 5vw, 4.8rem);
+              line-height: 0.95;
+              font-weight: 700;
+            }
+
+            .condition-chip {
+              display: inline-flex;
+              width: fit-content;
+              border-radius: 999px;
+              padding: 6px 12px;
+              background: var(--accent-soft);
+              color: var(--accent);
+              font-size: 14px;
+              font-weight: 600;
+            }
+
+            .metric-grid {
+              padding: 18px;
+              display: grid;
+              gap: 12px;
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            .metric-card {
+              border-radius: 16px;
+              background: rgba(23, 32, 51, 0.04);
+              padding: 14px;
+            }
+
+            .metric-label {
+              color: var(--muted);
+              font-size: 12px;
+              text-transform: uppercase;
+              letter-spacing: 0.08em;
+            }
+
+            .metric-value {
+              margin-top: 8px;
+              font-size: 20px;
+              font-weight: 700;
+            }
+
+            .forecast-panel {
+              margin-top: 18px;
+              padding: 22px;
+            }
+
+            .section-heading {
+              display: flex;
+              flex-wrap: wrap;
+              justify-content: space-between;
+              gap: 8px;
+              margin-bottom: 16px;
+            }
+
+            .section-heading h2,
+            .section-heading p {
+              margin: 0;
+            }
+
+            .section-heading p {
+              color: var(--muted);
+            }
+
+            .forecast-list {
+              display: grid;
+              gap: 14px;
+              grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+
+            .forecast-card {
+              border-radius: 18px;
+              background: rgba(23, 32, 51, 0.04);
+              padding: 16px;
+              display: grid;
+              gap: 6px;
+            }
+
+            .forecast-day {
+              font-weight: 700;
+            }
+
+            .forecast-range {
+              font-size: 22px;
+              font-weight: 700;
+            }
+
+            .forecast-note {
+              color: var(--muted);
+              line-height: 1.5;
+            }
+
+            @media (max-width: 860px) {
+              .weather-shell {
+                width: min(100% - 24px, 100%);
+                padding: 24px 0 48px;
+              }
+
+              .panel {
+                padding: 16px;
+              }
+
+              .current-layout,
+              .forecast-list {
+                grid-template-columns: 1fr;
+              }
+            }
+            \"\"\"
+
+            JS = \"\"\"const weatherByCity = {
+              Beijing: {
+                updatedAt: "06:30",
+                condition: "Sunny",
+                temperature: 27,
+                high: 31,
+                low: 20,
+                metrics: [
+                  { label: "Humidity", value: "42%" },
+                  { label: "Wind", value: "12 km/h" },
+                  { label: "UV Index", value: "6 / 10" },
+                  { label: "Feels Like", value: "29°C" },
+                ],
+                forecast: [
+                  { day: "Today", range: "31° / 20°", note: "Clear sky with dry afternoon breeze." },
+                  { day: "Tomorrow", range: "29° / 19°", note: "Bright morning, light cloud in the evening." },
+                  { day: "Friday", range: "28° / 18°", note: "Cooler night and comfortable daytime sun." },
+                ],
+              },
+              Shanghai: {
+                updatedAt: "06:35",
+                condition: "Cloudy",
+                temperature: 24,
+                high: 28,
+                low: 21,
+                metrics: [
+                  { label: "Humidity", value: "63%" },
+                  { label: "Wind", value: "18 km/h" },
+                  { label: "UV Index", value: "4 / 10" },
+                  { label: "Feels Like", value: "26°C" },
+                ],
+                forecast: [
+                  { day: "Today", range: "28° / 21°", note: "Soft cloud cover with warm, humid air." },
+                  { day: "Tomorrow", range: "27° / 22°", note: "Brief drizzle around noon, calm by sunset." },
+                  { day: "Friday", range: "26° / 21°", note: "Thicker morning cloud then brighter afternoon." },
+                ],
+              },
+              Shenzhen: {
+                updatedAt: "06:20",
+                condition: "Rain Showers",
+                temperature: 29,
+                high: 32,
+                low: 25,
+                metrics: [
+                  { label: "Humidity", value: "78%" },
+                  { label: "Wind", value: "15 km/h" },
+                  { label: "UV Index", value: "5 / 10" },
+                  { label: "Feels Like", value: "34°C" },
+                ],
+                forecast: [
+                  { day: "Today", range: "32° / 25°", note: "Scattered showers and muggy afternoon heat." },
+                  { day: "Tomorrow", range: "31° / 25°", note: "Storm risk after lunch with mild evening rain." },
+                  { day: "Friday", range: "30° / 24°", note: "Cloud breaks in the morning, showers later." },
+                ],
+              },
+            };
+
+            const citySwitcher = document.querySelector("#city-switcher");
+            const currentWeather = document.querySelector("#current-weather");
+            const metricGrid = document.querySelector("#metric-grid");
+            const forecastList = document.querySelector("#forecast-list");
+
+            function renderCity(city) {
+              const data = weatherByCity[city];
+              if (!data) return;
+
+              currentWeather.innerHTML = `
+                <div class="current-meta">
+                  <span>${city}</span>
+                  <span>Updated ${data.updatedAt}</span>
+                </div>
+                <div class="current-temp">${data.temperature}°C</div>
+                <div class="condition-chip">${data.condition}</div>
+                <div class="forecast-note">Daily range ${data.high}° / ${data.low}° with local mock weather data.</div>
+              `;
+
+              metricGrid.innerHTML = data.metrics
+                .map(
+                  (metric) => `
+                    <article class="metric-card">
+                      <div class="metric-label">${metric.label}</div>
+                      <div class="metric-value">${metric.value}</div>
+                    </article>
+                  `,
+                )
+                .join("");
+
+              forecastList.innerHTML = data.forecast
+                .map(
+                  (item) => `
+                    <article class="forecast-card">
+                      <div class="forecast-day">${item.day}</div>
+                      <div class="forecast-range">${item.range}</div>
+                      <div class="forecast-note">${item.note}</div>
+                    </article>
+                  `,
+                )
+                .join("");
+
+              citySwitcher.querySelectorAll("[data-city]").forEach((button) => {
+                button.classList.toggle("is-active", button.dataset.city === city);
+              });
+            }
+
+            citySwitcher.addEventListener("click", (event) => {
+              const target = event.target.closest("[data-city]");
+              if (!target) return;
+              renderCity(target.dataset.city);
+            });
+
+            renderCity("Beijing");
+            \"\"\"
+
+            def main():
+                parser = argparse.ArgumentParser()
+                parser.add_argument("--summary", required=True)
+                parser.add_argument("--prompt", required=True)
+                args = parser.parse_args()
+
+                repo_root = Path.cwd()
+                prompt = Path(args.prompt).read_text(encoding="utf-8").strip()
+
+                # Touch the repo instructions so the scenario behaves like a real repository task.
+                _ = (repo_root / "README.md").read_text(encoding="utf-8")
+                _ = (repo_root / "AGENTS.md").read_text(encoding="utf-8")
+
+                (repo_root / "index.html").write_text(HTML, encoding="utf-8")
+                (repo_root / "styles.css").write_text(CSS, encoding="utf-8")
+                (repo_root / "app.js").write_text(JS, encoding="utf-8")
+
+                summary = (
+                    "Created a Weather Pulse dashboard with a city switcher, current weather card, "
+                    "metric grid, and a three-day forecast. "
+                    f"Prompt source: {prompt.splitlines()[1] if len(prompt.splitlines()) > 1 else prompt[:80]}"
+                )
+                Path(args.summary).write_text(summary, encoding="utf-8")
+                print("weather page generated")
+
+
+            if __name__ == "__main__":
+                main()
+            """,
+        )
 
     def test_project_thread_message_and_run_flow(self):
         with TestClient(app) as client:
@@ -164,6 +703,71 @@ class V2WorkspaceApiTests(unittest.TestCase):
                 self.assertEqual(filtered_payload['totalEntries'], 2)
                 self.assertEqual(filtered_payload['filteredEntries'], 1)
                 self.assertEqual(filtered_payload['entries'][0]['name'], 'src')
+
+    def test_bootstrap_message_real_weather_page_scenario_generates_valid_repo_output(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            repo_root = Path(repo_dir)
+            self._create_weather_page_fixture(repo_root)
+
+            command = self._python_script_command(
+                "tools/generate_weather_page.py",
+                "--summary",
+                "'{summary_file}'",
+                "--prompt",
+                "'{prompt_file}'",
+            )
+            validate_command = self._python_script_command("validate_weather_page.py")
+
+            with TestClient(app) as client:
+                created = client.post(
+                    "/api/v2/bootstrap/message",
+                    json={
+                        "projectTitle": "Weather Pulse workspace",
+                        "threadTitle": "Build weather page",
+                        "repoPath": str(repo_root),
+                        "checkCommands": [validate_command],
+                        "content": "生成一个天气页面，支持北京、上海、深圳切换，展示当前天气、关键指标和未来三天预报。",
+                        "agent": "custom",
+                        "command": command,
+                        "createRun": True,
+                    },
+                )
+                self.assertEqual(created.status_code, 200)
+                payload = created.json()
+                self.assertEqual(payload["project"]["title"], "Weather Pulse workspace")
+                self.assertEqual(payload["thread"]["title"], "Build weather page")
+                self.assertEqual(len(payload["runs"]), 1)
+
+                run_payload = self._wait_run(client, payload["runs"][0]["id"])
+                self.assertEqual(run_payload["status"], "passed")
+
+                html = (repo_root / "index.html").read_text(encoding="utf-8")
+                css = (repo_root / "styles.css").read_text(encoding="utf-8")
+                js = (repo_root / "app.js").read_text(encoding="utf-8")
+                self.assertIn("Weather Pulse", html)
+                self.assertIn('id="city-switcher"', html)
+                self.assertIn('id="current-weather"', html)
+                self.assertIn("forecast-card", css)
+                self.assertIn("renderCity", js)
+                self.assertIn("Shenzhen", js)
+
+                artifacts = client.get(f"/api/v2/runs/{payload['runs'][0]['id']}/artifacts")
+                self.assertEqual(artifacts.status_code, 200)
+                artifact_payload = artifacts.json()["artifacts"]
+                artifact_types = {item["type"] for item in artifact_payload}
+                self.assertTrue({"summary", "stdout", "stderr", "check_result"}.issubset(artifact_types))
+
+                summary_artifact = next(item for item in artifact_payload if item["type"] == "summary")
+                self.assertIn("Weather Pulse dashboard", summary_artifact["content"])
+
+                check_artifact = next(item for item in artifact_payload if item["type"] == "check_result")
+                self.assertIn("validate_weather_page.py", check_artifact["content"])
+                self.assertIn('"passed": true', check_artifact["content"])
+
+                tree = client.get(f"/api/v2/projects/{payload['project']['id']}/files")
+                self.assertEqual(tree.status_code, 200)
+                names = {item["name"] for item in tree.json()["entries"]}
+                self.assertTrue({"index.html", "styles.css", "app.js", "validate_weather_page.py", "tools"}.issubset(names))
 
     def test_run_events_endpoint_streams_payload(self):
         with TestClient(app) as client:
