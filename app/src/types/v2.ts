@@ -154,6 +154,7 @@ export interface PostThreadMessageResponse {
   preferences?: UserPreferenceRecord[];
   routerMode?: string;
   compareId?: string | null;
+  thread?: ProjectThread;
 }
 
 export interface BootstrapThreadMessageResponse extends PostThreadMessageResponse {

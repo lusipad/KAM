@@ -130,6 +130,45 @@ function asThreadMessage(value: unknown): ThreadMessageRecord | null {
   return value as unknown as ThreadMessageRecord;
 }
 
+function upsertThreadSummary(current: ProjectThread[], nextThread: ProjectThread) {
+  if (current.some((item) => item.id === nextThread.id)) {
+    return current.map((item) => (item.id === nextThread.id ? { ...item, ...nextThread } : item));
+  }
+  return [nextThread, ...current];
+}
+
+function upsertProjectSummary(current: ProjectRecord[], nextProject: ProjectRecord) {
+  if (current.some((item) => item.id === nextProject.id)) {
+    return current.map((item) => (item.id === nextProject.id ? { ...item, ...nextProject } : item));
+  }
+  return [nextProject, ...current];
+}
+
+function appendThreadMessage(thread: ProjectThread | null, message: ThreadMessageRecord) {
+  if (!thread || thread.id !== message.threadId) {
+    return thread;
+  }
+
+  const existingMessages = thread.messages || [];
+  if (existingMessages.some((item) => item.id === message.id)) {
+    return thread;
+  }
+
+  const nextMessages = [...existingMessages, message];
+  return {
+    ...thread,
+    messages: nextMessages,
+    messageCount: Math.max(thread.messageCount || 0, nextMessages.length),
+    updatedAt: message.createdAt,
+  };
+}
+
+function isBootstrapResponse(
+  value: PostThreadMessageResponse | BootstrapThreadMessageResponse,
+): value is BootstrapThreadMessageResponse {
+  return isRecord(value) && isRecord(value.project) && isRecord(value.thread);
+}
+
 function splitCommands(value: string) {
   return value
     .split('\n')
@@ -757,16 +796,19 @@ export function WorkspaceView() {
       setStreamingReplyText(reply.content);
     }
 
+    const message = asThreadMessage(payload.message);
+    if (message) {
+      setSelectedThread((current) => appendThreadMessage(current, message));
+    }
+    if (reply) {
+      setSelectedThread((current) => appendThreadMessage(current, reply));
+    }
+
     const streamThread = payload.thread;
     if (isRecord(streamThread) && typeof streamThread.id === 'string') {
       const nextThread = streamThread as unknown as ProjectThread;
       setSelectedThread(nextThread);
-      setThreads((current) => {
-        if (current.some((item) => item.id === nextThread.id)) {
-          return current.map((item) => (item.id === nextThread.id ? { ...item, ...nextThread } : item));
-        }
-        return [nextThread, ...current];
-      });
+      setThreads((current) => upsertThreadSummary(current, nextThread));
     }
 
     const runs = asRunList(payload.runs);
@@ -897,11 +939,21 @@ export function WorkspaceView() {
           setActivePanel('detail');
         }
       }
-      if (nextThreadId) {
+      if (response.thread) {
+        setSelectedThread(response.thread);
+        setThreads((current) => upsertThreadSummary(current, response.thread!));
+      } else if (nextThreadId) {
         await loadThread(nextThreadId);
       }
-      if (nextProjectId) {
+
+      if (isBootstrapResponse(response)) {
+        setSelectedProject(response.project);
+        setProjects((current) => upsertProjectSummary(current, response.project));
+        setThreads(response.project.threads || [response.thread]);
+      } else if (nextProjectId) {
         await loadProject(nextProjectId, fileTreePath);
+      }
+      if (nextProjectId) {
         await loadMemory(nextProjectId, memoryQuery);
       }
       setStreamingReplyText('');
