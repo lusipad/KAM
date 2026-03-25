@@ -117,6 +117,8 @@ export const v2MemoryApi = {
     reasoning?: string;
     sourceThreadId?: string;
   }) => post<DecisionRecord, typeof data>('/v2/memory/decisions', data),
+  updateDecision: (decisionId: string, data: { question: string; decision: string; reasoning?: string; sourceThreadId?: string }) =>
+    put<DecisionRecord, typeof data>(`/v2/memory/decisions/${decisionId}`, data),
   listLearnings: (params?: { project_id?: string; query?: string }) =>
     get<{ learnings: ProjectLearningRecord[] }>('/v2/memory/learnings', params),
   createLearning: (data: {
@@ -125,6 +127,8 @@ export const v2MemoryApi = {
     embedding?: number[];
     sourceThreadId?: string;
   }) => post<ProjectLearningRecord, typeof data>('/v2/memory/learnings', data),
+  updateLearning: (learningId: string, data: { content: string; embedding?: number[]; sourceThreadId?: string }) =>
+    put<ProjectLearningRecord, typeof data>(`/v2/memory/learnings/${learningId}`, data),
   search: (params?: { query?: string; project_id?: string }) =>
     get<{
       preferences: UserPreferenceRecord[];

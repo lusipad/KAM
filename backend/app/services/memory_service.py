@@ -75,6 +75,22 @@ class MemoryService:
         self.db.refresh(decision)
         return decision
 
+    def update_decision(self, decision_id: str, data: dict[str, Any]) -> DecisionLog | None:
+        decision = self.db.query(DecisionLog).filter(DecisionLog.id == decision_id).first()
+        if not decision:
+            return None
+        if "question" in data:
+            decision.question = data["question"]
+        if "decision" in data:
+            decision.decision = data["decision"]
+        if "reasoning" in data:
+            decision.reasoning = data.get("reasoning", "")
+        if "sourceThreadId" in data or "source_thread_id" in data:
+            decision.source_thread_id = data.get("sourceThreadId") or data.get("source_thread_id")
+        self.db.commit()
+        self.db.refresh(decision)
+        return decision
+
     def list_learnings(self, project_id: str | None = None, query: str | None = None) -> list[ProjectLearning]:
         statement = self.db.query(ProjectLearning)
         if project_id:
@@ -91,6 +107,20 @@ class MemoryService:
             source_thread_id=data.get("sourceThreadId") or data.get("source_thread_id"),
         )
         self.db.add(learning)
+        self.db.commit()
+        self.db.refresh(learning)
+        return learning
+
+    def update_learning(self, learning_id: str, data: dict[str, Any]) -> ProjectLearning | None:
+        learning = self.db.query(ProjectLearning).filter(ProjectLearning.id == learning_id).first()
+        if not learning:
+            return None
+        if "content" in data:
+            learning.content = data["content"]
+        if "embedding" in data:
+            learning.embedding = data.get("embedding")
+        if "sourceThreadId" in data or "source_thread_id" in data:
+            learning.source_thread_id = data.get("sourceThreadId") or data.get("source_thread_id")
         self.db.commit()
         self.db.refresh(learning)
         return learning

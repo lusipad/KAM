@@ -35,8 +35,21 @@ class DecisionCreate(BaseModel):
     sourceThreadId: Optional[str] = None
 
 
+class DecisionUpdate(BaseModel):
+    question: str = Field(..., min_length=1)
+    decision: str = Field(..., min_length=1)
+    reasoning: str = ""
+    sourceThreadId: Optional[str] = None
+
+
 class LearningCreate(BaseModel):
     projectId: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1)
+    embedding: Optional[list[float]] = None
+    sourceThreadId: Optional[str] = None
+
+
+class LearningUpdate(BaseModel):
     content: str = Field(..., min_length=1)
     embedding: Optional[list[float]] = None
     sourceThreadId: Optional[str] = None
@@ -75,6 +88,15 @@ async def create_decision(data: DecisionCreate, db: Session = Depends(get_db)):
     return service.create_decision(data.model_dump()).to_dict()
 
 
+@router.put("/memory/decisions/{decision_id}")
+async def update_decision(decision_id: str, data: DecisionUpdate, db: Session = Depends(get_db)):
+    service = MemoryService(db)
+    decision = service.update_decision(decision_id, data.model_dump())
+    if not decision:
+        raise HTTPException(status_code=404, detail="决策不存在")
+    return decision.to_dict()
+
+
 @router.get("/memory/learnings")
 async def list_learnings(
     project_id: Optional[str] = Query(default=None),
@@ -89,6 +111,15 @@ async def list_learnings(
 async def create_learning(data: LearningCreate, db: Session = Depends(get_db)):
     service = MemoryService(db)
     return service.create_learning(data.model_dump()).to_dict()
+
+
+@router.put("/memory/learnings/{learning_id}")
+async def update_learning(learning_id: str, data: LearningUpdate, db: Session = Depends(get_db)):
+    service = MemoryService(db)
+    learning = service.update_learning(learning_id, data.model_dump())
+    if not learning:
+        raise HTTPException(status_code=404, detail="learning 不存在")
+    return learning.to_dict()
 
 
 @router.get("/memory/search")

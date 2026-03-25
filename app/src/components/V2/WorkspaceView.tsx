@@ -103,6 +103,10 @@ function parseCheckResults(content?: string) {
   }
 }
 
+function checkOutputText(item: Record<string, unknown>) {
+  return asString(item.stderrPreview) || asString(item.stdoutPreview) || asString(item.output);
+}
+
 function summaryText(run?: ConversationRun | null) {
   const artifacts = buildArtifactIndex(run?.artifacts);
   return artifacts.summary?.content?.trim() || run?.error || '暂无摘要';
@@ -154,6 +158,8 @@ export function WorkspaceView() {
   const [decisionForm, setDecisionForm] = useState({ question: '', decision: '', reasoning: '' });
   const [learningForm, setLearningForm] = useState({ content: '' });
   const [preferenceDrafts, setPreferenceDrafts] = useState<Record<string, string>>({});
+  const [decisionDrafts, setDecisionDrafts] = useState<Record<string, { question: string; decision: string; reasoning: string }>>({});
+  const [learningDrafts, setLearningDrafts] = useState<Record<string, string>>({});
 
   const [comparePrompt, setComparePrompt] = useState('');
   const [fileTreePath, setFileTreePath] = useState('');
@@ -428,6 +434,20 @@ export function WorkspaceView() {
           nextDrafts[item.id] = item.value;
         });
         setPreferenceDrafts(nextDrafts);
+        const nextDecisionDrafts: Record<string, { question: string; decision: string; reasoning: string }> = {};
+        (response.decisions || []).forEach((item) => {
+          nextDecisionDrafts[item.id] = {
+            question: item.question,
+            decision: item.decision,
+            reasoning: item.reasoning || '',
+          };
+        });
+        setDecisionDrafts(nextDecisionDrafts);
+        const nextLearningDrafts: Record<string, string> = {};
+        (response.learnings || []).forEach((item) => {
+          nextLearningDrafts[item.id] = item.content;
+        });
+        setLearningDrafts(nextLearningDrafts);
         return;
       }
 
@@ -444,6 +464,20 @@ export function WorkspaceView() {
         nextDrafts[item.id] = item.value;
       });
       setPreferenceDrafts(nextDrafts);
+      const nextDecisionDrafts: Record<string, { question: string; decision: string; reasoning: string }> = {};
+      (decisionsResponse.decisions || []).forEach((item) => {
+        nextDecisionDrafts[item.id] = {
+          question: item.question,
+          decision: item.decision,
+          reasoning: item.reasoning || '',
+        };
+      });
+      setDecisionDrafts(nextDecisionDrafts);
+      const nextLearningDrafts: Record<string, string> = {};
+      (learningsResponse.learnings || []).forEach((item) => {
+        nextLearningDrafts[item.id] = item.content;
+      });
+      setLearningDrafts(nextLearningDrafts);
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -730,6 +764,48 @@ export function WorkspaceView() {
       });
       setLearningForm({ content: '' });
       await loadMemory(selectedProjectId, memoryQuery);
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleSaveDecision(decisionId: string) {
+    const draft = decisionDrafts[decisionId];
+    if (!draft || !draft.question.trim() || !draft.decision.trim()) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2MemoryApi.updateDecision(decisionId, {
+        question: draft.question.trim(),
+        decision: draft.decision.trim(),
+        reasoning: draft.reasoning.trim(),
+        sourceThreadId: selectedThreadId || undefined,
+      });
+      if (selectedProjectId) {
+        await loadMemory(selectedProjectId, memoryQuery);
+      }
+    } catch (error) {
+      setErrorMessage(getErrorMessage(error));
+    } finally {
+      setIsMutating(false);
+    }
+  }
+
+  async function handleSaveLearning(learningId: string) {
+    const content = (learningDrafts[learningId] || '').trim();
+    if (!content) return;
+    setIsMutating(true);
+    try {
+      setErrorMessage(null);
+      await v2MemoryApi.updateLearning(learningId, {
+        content,
+        sourceThreadId: selectedThreadId || undefined,
+      });
+      if (selectedProjectId) {
+        await loadMemory(selectedProjectId, memoryQuery);
+      }
     } catch (error) {
       setErrorMessage(getErrorMessage(error));
     } finally {
@@ -1495,10 +1571,52 @@ export function WorkspaceView() {
                   <div className="mt-4 space-y-2">
                     {decisions.map((decision) => (
                       <div key={decision.id} className="rounded-2xl border border-border/60 bg-background/70 p-3">
-                        <div className="text-sm font-medium">{decision.question}</div>
-                        <div className="mt-2 text-sm">{decision.decision}</div>
-                        {decision.reasoning ? <div className="mt-2 text-xs text-muted-foreground">{decision.reasoning}</div> : null}
-                        <div className="mt-2 text-[11px] text-muted-foreground">{fmtTime(decision.createdAt)}</div>
+                        <div className="grid gap-2">
+                          <Input
+                            value={decisionDrafts[decision.id]?.question ?? decision.question}
+                            onChange={(event) => setDecisionDrafts((current) => ({
+                              ...current,
+                              [decision.id]: {
+                                question: event.target.value,
+                                decision: current[decision.id]?.decision ?? decision.decision,
+                                reasoning: current[decision.id]?.reasoning ?? decision.reasoning,
+                              },
+                            }))}
+                            placeholder="决策问题"
+                          />
+                          <Input
+                            value={decisionDrafts[decision.id]?.decision ?? decision.decision}
+                            onChange={(event) => setDecisionDrafts((current) => ({
+                              ...current,
+                              [decision.id]: {
+                                question: current[decision.id]?.question ?? decision.question,
+                                decision: event.target.value,
+                                reasoning: current[decision.id]?.reasoning ?? decision.reasoning,
+                              },
+                            }))}
+                            placeholder="最终决策"
+                          />
+                          <Textarea
+                            value={decisionDrafts[decision.id]?.reasoning ?? decision.reasoning}
+                            onChange={(event) => setDecisionDrafts((current) => ({
+                              ...current,
+                              [decision.id]: {
+                                question: current[decision.id]?.question ?? decision.question,
+                                decision: current[decision.id]?.decision ?? decision.decision,
+                                reasoning: event.target.value,
+                              },
+                            }))}
+                            placeholder="为什么这么选"
+                            className="min-h-[84px] rounded-xl"
+                          />
+                        </div>
+                        <div className="mt-3 flex items-center justify-between gap-2">
+                          <div className="text-[11px] text-muted-foreground">{fmtTime(decision.createdAt)}</div>
+                          <Button size="sm" variant="outline" onClick={() => void handleSaveDecision(decision.id)} disabled={isMutating}>
+                            <Save className="mr-1 h-3.5 w-3.5" />
+                            保存
+                          </Button>
+                        </div>
                       </div>
                     ))}
                     {!decisions.length && <div className="text-xs text-muted-foreground">还没有决策记录。</div>}
@@ -1520,8 +1638,18 @@ export function WorkspaceView() {
                   <div className="mt-4 space-y-2">
                     {learnings.map((learning) => (
                       <div key={learning.id} className="rounded-2xl border border-border/60 bg-background/70 p-3">
-                        <div className="text-sm leading-6">{learning.content}</div>
-                        <div className="mt-2 text-[11px] text-muted-foreground">{fmtTime(learning.createdAt)}</div>
+                        <Textarea
+                          value={learningDrafts[learning.id] ?? learning.content}
+                          onChange={(event) => setLearningDrafts((current) => ({ ...current, [learning.id]: event.target.value }))}
+                          className="min-h-[96px] rounded-xl"
+                        />
+                        <div className="mt-3 flex items-center justify-between gap-2">
+                          <div className="text-[11px] text-muted-foreground">{fmtTime(learning.createdAt)}</div>
+                          <Button size="sm" variant="outline" onClick={() => void handleSaveLearning(learning.id)} disabled={isMutating}>
+                            <Save className="mr-1 h-3.5 w-3.5" />
+                            保存
+                          </Button>
+                        </div>
                       </div>
                     ))}
                     {!learnings.length && <div className="text-xs text-muted-foreground">还没有项目 learnings。</div>}
@@ -1592,7 +1720,7 @@ export function WorkspaceView() {
                               <div className="break-all font-mono">{asString(item.command) || `check-${index + 1}`}</div>
                               <Badge variant={item.passed ? 'default' : 'destructive'}>{item.passed ? 'passed' : 'failed'}</Badge>
                             </div>
-                            {asString(item.output) ? <div className="mt-2 whitespace-pre-wrap text-muted-foreground">{asString(item.output)}</div> : null}
+                            {checkOutputText(item) ? <div className="mt-2 whitespace-pre-wrap text-muted-foreground">{checkOutputText(item)}</div> : null}
                           </div>
                         ))}
                       </div>

@@ -238,6 +238,17 @@ class V2WorkspaceApiTests(unittest.TestCase):
             )
             self.assertEqual(decision.status_code, 200)
 
+            updated_decision = client.put(
+                f"/api/v2/memory/decisions/{decision.json()['id']}",
+                json={
+                    "question": "状态管理最终选什么？",
+                    "decision": "Jotai",
+                    "reasoning": "这次想要更细粒度",
+                },
+            )
+            self.assertEqual(updated_decision.status_code, 200)
+            self.assertEqual(updated_decision.json()["decision"], "Jotai")
+
             learning = client.post(
                 "/api/v2/memory/learnings",
                 json={
@@ -248,6 +259,16 @@ class V2WorkspaceApiTests(unittest.TestCase):
                 },
             )
             self.assertEqual(learning.status_code, 200)
+
+            updated_learning = client.put(
+                f"/api/v2/memory/learnings/{learning.json()['id']}",
+                json={
+                    "content": "OAuth refresh 还要处理 race condition、并发刷新和 token 覆盖",
+                    "embedding": [0.2, 0.3],
+                },
+            )
+            self.assertEqual(updated_learning.status_code, 200)
+            self.assertIn("并发刷新", updated_learning.json()["content"])
 
             listing = client.get(
                 "/api/v2/memory/learnings",
