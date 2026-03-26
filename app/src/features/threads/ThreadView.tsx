@@ -222,11 +222,25 @@ export function ThreadView({
 
             if (message.role === 'user') {
               return (
-                <div key={message.id} className="flex justify-end">
+                <div key={message.id} className="flex flex-col items-end gap-4">
                   <div className="max-w-[80%] rounded-[1rem] bg-secondary px-4 py-3 text-sm leading-6 text-secondary-foreground">
                     <div className="whitespace-pre-wrap break-words">{message.content}</div>
                     <div className="mt-2 text-[11px] text-muted-foreground">{fmtTime(message.createdAt)}</div>
                   </div>
+                  {runs.length ? (
+                    <div className="w-full max-w-[85%] space-y-3">
+                      {runs.map((run) => (
+                        <RunCard
+                          key={run.id}
+                          run={run}
+                          onOpenDetail={onOpenRunDetail}
+                          onAdopt={onAdoptRun}
+                          onCancel={onCancelRun}
+                          onRetry={onRetryRun}
+                        />
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               );
             }
