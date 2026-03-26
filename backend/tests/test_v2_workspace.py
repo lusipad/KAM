@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import close_all_sessions
 
 
@@ -19,7 +20,8 @@ os.environ["OPENAI_API_KEY"] = ""
 
 from app.main import app
 from app.core.config import settings
-from app.db.base import Base, SessionLocal, engine
+from app.db import base as db_base
+from app.db.base import Base, SessionLocal, engine, init_db
 from app.services.context_assembler import ContextAssembler
 from app.services.run_engine import run_engine
 
@@ -1416,6 +1418,76 @@ class V2WorkspaceApiTests(unittest.TestCase):
             self.assertIn('# Existing Repo Rules', content)
             self.assertIn('## Invoked Skill', content)
             self.assertIn('review only staged diff', content)
+
+    def test_git_baseline_filter_excludes_preexisting_noise_files(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            repo_root = Path(repo_dir)
+            nested_dir = repo_root / 'src'
+            nested_dir.mkdir(parents=True, exist_ok=True)
+
+            (repo_root / 'tracked.txt').write_text('base\n', encoding='utf-8')
+            (repo_root / 'dirty.txt').write_text('draft\n', encoding='utf-8')
+            self._init_git_repo(repo_root)
+
+            (repo_root / '.playwright-cli').mkdir(parents=True, exist_ok=True)
+            (repo_root / '.playwright-cli' / 'snapshot.yml').write_text('old snapshot\n', encoding='utf-8')
+            (repo_root / 'dirty.txt').write_text('draft v1\n', encoding='utf-8')
+
+            baseline = run_engine._capture_git_baseline(nested_dir)
+
+            (repo_root / 'tracked.txt').write_text('base\nrun change\n', encoding='utf-8')
+            (repo_root / 'dirty.txt').write_text('draft v2\n', encoding='utf-8')
+            (repo_root / 'feature.txt').write_text('new file\n', encoding='utf-8')
+
+            status_output = run_engine._git_output(repo_root, ['status', '--short', '--untracked-files=all'])
+            filtered = run_engine._filter_git_status_entries(
+                repo_root,
+                run_engine._parse_git_status(status_output),
+                baseline,
+            )
+
+            paths = {item['path'] for item in filtered}
+            self.assertEqual(paths, {'tracked.txt', 'dirty.txt', 'feature.txt'})
+
+    def test_init_db_adds_adopted_at_to_legacy_runs_table(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / 'legacy-runs.db'
+            legacy_engine = create_engine(f"sqlite:///{db_path}", connect_args={'check_same_thread': False})
+            with legacy_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE runs (
+                            id TEXT PRIMARY KEY,
+                            thread_id TEXT,
+                            message_id TEXT,
+                            agent VARCHAR(50) NOT NULL,
+                            model VARCHAR(100),
+                            reasoning_effort VARCHAR(20),
+                            command TEXT,
+                            status VARCHAR(20),
+                            work_dir VARCHAR(1000),
+                            round INTEGER,
+                            max_rounds INTEGER,
+                            duration_ms INTEGER,
+                            error TEXT,
+                            metadata JSON,
+                            created_at TIMESTAMP,
+                            completed_at TIMESTAMP
+                        )
+                        """
+                    )
+                )
+
+            original_engine = db_base.engine
+            try:
+                db_base.engine = legacy_engine
+                init_db()
+                columns = {column['name'] for column in inspect(legacy_engine).get_columns('runs')}
+                self.assertIn('adopted_at', columns)
+            finally:
+                db_base.engine = original_engine
+                legacy_engine.dispose()
 
     def test_user_message_auto_extracts_resources_to_project(self):
         with TestClient(app) as client:

@@ -3,6 +3,7 @@ KAM v2 Run Engine
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from queue import Empty, Queue
@@ -118,6 +119,7 @@ class V2RunExecutionManager:
             run_root = Path(run.work_dir or settings.AGENT_WORKROOT).resolve()
             run_root.mkdir(parents=True, exist_ok=True)
             execution_cwd, worktree, worktree_branch = self._resolve_execution_cwd(thread, run_root, run_id)
+            git_baseline = self._capture_git_baseline(execution_cwd)
 
             base_prompt = self._artifact_content(db, run.id, "prompt") or ""
             base_context = self._artifact_content(db, run.id, "context") or "{}"
@@ -207,7 +209,14 @@ class V2RunExecutionManager:
                 self._record_artifact(db, run.id, "stdout", f"stdout round {round_number}", stdout_text, stdout_path, round_number)
                 self._record_artifact(db, run.id, "stderr", f"stderr round {round_number}", stderr_text, stderr_path, round_number)
                 self._record_artifact(db, run.id, "summary", f"summary round {round_number}", summary_text, summary_path, round_number)
-                git_summary = self._capture_git_artifacts(db, run.id, round_number, execution_cwd, round_dir)
+                git_summary = self._capture_git_artifacts(
+                    db,
+                    run.id,
+                    round_number,
+                    execution_cwd,
+                    round_dir,
+                    git_baseline=git_baseline,
+                )
                 if git_summary:
                     run.metadata_ = {
                         **(run.metadata_ or {}),
@@ -901,15 +910,58 @@ class V2RunExecutionManager:
             return stdout_text
         return stderr_text
 
-    def _capture_git_artifacts(self, db, run_id: str, round_number: int, execution_cwd: Path, round_dir: Path) -> dict[str, Any] | None:
+    def _capture_git_baseline(self, execution_cwd: Path) -> dict[str, Any] | None:
         repo_root = self._get_git_root(execution_cwd)
         if not repo_root:
             return None
 
-        status_output = self._git_output(execution_cwd, ["status", "--short", "--untracked-files=all"])
-        diffstat_output = self._git_output(execution_cwd, ["diff", "--stat", "--find-renames", "HEAD"])
-        patch_output = self._git_output(execution_cwd, ["diff", "--binary", "--no-ext-diff", "--find-renames", "HEAD"])
+        status_output = self._git_output(repo_root, ["status", "--short", "--untracked-files=all"])
         files = self._parse_git_status(status_output)
+        baseline_files = {
+            item["path"]: {
+                "path": item["path"],
+                "originalPath": item["originalPath"],
+                "status": item["status"],
+                "fingerprint": self._fingerprint_repo_file(repo_root, item["path"]),
+            }
+            for item in files
+        }
+        return {
+            "repoRoot": str(repo_root),
+            "files": baseline_files,
+        }
+
+    def _capture_git_artifacts(
+        self,
+        db,
+        run_id: str,
+        round_number: int,
+        execution_cwd: Path,
+        round_dir: Path,
+        *,
+        git_baseline: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        repo_root = self._get_git_root(execution_cwd)
+        if not repo_root:
+            return None
+
+        status_output = self._git_output(repo_root, ["status", "--short", "--untracked-files=all"])
+        files = self._filter_git_status_entries(
+            repo_root,
+            self._parse_git_status(status_output),
+            git_baseline,
+        )
+        tracked_paths = self._tracked_git_paths(files)
+        diffstat_output = self._git_diff_output(
+            repo_root,
+            ["diff", "--stat", "--find-renames", "HEAD"],
+            tracked_paths,
+        )
+        patch_output = self._git_diff_output(
+            repo_root,
+            ["diff", "--binary", "--no-ext-diff", "--find-renames", "HEAD"],
+            tracked_paths,
+        )
         summary = self._build_change_summary(repo_root, files, diffstat_output, execution_cwd)
         changes_path = round_dir / "git-changes.txt"
         patch_path = round_dir / "git.patch"
@@ -960,6 +1012,87 @@ class V2RunExecutionManager:
             "files": files,
             **counts,
         }
+
+    def _filter_git_status_entries(
+        self,
+        repo_root: Path,
+        files: list[dict[str, str]],
+        git_baseline: dict[str, Any] | None,
+    ) -> list[dict[str, str]]:
+        if not git_baseline:
+            return files
+        baseline_root = Path(str(git_baseline.get("repoRoot") or "")).resolve()
+        if baseline_root != repo_root.resolve():
+            return files
+        baseline_files = git_baseline.get("files")
+        if not isinstance(baseline_files, dict):
+            return files
+
+        filtered: list[dict[str, str]] = []
+        for item in files:
+            baseline_item = baseline_files.get(item["path"])
+            if not isinstance(baseline_item, dict):
+                filtered.append(item)
+                continue
+
+            current_fingerprint = self._fingerprint_repo_file(repo_root, item["path"])
+            if (
+                baseline_item.get("status") != item["status"]
+                or baseline_item.get("path") != item["path"]
+                or baseline_item.get("originalPath") != item["originalPath"]
+                or baseline_item.get("fingerprint") != current_fingerprint
+            ):
+                filtered.append(item)
+        return filtered
+
+    def _tracked_git_paths(self, files: list[dict[str, str]]) -> list[str]:
+        pathspecs: list[str] = []
+        seen: set[str] = set()
+        for item in files:
+            if item["status"] == "??":
+                continue
+            for path_text in (item["originalPath"], item["path"]):
+                normalized = str(path_text or "").strip()
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                pathspecs.append(normalized)
+        return pathspecs
+
+    def _git_diff_output(self, repo_root: Path, args: list[str], pathspecs: list[str]) -> str:
+        if not pathspecs:
+            return ""
+        return self._git_output(repo_root, [*args, "--", *pathspecs])
+
+    def _fingerprint_repo_file(self, repo_root: Path, path_text: str) -> str:
+        candidate = (repo_root / path_text).resolve()
+        try:
+            candidate.relative_to(repo_root.resolve())
+        except ValueError:
+            return "outside-repo"
+
+        if not candidate.exists():
+            return "missing"
+        if candidate.is_dir():
+            try:
+                stat = candidate.stat()
+                return f"dir:{stat.st_mtime_ns}"
+            except OSError:
+                return "dir:unreadable"
+
+        digest = hashlib.sha1()
+        try:
+            with candidate.open("rb") as handle:
+                while chunk := handle.read(64 * 1024):
+                    digest.update(chunk)
+        except OSError:
+            return "file:unreadable"
+
+        try:
+            size = candidate.stat().st_size
+        except OSError:
+            size = 0
+        return f"file:{size}:{digest.hexdigest()}"
 
     def _git_output(self, cwd: Path, args: list[str]) -> str:
         try:

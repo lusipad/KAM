@@ -38,7 +38,7 @@ EXPECTED_V2_COLUMNS = {
     "projects": {"id", "title", "status", "repo_path", "description", "check_commands", "settings", "created_at", "updated_at"},
     "threads": {"id", "project_id", "title", "status", "created_at", "updated_at"},
     "messages": {"id", "thread_id", "role", "content", "metadata", "created_at"},
-    "runs": {"id", "thread_id", "message_id", "agent", "model", "reasoning_effort", "command", "status", "work_dir", "round", "max_rounds", "duration_ms", "error", "metadata", "created_at", "completed_at"},
+    "runs": {"id", "thread_id", "message_id", "agent", "model", "reasoning_effort", "command", "status", "work_dir", "round", "max_rounds", "duration_ms", "error", "metadata", "created_at", "completed_at", "adopted_at"},
     "thread_run_artifacts": {"id", "run_id", "artifact_type", "title", "content", "path", "round", "metadata", "created_at"},
     "project_resources": {"id", "project_id", "resource_type", "title", "uri", "pinned", "metadata", "created_at"},
     "user_preferences": {"id", "category", "key", "value", "embedding", "source_thread_id", "created_at"},
@@ -47,6 +47,7 @@ EXPECTED_V2_COLUMNS = {
 }
 
 ADDITIVE_V2_COLUMNS = {
+    "runs": {"adopted_at": "TIMESTAMP"},
     "user_preferences": {"embedding": "JSON"},
     "decision_log": {"embedding": "JSON"},
 }
