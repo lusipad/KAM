@@ -5,13 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
 from typing import Any, AsyncGenerator
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.time import coerce_utc, utc_now
 from app.models.conversation import Message, Thread
 from app.services.anthropic_service import AnthropicService, extract_text_from_message, iter_tool_uses
 from app.services.context_assembler import ContextAssembler
@@ -188,7 +188,7 @@ class ConversationRouter:
             return None
 
         last_message = list(thread.messages)[-1]
-        if last_message.created_at and last_message.created_at.date() == datetime.utcnow().date():
+        if last_message.created_at and coerce_utc(last_message.created_at).date() == utc_now().date():
             return None
 
         latest_restore = (
@@ -198,7 +198,7 @@ class ConversationRouter:
             .first()
         )
         if latest_restore and (latest_restore.metadata_ or {}).get("generatedBy") == "restore-summary":
-            if latest_restore.created_at and latest_restore.created_at.date() == datetime.utcnow().date():
+            if latest_restore.created_at and coerce_utc(latest_restore.created_at).date() == utc_now().date():
                 return latest_restore.content
 
         summary = await self.generate_restore_summary(thread_id)

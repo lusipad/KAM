@@ -37,6 +37,7 @@ class V2WorkspaceApiTests(unittest.TestCase):
         self.workroot.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
+        run_engine.wait_for_background_tasks()
         close_all_sessions()
         engine.dispose()
 

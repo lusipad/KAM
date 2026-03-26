@@ -1,11 +1,10 @@
 """
 KAM v2 记忆模型
 """
-from datetime import datetime
-
 from sqlalchemy import Column, DateTime, ForeignKey, Index, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
+from app.core.time import utc_now
 from app.db.base import Base
 from app.db.types import uuid_default, uuid_type
 
@@ -19,7 +18,7 @@ class UserPreference(Base):
     value = Column(Text, nullable=False)
     embedding = Column(JSON, nullable=True)
     source_thread_id = Column(uuid_type(), ForeignKey("threads.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     __table_args__ = (
         Index("idx_user_preferences_category", "category"),
@@ -47,7 +46,7 @@ class DecisionLog(Base):
     reasoning = Column(Text, default="")
     embedding = Column(JSON, nullable=True)
     source_thread_id = Column(uuid_type(), ForeignKey("threads.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     project = relationship("Project", back_populates="decisions")
 
@@ -75,7 +74,7 @@ class ProjectLearning(Base):
     content = Column(Text, nullable=False)
     embedding = Column(JSON, nullable=True)
     source_thread_id = Column(uuid_type(), ForeignKey("threads.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     project = relationship("Project", back_populates="learnings")
 

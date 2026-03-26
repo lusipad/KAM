@@ -17,6 +17,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.events import event_bus
+from app.core.time import coerce_utc, utc_now
 from app.db.base import SessionLocal
 from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.models.project import Project, ProjectResource
@@ -58,6 +59,7 @@ class V2RunExecutionManager:
     def __init__(self):
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
+        self._background_threads: set[threading.Thread] = set()
         self._processes: dict[str, subprocess.Popen] = {}
         self._cancel_flags: set[str] = set()
         self._anthropic = AnthropicService()
@@ -112,7 +114,7 @@ class V2RunExecutionManager:
             if not thread:
                 run.status = "failed"
                 run.error = "关联线程不存在"
-                run.completed_at = datetime.utcnow()
+                run.completed_at = utc_now()
                 db.commit()
                 return
 
@@ -170,7 +172,7 @@ class V2RunExecutionManager:
                     "commandLine": display_command,
                     "worktree": str(worktree) if worktree else None,
                     "worktreeBranch": worktree_branch,
-                    "startedAt": (run.metadata_ or {}).get("startedAt") or datetime.utcnow().isoformat(),
+                    "startedAt": (run.metadata_ or {}).get("startedAt") or utc_now().isoformat(),
                 }
                 if round_number == 1:
                     run.completed_at = None
@@ -615,7 +617,7 @@ class V2RunExecutionManager:
     ):
         run.status = status
         run.error = error
-        run.completed_at = datetime.utcnow()
+        run.completed_at = utc_now()
         run.duration_ms = self._duration_ms(run)
         event_metadata = {
             **(metadata or {}),
@@ -634,11 +636,35 @@ class V2RunExecutionManager:
 
     def _schedule_run_digest(self, run_id: str, thread_id: str, status: str):
         worker = threading.Thread(
-            target=self._do_run_digest,
+            target=self._run_digest_worker,
             args=(run_id, thread_id, status),
             daemon=True,
         )
+        with self._lock:
+            self._background_threads.add(worker)
         worker.start()
+
+    def _run_digest_worker(self, run_id: str, thread_id: str, status: str):
+        try:
+            self._do_run_digest(run_id, thread_id, status)
+        finally:
+            with self._lock:
+                self._background_threads.discard(threading.current_thread())
+
+    def wait_for_background_tasks(self, timeout: float = 5):
+        deadline = time.time() + max(timeout, 0)
+        while True:
+            with self._lock:
+                workers = [worker for worker in self._background_threads if worker.is_alive()]
+            if not workers:
+                return
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            for worker in workers:
+                worker.join(timeout=min(0.1, remaining))
+                if time.time() >= deadline:
+                    return
 
     def _do_run_digest(self, run_id: str, thread_id: str, status: str):
         db = SessionLocal()
@@ -1387,7 +1413,7 @@ class V2RunExecutionManager:
         except subprocess.CalledProcessError as exc:
             return {"success": False, "error": (exc.stderr or exc.stdout or "merge 失败").strip()}
 
-        adopted_at = datetime.utcnow()
+        adopted_at = utc_now()
         run.adopted_at = adopted_at
         run.metadata_ = {
             **(run.metadata_ or {}),
@@ -1430,7 +1456,7 @@ class V2RunExecutionManager:
         except subprocess.CalledProcessError as exc:
             return {"success": False, "error": (exc.stderr or exc.stdout or "patch 应用失败").strip()}
 
-        adopted_at = datetime.utcnow()
+        adopted_at = utc_now()
         run.adopted_at = adopted_at
         run.metadata_ = {
             **(run.metadata_ or {}),
@@ -1530,7 +1556,7 @@ class V2RunExecutionManager:
             return
         thread = db.query(Thread).filter(Thread.id == run.thread_id).first()
         if thread:
-            thread.updated_at = datetime.utcnow()
+            thread.updated_at = utc_now()
         event = Message(
             thread_id=run.thread_id,
             role="system",
@@ -1592,10 +1618,13 @@ class V2RunExecutionManager:
         if not started_at_raw:
             return None
         try:
-            started_at = datetime.fromisoformat(started_at_raw)
+            started_at = coerce_utc(datetime.fromisoformat(started_at_raw))
         except Exception:
             return None
-        return int((run.completed_at - started_at).total_seconds() * 1000)
+        completed_at = coerce_utc(run.completed_at)
+        if completed_at is None:
+            return None
+        return int((completed_at - started_at).total_seconds() * 1000)
 
 
 run_engine = V2RunExecutionManager()

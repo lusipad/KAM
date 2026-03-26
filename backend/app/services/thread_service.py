@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import re
 import threading
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.core.events import event_bus
+from app.core.time import utc_now
 from app.db.base import SessionLocal
 from app.models.conversation import Message, Thread
 from app.models.project import Project, ProjectResource
@@ -45,7 +45,7 @@ class ThreadService:
             status=data.get("status", "active"),
         )
         self.db.add(thread)
-        project.updated_at = datetime.utcnow()
+        project.updated_at = utc_now()
         self.db.commit()
         self.db.refresh(thread)
         return thread
@@ -93,9 +93,9 @@ class ThreadService:
                     "autoExtractedResourceCount": extracted_count,
                 }
 
-        thread.updated_at = datetime.utcnow()
+        thread.updated_at = utc_now()
         if thread.project:
-            thread.project.updated_at = datetime.utcnow()
+            thread.project.updated_at = utc_now()
         self.db.commit()
         self.db.refresh(message)
         event_bus.publish(
@@ -129,7 +129,7 @@ class ThreadService:
             if not title:
                 return
             thread.title = title
-            thread.updated_at = datetime.utcnow()
+            thread.updated_at = utc_now()
             db.commit()
             event_bus.publish(
                 f"thread:{thread_id}",

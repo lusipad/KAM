@@ -1,11 +1,10 @@
 """
 KAM v2 对话与 Run 模型
 """
-from datetime import datetime
-
 from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import relationship
 
+from app.core.time import utc_now
 from app.db.base import Base
 from app.db.types import uuid_default, uuid_type
 
@@ -17,8 +16,8 @@ class Thread(Base):
     project_id = Column(uuid_type(), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     title = Column(String(200), nullable=False)
     status = Column(String(20), default="active")
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     project = relationship("Project", back_populates="threads")
     messages = relationship(
@@ -66,7 +65,7 @@ class Message(Base):
     role = Column(String(20), nullable=False)
     content = Column(Text, nullable=False)
     metadata_ = Column("metadata", JSON, default=dict)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     thread = relationship("Thread", back_populates="messages")
     runs = relationship(
@@ -112,7 +111,7 @@ class Run(Base):
     duration_ms = Column(Integer, nullable=True)
     error = Column(Text, nullable=True)
     metadata_ = Column("metadata", JSON, default=dict)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     adopted_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -167,7 +166,7 @@ class ThreadRunArtifact(Base):
     path = Column(String(1000), nullable=True)
     round = Column(Integer, default=1)
     metadata_ = Column("metadata", JSON, default=dict)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     run = relationship("Run", back_populates="artifacts")
 

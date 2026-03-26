@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import Generator
 
@@ -12,6 +11,7 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from app.core.config import settings
+from app.core.time import utc_now
 from app.db.types import IS_SQLITE
 
 
@@ -101,7 +101,7 @@ def _repair_incompatible_v2_tables() -> None:
         _backup_sqlite_database()
         with engine.begin() as conn:
             conn.execute(text("PRAGMA foreign_keys=OFF"))
-            timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+            timestamp = utc_now().strftime("%Y%m%d%H%M%S")
             for table_name in incompatible_tables:
                 backup_table = f"legacy_{table_name}_backup_{timestamp}"
                 conn.execute(text(f'CREATE TABLE IF NOT EXISTS "{backup_table}" AS SELECT * FROM "{table_name}"'))
@@ -118,7 +118,7 @@ def _backup_sqlite_database() -> None:
     db_path = Path(settings.DATABASE_URL.replace("sqlite:///", "", 1))
     if not db_path.exists():
         return
-    timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    timestamp = utc_now().strftime("%Y%m%d%H%M%S")
     backup_path = db_path.with_suffix(db_path.suffix + f".v2-init-backup-{timestamp}")
     engine.dispose()
     backup_path.parent.mkdir(parents=True, exist_ok=True)

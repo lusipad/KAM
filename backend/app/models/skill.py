@@ -1,11 +1,10 @@
 """
 KAM Skill 模型。
 """
-from datetime import datetime
-
 from sqlalchemy import Column, DateTime, ForeignKey, Index, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
+from app.core.time import utc_now
 from app.db.base import Base
 from app.db.types import uuid_default, uuid_type
 
@@ -22,7 +21,7 @@ class Skill(Base):
     agent = Column(String(50), nullable=True)
     parameters = Column(JSON, default=list)
     source = Column(String(50), default="user")
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     project = relationship("Project", back_populates="skills")
 

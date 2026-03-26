@@ -4,7 +4,6 @@ KAM v2 Run 服务
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -13,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.events import event_bus
+from app.core.time import utc_now
 from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.services.memory_service import MemoryService
 from app.services.run_engine import run_engine
@@ -73,7 +73,7 @@ class RunService:
             round=1,
             max_rounds=data.get("maxRounds") or data.get("max_rounds") or 5,
             metadata_={
-                "requestedAt": datetime.utcnow().isoformat(),
+                "requestedAt": utc_now().isoformat(),
                 **(data.get("metadata") or {}),
             },
         )
@@ -96,7 +96,7 @@ class RunService:
             path=work_dir / "context.json",
         )
 
-        thread.updated_at = datetime.utcnow()
+        thread.updated_at = utc_now()
         self.db.commit()
         self.db.refresh(run)
         event_bus.publish(
@@ -183,7 +183,7 @@ class RunService:
             if run:
                 runs.append(run)
 
-        thread.updated_at = datetime.utcnow()
+        thread.updated_at = utc_now()
         self.db.commit()
         self.db.expire(message)
         self.db.refresh(message)
@@ -234,8 +234,8 @@ class RunService:
         run_engine.cancel_run(str(run.id))
         run.status = "cancelled"
         run.error = run.error or "Run 已取消"
-        run.completed_at = datetime.utcnow()
-        run.thread.updated_at = datetime.utcnow()
+        run.completed_at = utc_now()
+        run.thread.updated_at = utc_now()
         self.db.commit()
         self.db.refresh(run)
         event_bus.publish(
@@ -305,7 +305,7 @@ class RunService:
 
     def _create_workdir(self, thread_id: str, agent: str) -> Path:
         safe_agent = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in agent.lower()).strip("-")
-        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+        timestamp = utc_now().strftime("%Y%m%d%H%M%S%f")
         workdir = Path(settings.AGENT_WORKROOT) / "v2" / str(thread_id) / f"{safe_agent}-{timestamp}"
         workdir.mkdir(parents=True, exist_ok=True)
         return workdir

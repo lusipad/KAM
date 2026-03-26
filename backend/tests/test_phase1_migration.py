@@ -1,7 +1,6 @@
 import os
 import tempfile
 import unittest
-from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine, insert, select
@@ -9,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 os.environ['DATABASE_URL'] = 'sqlite:///./storage/test-phase1-migration.db'
 
+from app.core.time import utc_now
 from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.models.project import Project, ProjectResource
 from scripts.legacy_schema import build_legacy_metadata, create_legacy_tables
@@ -35,7 +35,7 @@ class Phase1MigrationTests(unittest.TestCase):
     def _seed_legacy_data(self):
         session = self.SessionLocal()
         try:
-            now = datetime.utcnow()
+            now = utc_now()
             session.execute(insert(self.metadata.tables['task_cards']).values(
                 id='task-1',
                 title='重构认证模块',

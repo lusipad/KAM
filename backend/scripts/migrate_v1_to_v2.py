@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, delete, inspect, select
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
+from app.core.time import utc_now
 from app.db.base import Base
 from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.models.project import Project, ProjectResource
@@ -88,7 +89,7 @@ def build_backup_path(database_url: str, explicit: str | None = None) -> Path | 
     db_file = Path(database_url.replace('sqlite:///', '', 1))
     if not db_file.exists():
         return None
-    timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+    timestamp = utc_now().strftime('%Y%m%d%H%M%S')
     return db_file.with_suffix(db_file.suffix + f'.phase1-backup-{timestamp}')
 
 

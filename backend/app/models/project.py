@@ -1,11 +1,10 @@
 """
 KAM v2 项目模型
 """
-from datetime import datetime
-
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, JSON, String, Text
 from sqlalchemy.orm import relationship
 
+from app.core.time import utc_now
 from app.db.base import Base
 from app.db.types import uuid_default, uuid_type
 
@@ -20,8 +19,8 @@ class Project(Base):
     description = Column(Text, default="")
     check_commands = Column(JSON, default=list)
     settings_ = Column("settings", JSON, default=dict)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     resources = relationship(
         "ProjectResource",
@@ -92,7 +91,7 @@ class ProjectResource(Base):
     uri = Column(Text, nullable=False)
     pinned = Column(Boolean, default=False)
     metadata_ = Column("metadata", JSON, default=dict)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
     project = relationship("Project", back_populates="resources")
 

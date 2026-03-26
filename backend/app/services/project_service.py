@@ -3,12 +3,12 @@ KAM v2 项目服务
 """
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.time import utc_now
 from app.models.project import Project, ProjectResource
 
 
@@ -57,7 +57,7 @@ class ProjectService:
         if "settings" in data:
             project.settings_ = {**(project.settings_ or {}), **(data.get("settings") or {})}
 
-        project.updated_at = datetime.utcnow()
+        project.updated_at = utc_now()
         self.db.commit()
         self.db.refresh(project)
         return project
@@ -70,7 +70,7 @@ class ProjectService:
         project.status = "done"
         project.settings_ = {
             **(project.settings_ or {}),
-            "archivedAt": datetime.utcnow().isoformat(),
+            "archivedAt": utc_now().isoformat(),
         }
         self.db.commit()
         self.db.refresh(project)
@@ -96,7 +96,7 @@ class ProjectService:
             metadata_=data.get("metadata") or {},
         )
         self.db.add(resource)
-        project.updated_at = datetime.utcnow()
+        project.updated_at = utc_now()
         self.db.commit()
         self.db.refresh(resource)
         return resource
@@ -112,7 +112,7 @@ class ProjectService:
 
         project = self.get_project(project_id)
         if project:
-            project.updated_at = datetime.utcnow()
+            project.updated_at = utc_now()
         self.db.delete(resource)
         self.db.commit()
         return True
