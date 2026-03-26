@@ -1489,6 +1489,31 @@ class V2WorkspaceApiTests(unittest.TestCase):
                 db_base.engine = original_engine
                 legacy_engine.dispose()
 
+    def test_build_digest_fallback_omits_internal_git_paths(self):
+        digest = run_engine._build_digest_fallback(
+            status='passed',
+            agent='custom',
+            rounds=1,
+            duration_ms=1279,
+            summary='probe ok',
+            check_results='[]',
+            changes=(
+                "Repo root: D:\\Repos\\KAM\\backend\\storage\\agent-runs\\workspace\n"
+                "Execution cwd: D:\\Repos\\KAM\\backend\\storage\\agent-runs\\workspace\n"
+                "Changed files: 1\n\n"
+                "Files:\n"
+                "- [??] run-noise-probe.txt\n\n"
+                "Diff stat:\n"
+                "No tracked diff detected."
+            ),
+            error='',
+        )
+
+        self.assertIn('run-noise-probe.txt', digest)
+        self.assertNotIn('Repo root', digest)
+        self.assertNotIn('Execution cwd', digest)
+        self.assertNotIn('相关检查已执行', digest)
+
     def test_user_message_auto_extracts_resources_to_project(self):
         with TestClient(app) as client:
             project = client.post(

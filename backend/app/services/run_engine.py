@@ -697,6 +697,7 @@ class V2RunExecutionManager:
         changes: str,
         error: str,
     ) -> str:
+        digest_changes = self._build_digest_change_preview(changes)
         if self._anthropic.enabled:
             prompt = self._anthropic.generate_text_sync(
                 system=(
@@ -715,7 +716,7 @@ class V2RunExecutionManager:
                                 "durationMs": duration_ms,
                                 "summary": summary[:4000],
                                 "checkResults": check_results[:4000],
-                                "changes": changes[:4000],
+                                "changes": digest_changes[:1200],
                                 "error": error[:2000],
                             },
                             ensure_ascii=False,
@@ -752,14 +753,15 @@ class V2RunExecutionManager:
     ) -> str:
         duration_text = f"，耗时 {duration_ms}ms" if duration_ms else ""
         clean_summary = " ".join((summary or "").strip().split())
+        change_preview = self._build_digest_change_preview(changes)
+        has_checks = self._has_recorded_checks(check_results)
         if status == "passed":
             parts = [f"{agent} 已在第 {rounds} 轮完成本次执行{duration_text}。"]
             if clean_summary:
                 parts.append(clean_summary[:220])
-            change_preview = " ".join((changes or "").strip().split())
             if change_preview:
-                parts.append(f"变更概览：{change_preview[:180]}")
-            if check_results.strip():
+                parts.append(change_preview)
+            if has_checks:
                 parts.append("相关检查已执行，可在 Run 详情查看结果。")
             return " ".join(parts)
 
@@ -767,9 +769,65 @@ class V2RunExecutionManager:
         parts = [f"{agent} 本次执行失败，停止在第 {rounds} 轮{duration_text}。"]
         if failure:
             parts.append(failure[:220])
-        if check_results.strip():
+        if has_checks:
             parts.append("建议先查看失败检查和 stderr，再决定是否重试。")
         return " ".join(parts)
+
+    def _build_digest_change_preview(self, changes: str) -> str:
+        files: list[str] = []
+        in_files = False
+        for raw_line in (changes or "").splitlines():
+            line = raw_line.strip()
+            if line == "Files:":
+                in_files = True
+                continue
+            if line == "Diff stat:":
+                break
+            if not in_files or not line.startswith("- ["):
+                continue
+
+            status_end = line.find("] ")
+            if status_end <= 3:
+                continue
+            status = line[3:status_end]
+            path_text = line[status_end + 2:]
+            original_path = ""
+            rename_marker = " (from "
+            if path_text.endswith(")") and rename_marker in path_text:
+                path_text, original_path = path_text[:-1].split(rename_marker, 1)
+
+            label = self._digest_change_label(status)
+            entry = f"{label}{path_text}"
+            if original_path:
+                entry = f"{entry}（原 {original_path}）"
+            files.append(entry)
+            if len(files) >= 3:
+                break
+
+        if files:
+            return f"涉及文件：{'，'.join(files)}。"
+        return ""
+
+    def _digest_change_label(self, status: str) -> str:
+        value = status.strip()
+        if value == "??" or "A" in value:
+            return "新增 "
+        if "R" in value:
+            return "重命名 "
+        if "D" in value:
+            return "删除 "
+        if "M" in value:
+            return "修改 "
+        if "C" in value:
+            return "复制 "
+        return ""
+
+    def _has_recorded_checks(self, check_results: str) -> bool:
+        try:
+            parsed = json.loads(check_results or "[]")
+        except Exception:
+            return bool((check_results or "").strip())
+        return isinstance(parsed, list) and bool(parsed)
 
     def _execute_checks(
         self,
