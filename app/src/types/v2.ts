@@ -92,6 +92,7 @@ export interface ConversationRun {
   artifacts?: ThreadRunArtifactRecord[];
   createdAt: Date | string;
   completedAt?: Date | string | null;
+  adoptedAt?: Date | string | null;
 }
 
 export interface ThreadMessageRecord {
@@ -174,6 +175,8 @@ export interface PostThreadMessageResponse {
   reply?: ThreadMessageRecord | null;
   runs: ConversationRun[];
   preferences?: UserPreferenceRecord[];
+  decisions?: DecisionRecord[];
+  learnings?: ProjectLearningRecord[];
   routerMode?: string;
   compareId?: string | null;
   thread?: ProjectThread;
