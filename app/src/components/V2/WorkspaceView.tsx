@@ -1,14 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 
-import { SettingsPanel } from '@/components/Settings/SettingsPanel';
 import { collectRunChangeFiles } from '@/components/V2/RunChangePreview';
-import { ContextPanel } from '@/features/context/ContextPanel';
-import { MemoryView } from '@/features/memory/MemoryView';
-import {
-  ProjectCreateModal,
-  type ProjectCreateForm,
-} from '@/features/projects/ProjectCreateModal';
-import { RunDetailDrawer } from '@/features/runs/RunDetailDrawer';
+import type { ProjectCreateForm } from '@/features/projects/ProjectCreateModal';
 import { ThreadView, type AgentOption } from '@/features/threads/ThreadView';
 import { AppShell } from '@/layout/AppShell';
 import { Sidebar } from '@/layout/Sidebar';
@@ -44,6 +37,31 @@ const NEW_PROJECT_FORM: ProjectCreateForm = {
   repoPath: '',
   checkCommands: '',
 };
+
+const LazySettingsPanel = lazy(async () => {
+  const module = await import('@/components/Settings/SettingsPanel');
+  return { default: module.SettingsPanel };
+});
+
+const LazyContextPanel = lazy(async () => {
+  const module = await import('@/features/context/ContextPanel');
+  return { default: module.ContextPanel };
+});
+
+const LazyMemoryView = lazy(async () => {
+  const module = await import('@/features/memory/MemoryView');
+  return { default: module.MemoryView };
+});
+
+const LazyProjectCreateModal = lazy(async () => {
+  const module = await import('@/features/projects/ProjectCreateModal');
+  return { default: module.ProjectCreateModal };
+});
+
+const LazyRunDetailDrawer = lazy(async () => {
+  const module = await import('@/features/runs/RunDetailDrawer');
+  return { default: module.RunDetailDrawer };
+});
 
 const ARTIFACT_TYPE_PRIORITY = [
   'summary',
@@ -1195,6 +1213,12 @@ export function WorkspaceView() {
     }
   }
 
+  const panelLoadingFallback = (
+    <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-6 text-sm text-muted-foreground">
+      面板加载中...
+    </div>
+  );
+
   return (
     <>
       <AppShell
@@ -1225,35 +1249,37 @@ export function WorkspaceView() {
       >
         <section className="lite-panel flex h-full min-h-0 min-w-0 flex-col rounded-[1.9rem]">
           {workspaceMode === 'memory' ? (
-            <MemoryView
-              selectedProject={selectedProject}
-              selectedProjectId={selectedProjectId}
-              memoryQuery={memoryQuery}
-              onMemoryQueryChange={setMemoryQuery}
-              onBack={() => setWorkspaceMode('workspace')}
-              preferences={preferences}
-              decisions={decisions}
-              learnings={learnings}
-              preferenceForm={preferenceForm}
-              decisionForm={decisionForm}
-              learningForm={learningForm}
-              preferenceDrafts={preferenceDrafts}
-              decisionDrafts={decisionDrafts}
-              learningDrafts={learningDrafts}
-              onPreferenceFormChange={setPreferenceForm}
-              onDecisionFormChange={setDecisionForm}
-              onLearningFormChange={setLearningForm}
-              onPreferenceDraftChange={(id, value) => setPreferenceDrafts((current) => ({ ...current, [id]: value }))}
-              onDecisionDraftChange={(id, next) => setDecisionDrafts((current) => ({ ...current, [id]: next }))}
-              onLearningDraftChange={(id, value) => setLearningDrafts((current) => ({ ...current, [id]: value }))}
-              onCreatePreference={() => void handleCreatePreference()}
-              onCreateDecision={() => void handleCreateDecision()}
-              onCreateLearning={() => void handleCreateLearning()}
-              onSavePreference={(id) => void handleSavePreference(id)}
-              onSaveDecision={(id) => void handleSaveDecision(id)}
-              onSaveLearning={(id) => void handleSaveLearning(id)}
-              isLoading={isMemoryLoading}
-            />
+            <Suspense fallback={panelLoadingFallback}>
+              <LazyMemoryView
+                selectedProject={selectedProject}
+                selectedProjectId={selectedProjectId}
+                memoryQuery={memoryQuery}
+                onMemoryQueryChange={setMemoryQuery}
+                onBack={() => setWorkspaceMode('workspace')}
+                preferences={preferences}
+                decisions={decisions}
+                learnings={learnings}
+                preferenceForm={preferenceForm}
+                decisionForm={decisionForm}
+                learningForm={learningForm}
+                preferenceDrafts={preferenceDrafts}
+                decisionDrafts={decisionDrafts}
+                learningDrafts={learningDrafts}
+                onPreferenceFormChange={setPreferenceForm}
+                onDecisionFormChange={setDecisionForm}
+                onLearningFormChange={setLearningForm}
+                onPreferenceDraftChange={(id, value) => setPreferenceDrafts((current) => ({ ...current, [id]: value }))}
+                onDecisionDraftChange={(id, next) => setDecisionDrafts((current) => ({ ...current, [id]: next }))}
+                onLearningDraftChange={(id, value) => setLearningDrafts((current) => ({ ...current, [id]: value }))}
+                onCreatePreference={() => void handleCreatePreference()}
+                onCreateDecision={() => void handleCreateDecision()}
+                onCreateLearning={() => void handleCreateLearning()}
+                onSavePreference={(id) => void handleSavePreference(id)}
+                onSaveDecision={(id) => void handleSaveDecision(id)}
+                onSaveLearning={(id) => void handleSaveLearning(id)}
+                isLoading={isMemoryLoading}
+              />
+            </Suspense>
           ) : (
             <ThreadView
               selectedProject={selectedProject}
@@ -1280,71 +1306,87 @@ export function WorkspaceView() {
         </section>
       </AppShell>
 
-      <ContextPanel
-        open={contextOpen}
-        onOpenChange={setContextOpen}
-        selectedProject={selectedProject}
-        projectForm={projectForm}
-        onProjectFormChange={setProjectForm}
-        showProjectEditor={showProjectEditor}
-        onProjectEditorToggle={setShowProjectEditor}
-        pinnedResources={pinnedResources}
-        resourceForm={resourceForm}
-        onResourceFormChange={setResourceForm}
-        showResourceComposer={showResourceComposer}
-        onResourceComposerToggle={setShowResourceComposer}
-        activeRuns={activeRuns}
-        fileTree={fileTree}
-        fileTreeQuery={fileTreeQuery}
-        onFileTreeQueryChange={setFileTreeQuery}
-        isFilesLoading={isFilesLoading}
-        onRefreshFiles={() => {
-          if (!selectedProjectId) return;
-          void loadProjectFiles(selectedProjectId, fileTreePath, { query: fileTreeQuery });
-        }}
-        onOpenRun={(runId, artifactType) => void openRunDetail(runId, artifactType)}
-        onSaveProject={() => void handleSaveProject()}
-        onArchiveProject={() => void handleArchiveProject()}
-        onAddResource={() => void handleAddResource()}
-        onDeleteResource={(resourceId) => void handleDeleteResource(resourceId)}
-        onLoadPath={(path) => {
-          if (!selectedProjectId) return;
-          void loadProjectFiles(selectedProjectId, path, { query: fileTreeQuery });
-        }}
-        onPinRepoEntry={(path, name) => void handlePinRepoEntry(path, name)}
-      />
+      {contextOpen ? (
+        <Suspense fallback={null}>
+          <LazyContextPanel
+            open={contextOpen}
+            onOpenChange={setContextOpen}
+            selectedProject={selectedProject}
+            projectForm={projectForm}
+            onProjectFormChange={setProjectForm}
+            showProjectEditor={showProjectEditor}
+            onProjectEditorToggle={setShowProjectEditor}
+            pinnedResources={pinnedResources}
+            resourceForm={resourceForm}
+            onResourceFormChange={setResourceForm}
+            showResourceComposer={showResourceComposer}
+            onResourceComposerToggle={setShowResourceComposer}
+            activeRuns={activeRuns}
+            fileTree={fileTree}
+            fileTreeQuery={fileTreeQuery}
+            onFileTreeQueryChange={setFileTreeQuery}
+            isFilesLoading={isFilesLoading}
+            onRefreshFiles={() => {
+              if (!selectedProjectId) return;
+              void loadProjectFiles(selectedProjectId, fileTreePath, { query: fileTreeQuery });
+            }}
+            onOpenRun={(runId, artifactType) => void openRunDetail(runId, artifactType)}
+            onSaveProject={() => void handleSaveProject()}
+            onArchiveProject={() => void handleArchiveProject()}
+            onAddResource={() => void handleAddResource()}
+            onDeleteResource={(resourceId) => void handleDeleteResource(resourceId)}
+            onLoadPath={(path) => {
+              if (!selectedProjectId) return;
+              void loadProjectFiles(selectedProjectId, path, { query: fileTreeQuery });
+            }}
+            onPinRepoEntry={(path, name) => void handlePinRepoEntry(path, name)}
+          />
+        </Suspense>
+      ) : null}
 
-      <RunDetailDrawer
-        open={runDetailOpen}
-        onOpenChange={setRunDetailOpen}
-        run={selectedRunDetail}
-        isLoading={isRunLoading}
-        detailRounds={detailRounds}
-        detailRound={detailRound}
-        onDetailRoundChange={setDetailRound}
-        detailArtifactTypes={detailArtifactTypes}
-        detailArtifactType={detailArtifactType}
-        onDetailArtifactTypeChange={setDetailArtifactType}
-        detailArtifactIndex={detailArtifactIndex}
-        selectedArtifact={selectedArtifact}
-        selectedCheckResults={selectedCheckResults}
-        detailChangePath={detailChangePath}
-        onDetailChangePath={setDetailChangePath}
-        onAdoptRun={(runId) => void handleAdoptRun(runId)}
-        onCancelRun={(runId) => void handleCancelRun(runId)}
-        onRetryRun={(runId) => void handleRetryRun(runId)}
-      />
+      {runDetailOpen ? (
+        <Suspense fallback={null}>
+          <LazyRunDetailDrawer
+            open={runDetailOpen}
+            onOpenChange={setRunDetailOpen}
+            run={selectedRunDetail}
+            isLoading={isRunLoading}
+            detailRounds={detailRounds}
+            detailRound={detailRound}
+            onDetailRoundChange={setDetailRound}
+            detailArtifactTypes={detailArtifactTypes}
+            detailArtifactType={detailArtifactType}
+            onDetailArtifactTypeChange={setDetailArtifactType}
+            detailArtifactIndex={detailArtifactIndex}
+            selectedArtifact={selectedArtifact}
+            selectedCheckResults={selectedCheckResults}
+            detailChangePath={detailChangePath}
+            onDetailChangePath={setDetailChangePath}
+            onAdoptRun={(runId) => void handleAdoptRun(runId)}
+            onCancelRun={(runId) => void handleCancelRun(runId)}
+            onRetryRun={(runId) => void handleRetryRun(runId)}
+          />
+        </Suspense>
+      ) : null}
 
-      <ProjectCreateModal
-        open={createProjectOpen}
-        onOpenChange={setCreateProjectOpen}
-        form={createProjectForm}
-        onFormChange={setCreateProjectForm}
-        onSubmit={() => void handleCreateProject()}
-        isMutating={isMutating}
-      />
+      {createProjectOpen ? (
+        <Suspense fallback={null}>
+          <LazyProjectCreateModal
+            open={createProjectOpen}
+            onOpenChange={setCreateProjectOpen}
+            form={createProjectForm}
+            onFormChange={setCreateProjectForm}
+            onSubmit={() => void handleCreateProject()}
+            isMutating={isMutating}
+          />
+        </Suspense>
+      ) : null}
 
-      <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {settingsOpen ? (
+        <Suspense fallback={null}>
+          <LazySettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        </Suspense>
+      ) : null}
     </>
   );
 }
