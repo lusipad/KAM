@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     CODEX_MODEL: str = "gpt-5.4"
     CODEX_REASONING_EFFORT: str = "xhigh"
 
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-opus-4-5"
+    ANTHROPIC_SMALL_MODEL: str = "claude-sonnet-4-6"
+    CONTEXT_TOKEN_BUDGET: int = 8000
+
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"

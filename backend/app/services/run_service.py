@@ -12,6 +12,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.events import event_bus
 from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.services.memory_service import MemoryService
 from app.services.run_engine import run_engine
@@ -98,6 +99,15 @@ class RunService:
         thread.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(run)
+        event_bus.publish(
+            f"thread:{thread_id}",
+            {
+                "type": "thread-updated",
+                "runId": str(run.id),
+                "threadId": thread_id,
+                "status": run.status,
+            },
+        )
         if auto_start:
             self.start_run(str(run.id))
             self.db.expire(run)
@@ -177,6 +187,14 @@ class RunService:
         self.db.commit()
         self.db.expire(message)
         self.db.refresh(message)
+        event_bus.publish(
+            f"thread:{thread_id}",
+            {
+                "type": "thread-updated",
+                "threadId": thread_id,
+                "status": "pending",
+            },
+        )
 
         return {
             "compareId": compare_id,
@@ -195,6 +213,15 @@ class RunService:
         if launched:
             self.db.expire(run)
             self.db.refresh(run)
+            event_bus.publish(
+                f"thread:{run.thread_id}",
+                {
+                    "type": "thread-updated",
+                    "runId": str(run.id),
+                    "threadId": str(run.thread_id),
+                    "status": run.status,
+                },
+            )
         return run
 
     def cancel_run(self, run_id: str) -> Run | None:
@@ -211,6 +238,15 @@ class RunService:
         run.thread.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(run)
+        event_bus.publish(
+            f"thread:{run.thread_id}",
+            {
+                "type": "thread-updated",
+                "runId": str(run.id),
+                "threadId": str(run.thread_id),
+                "status": run.status,
+            },
+        )
         return run
 
     def retry_run(self, run_id: str) -> Run | None:
@@ -249,20 +285,22 @@ class RunService:
         if not run:
             return None
 
-        run.metadata_ = {
-            **(run.metadata_ or {}),
-            "adopted": True,
-            "adoptedAt": datetime.utcnow().isoformat(),
-        }
-        if run.status == "pending":
-            run.status = "passed"
-            run.completed_at = run.completed_at or datetime.utcnow()
-        run.thread.updated_at = datetime.utcnow()
-        self.db.commit()
+        result = run_engine.adopt_run(run_id)
+        if not result.get("success"):
+            raise ValueError(str(result.get("error") or "采纳失败"))
 
-        self._record_adoption_memory(run)
-
-        self.db.refresh(run)
+        self.db.expire_all()
+        run = self.get_run(run_id)
+        if run:
+            event_bus.publish(
+                f"thread:{run.thread_id}",
+                {
+                    "type": "thread-updated",
+                    "runId": str(run.id),
+                    "threadId": str(run.thread_id),
+                    "status": run.status,
+                },
+            )
         return run
 
     def _create_workdir(self, thread_id: str, agent: str) -> Path:
@@ -335,24 +373,3 @@ class RunService:
                 return artifact.content
         return ""
 
-    def _record_adoption_memory(self, run: Run) -> None:
-        compare_group_id = (run.metadata_ or {}).get("compareGroupId")
-        compare_prompt = str((run.metadata_ or {}).get("comparePrompt") or "").strip()
-        compare_label = str((run.metadata_ or {}).get("compareLabel") or run.agent).strip()
-        if not compare_group_id or not compare_prompt or not run.thread.project_id:
-            return
-
-        summary = " ".join(self._artifact_content(run, "summary").strip().split())
-        reasoning = f"用户在 Compare 中采纳了方案：{compare_label}。"
-        if summary:
-            reasoning = f"{reasoning} 结果摘要：{summary[:240]}"
-
-        MemoryService(self.db).ensure_decision(
-            {
-                "projectId": str(run.thread.project_id),
-                "question": compare_prompt,
-                "decision": compare_label,
-                "reasoning": reasoning,
-                "sourceThreadId": str(run.thread_id),
-            }
-        )

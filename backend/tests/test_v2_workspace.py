@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -63,6 +64,13 @@ class V2WorkspaceApiTests(unittest.TestCase):
         if os.name == "nt":
             return " ".join(["&", quoted_python, script_path, *args])
         return " ".join([quoted_python, script_path, *args])
+
+    def _init_git_repo(self, repo_root: Path):
+        subprocess.run(["git", "init"], cwd=repo_root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "kam@example.com"], cwd=repo_root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "KAM Test"], cwd=repo_root, check=True, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=repo_root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo_root, check=True, capture_output=True)
 
     def _create_weather_page_fixture(self, repo_root: Path):
         self._write_fixture(
@@ -1268,7 +1276,7 @@ class V2WorkspaceApiTests(unittest.TestCase):
             self.assertEqual(len(payload['runs']), 1)
             self.assertEqual(payload['preferences'][0]['key'], 'package-manager')
             self.assertIsNotNone(payload['reply'])
-            self.assertIn('自动创建 1 个 custom run', payload['reply']['content'])
+            self.assertIn('创建 1 个 custom run', payload['reply']['content'])
             self.assertEqual(payload['routerMode'], 'heuristic')
 
             run_payload = self._wait_run(client, payload['runs'][0]['id'])
@@ -1464,75 +1472,70 @@ class V2WorkspaceApiTests(unittest.TestCase):
             self.assertIn('我已把这条消息记入当前 Thread', body)
 
     def test_llm_router_function_call_records_decision_without_run(self):
-        class FakeResponse:
-            def raise_for_status(self):
-                return None
-
-            def json(self):
-                return {
-                    'choices': [
-                        {
-                            'message': {
-                                'tool_calls': [
-                                    {
-                                        'type': 'function',
-                                        'function': {
-                                            'name': 'plan_kam_response',
-                                            'arguments': (
-                                                '{'
-                                                '"should_run": false, '
-                                                '"mode": "chat", '
-                                                '"agents": [], '
-                                                '"preferences": [], '
-                                                '"decisions": ['
-                                                '{"question": "状态管理方案选哪个？", "decision": "Zustand", "reasoning": "足够轻量"}'
-                                                '], '
-                                                '"learnings": [], '
-                                                '"summary": "已记录你的决策，本轮先不执行。"}'
-                                            ),
-                                        },
-                                    }
-                                ],
-                            },
-                        }
-                    ]
+        async def fake_route_with_anthropic(self, **kwargs):
+            context = kwargs.get("context") or {}
+            project_id = str((context.get("project") or {}).get("id") or "")
+            decision = self.memory_service.ensure_decision(
+                {
+                    "projectId": project_id,
+                    "question": "状态管理方案选哪个？",
+                    "decision": "Zustand",
+                    "reasoning": "足够轻量",
+                    "sourceThreadId": kwargs["thread_id"],
                 }
+            )
+            yield {
+                "type": "memory_recorded",
+                "kind": "decision",
+                "record": decision.to_dict(),
+            }
+            yield {
+                "type": "assistant_reply_final",
+                "content": "已记录你的决策，本轮先不执行。",
+            }
+            yield {
+                "type": "done",
+                "context": kwargs.get("context") or {},
+                "routerMode": "llm",
+                "compareId": None,
+            }
 
-        previous_key = settings.OPENAI_API_KEY
-        settings.OPENAI_API_KEY = 'test-key'
+        previous_key = settings.ANTHROPIC_API_KEY
+        settings.ANTHROPIC_API_KEY = 'test-key'
         try:
-            with patch('app.services.conversation_router.httpx.post', return_value=FakeResponse()):
-                with TestClient(app) as client:
-                    project = client.post(
-                        '/api/v2/projects',
-                        json={'title': 'LLM router project'},
-                    ).json()
-                    thread = client.post(
-                        f"/api/v2/projects/{project['id']}/threads",
-                        json={'title': 'LLM router thread'},
-                    ).json()
+            with patch('app.services.conversation_router.AnthropicService.enabled', new=property(lambda self: True)):
+                with patch('app.services.conversation_router.ConversationRouter._route_with_anthropic', new=fake_route_with_anthropic):
+                    with TestClient(app) as client:
+                        project = client.post(
+                            '/api/v2/projects',
+                            json={'title': 'LLM router project'},
+                        ).json()
+                        thread = client.post(
+                            f"/api/v2/projects/{project['id']}/threads",
+                            json={'title': 'LLM router thread'},
+                        ).json()
 
-                    posted = client.post(
-                        f"/api/v2/threads/{thread['id']}/messages",
-                        json={
-                            'content': '状态管理就定 Zustand，先不要执行。',
-                        },
-                    )
-                    self.assertEqual(posted.status_code, 200)
-                    payload = posted.json()
-                    self.assertEqual(payload['routerMode'], 'llm')
-                    self.assertEqual(payload['runs'], [])
-                    self.assertIn('已记录你的决策', payload['reply']['content'])
+                        posted = client.post(
+                            f"/api/v2/threads/{thread['id']}/messages",
+                            json={
+                                'content': '状态管理就定 Zustand，先不要执行。',
+                            },
+                        )
+                        self.assertEqual(posted.status_code, 200)
+                        payload = posted.json()
+                        self.assertEqual(payload['routerMode'], 'llm')
+                        self.assertEqual(payload['runs'], [])
+                        self.assertIn('已记录你的决策', payload['reply']['content'])
 
-                    decisions = client.get(
-                        '/api/v2/memory/decisions',
-                        params={'project_id': project['id']},
-                    )
-                    self.assertEqual(decisions.status_code, 200)
-                    self.assertEqual(len(decisions.json()['decisions']), 1)
-                    self.assertEqual(decisions.json()['decisions'][0]['decision'], 'Zustand')
+                        decisions = client.get(
+                            '/api/v2/memory/decisions',
+                            params={'project_id': project['id']},
+                        )
+                        self.assertEqual(decisions.status_code, 200)
+                        self.assertEqual(len(decisions.json()['decisions']), 1)
+                        self.assertEqual(decisions.json()['decisions'][0]['decision'], 'Zustand')
         finally:
-            settings.OPENAI_API_KEY = previous_key
+            settings.ANTHROPIC_API_KEY = previous_key
 
     def test_passed_run_auto_creates_project_learning(self):
         with TestClient(app) as client:
@@ -1568,53 +1571,59 @@ class V2WorkspaceApiTests(unittest.TestCase):
             self.assertTrue(any('race condition' in content for content in contents))
 
     def test_adopt_compare_run_records_decision_memory(self):
-        with TestClient(app) as client:
-            project = client.post(
-                '/api/v2/projects',
-                json={'title': 'Adopt compare project'},
-            ).json()
-            thread = client.post(
-                f"/api/v2/projects/{project['id']}/threads",
-                json={'title': 'Compare adopt'},
-            ).json()
+        with tempfile.TemporaryDirectory() as repo_dir:
+            repo_root = Path(repo_dir)
+            (repo_root / "auth.txt").write_text("base\n", encoding="utf-8")
+            self._init_git_repo(repo_root)
 
-            command_a = (
-                "printf '%s' '方案 A：实现 refresh token，并增加 race condition 保护。' > '{summary_file}'"
-                if os.name != 'nt'
-                else "Set-Content -Path '{summary_file}' -Value '方案 A：实现 refresh token，并增加 race condition 保护。'"
-            )
-            command_b = (
-                "printf '%s' '方案 B：实现 refresh token，并增加缓存。' > '{summary_file}'"
-                if os.name != 'nt'
-                else "Set-Content -Path '{summary_file}' -Value '方案 B：实现 refresh token，并增加缓存。'"
-            )
-            created = client.post(
-                f"/api/v2/threads/{thread['id']}/compare",
-                json={
-                    'prompt': '分别实现 refresh token 流程并对比',
-                    'agents': [
-                        {'agent': 'custom', 'label': '方案 A', 'command': command_a},
-                        {'agent': 'custom', 'label': '方案 B', 'command': command_b},
-                    ],
-                    'autoStart': True,
-                },
-            )
-            self.assertEqual(created.status_code, 200)
-            payload = created.json()
+            with TestClient(app) as client:
+                project = client.post(
+                    '/api/v2/projects',
+                    json={'title': 'Adopt compare project', 'repoPath': str(repo_root)},
+                ).json()
+                thread = client.post(
+                    f"/api/v2/projects/{project['id']}/threads",
+                    json={'title': 'Compare adopt'},
+                ).json()
 
-            first = self._wait_run(client, payload['runs'][0]['id'])
-            second = self._wait_run(client, payload['runs'][1]['id'])
-            self.assertEqual(first['status'], 'passed')
-            self.assertEqual(second['status'], 'passed')
+                command_a = (
+                    "printf '%s' '方案 A\\n' > 'auth.txt'; printf '%s' '方案 A：实现 refresh token，并增加 race condition 保护。' > '{summary_file}'"
+                    if os.name != 'nt'
+                    else "Set-Content -Path 'auth.txt' -Value '方案 A'; Set-Content -Path '{summary_file}' -Value '方案 A：实现 refresh token，并增加 race condition 保护。'"
+                )
+                command_b = (
+                    "printf '%s' '方案 B\\n' > 'auth.txt'; printf '%s' '方案 B：实现 refresh token，并增加缓存。' > '{summary_file}'"
+                    if os.name != 'nt'
+                    else "Set-Content -Path 'auth.txt' -Value '方案 B'; Set-Content -Path '{summary_file}' -Value '方案 B：实现 refresh token，并增加缓存。'"
+                )
+                created = client.post(
+                    f"/api/v2/threads/{thread['id']}/compare",
+                    json={
+                        'prompt': '分别实现 refresh token 流程并对比',
+                        'agents': [
+                            {'agent': 'custom', 'label': '方案 A', 'command': command_a},
+                            {'agent': 'custom', 'label': '方案 B', 'command': command_b},
+                        ],
+                        'autoStart': True,
+                    },
+                )
+                self.assertEqual(created.status_code, 200)
+                payload = created.json()
 
-            adopted = client.post(f"/api/v2/runs/{payload['runs'][0]['id']}/adopt")
-            self.assertEqual(adopted.status_code, 200)
+                first = self._wait_run(client, payload['runs'][0]['id'])
+                second = self._wait_run(client, payload['runs'][1]['id'])
+                self.assertEqual(first['status'], 'passed')
+                self.assertEqual(second['status'], 'passed')
 
-            decisions = client.get('/api/v2/memory/decisions', params={'project_id': project['id']})
-            self.assertEqual(decisions.status_code, 200)
-            rows = decisions.json()['decisions']
-            self.assertTrue(any(item['question'] == '分别实现 refresh token 流程并对比' for item in rows))
-            self.assertTrue(any(item['decision'] == '方案 A' for item in rows))
+                adopted = client.post(f"/api/v2/runs/{payload['runs'][0]['id']}/adopt")
+                self.assertEqual(adopted.status_code, 200)
+                self.assertIn('方案 A', (repo_root / 'auth.txt').read_text(encoding='utf-8'))
+
+                decisions = client.get('/api/v2/memory/decisions', params={'project_id': project['id']})
+                self.assertEqual(decisions.status_code, 200)
+                rows = decisions.json()['decisions']
+                self.assertTrue(any(item['question'] == '分别实现 refresh token 流程并对比' for item in rows))
+                self.assertTrue(any(item['decision'] == '方案 A' for item in rows))
 
 
 if __name__ == "__main__":

@@ -1,19 +1,24 @@
 """
-KAM v2 对话路由器：LLM 可用时优先，失败自动降级到规则路由。
+KAM v2 对话路由器：Anthropic 优先，失败时回退到规则路由。
 """
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Any
+from datetime import datetime
+from typing import Any, AsyncGenerator
 from uuid import uuid4
 
-import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models.conversation import Message, Thread
+from app.services.anthropic_service import AnthropicService, extract_text_from_message, iter_tool_uses
 from app.services.context_assembler import ContextAssembler
 from app.services.memory_service import MemoryService
 from app.services.run_service import RunService
+from app.services.skill_service import SkillService
+from app.services.thread_service import ThreadService
 
 
 class ConversationRouter:
@@ -38,8 +43,11 @@ class ConversationRouter:
         self.context_assembler = ContextAssembler(db)
         self.run_service = RunService(db)
         self.memory_service = MemoryService(db)
+        self.skill_service = SkillService(db)
+        self.thread_service = ThreadService(db)
+        self.anthropic = AnthropicService()
 
-    def route(
+    async def route(
         self,
         *,
         thread_id: str,
@@ -52,270 +60,637 @@ class ConversationRouter:
         reasoning_effort: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        context = self.context_assembler.assemble(thread_id) or {}
-        llm_plan = self._route_with_llm(user_message, context)
-        heuristic_preferences = self._extract_preferences(user_message, thread_id)
-        llm_preferences = self._persist_llm_preferences(llm_plan.get("preferences") or [], thread_id)
-        project_id = str((context.get("project") or {}).get("id") or "").strip() or None
-        llm_decisions = self._persist_llm_decisions(llm_plan.get("decisions") or [], project_id, thread_id)
-        llm_learnings = self._persist_llm_learnings(llm_plan.get("learnings") or [], project_id, thread_id)
-        recorded_preferences = self._merge_preferences(heuristic_preferences, llm_preferences)
-
-        should_run = self._resolve_should_run(user_message, create_run, llm_plan)
-        agents = self._resolve_agents(llm_plan, agent, command, user_message)
-        compare_group_id = str(uuid4()) if should_run and len(agents) > 1 else None
-        runs = []
-        if should_run:
-            prompt = self._build_run_prompt(user_message, context)
-            for agent_spec in agents:
-                run = self.run_service.create_run(
-                    thread_id,
-                    {
-                        "agent": agent_spec.get("agent") or settings.DEFAULT_RUN_AGENT,
-                        "command": agent_spec.get("command") or command,
-                        "prompt": prompt,
-                        "model": model or agent_spec.get("model"),
-                        "reasoningEffort": reasoning_effort or agent_spec.get("reasoningEffort"),
-                        "context": context,
-                        "metadata": {
-                            **(metadata or {}),
-                            "routedBy": "conversation-router",
-                            "routerModel": settings.ROUTER_MODEL,
-                            "routerReasoningEffort": settings.ROUTER_REASONING_EFFORT,
-                            "routerMode": llm_plan.get("mode") or "heuristic",
-                            **({
-                                "compareGroupId": compare_group_id,
-                                "compareLabel": agent_spec.get("label") or agent_spec.get("agent") or settings.DEFAULT_RUN_AGENT,
-                                "comparePrompt": user_message.strip(),
-                            } if compare_group_id else {}),
-                        },
-                    },
-                    message_id=message_id,
-                    auto_start=True,
-                )
-                if run:
-                    runs.append(run)
-
-        reply = self._build_reply(
+        result = {
+            "reply": "",
+            "runs": [],
+            "preferences": [],
+            "decisions": [],
+            "learnings": [],
+            "context": {},
+            "routerMode": "heuristic",
+            "compareId": None,
+        }
+        streamed_reply = ""
+        async for event in self.route_async(
+            thread_id=thread_id,
+            message_id=message_id,
             user_message=user_message,
+            create_run=create_run,
+            agent=agent,
+            command=command,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            metadata=metadata,
+        ):
+            event_type = event.get("type")
+            if event_type == "text_delta":
+                streamed_reply += str(event.get("delta") or "")
+                continue
+            if event_type == "assistant_reply_final":
+                result["reply"] = str(event.get("content") or "").strip()
+                continue
+            if event_type == "runs_created":
+                result["runs"] = event.get("runs") or []
+                result["compareId"] = event.get("compareId")
+                continue
+            if event_type == "memory_recorded":
+                kind = str(event.get("kind") or "")
+                if kind == "preference":
+                    result["preferences"].append(event["record"])
+                elif kind == "decision":
+                    result["decisions"].append(event["record"])
+                elif kind == "learning":
+                    result["learnings"].append(event["record"])
+                continue
+            if event_type == "done":
+                result["context"] = event.get("context") or {}
+                result["routerMode"] = str(event.get("routerMode") or "heuristic")
+                result["compareId"] = event.get("compareId")
+
+        if not result["reply"]:
+            result["reply"] = streamed_reply.strip()
+        return result
+
+    async def route_async(
+        self,
+        *,
+        thread_id: str,
+        message_id: str,
+        user_message: str,
+        create_run: bool | None = None,
+        agent: str | None = None,
+        command: str | None = None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        context = self.context_assembler.assemble(thread_id) or {}
+        project = context.get("project") or {}
+        project_id = str(project.get("id") or "").strip() or None
+        repo_path = str(project.get("repoPath") or "").strip() or None
+        if project_id and repo_path:
+            self.skill_service.sync_project_skills(project_id, repo_path)
+
+        skill_invocation = self._try_expand_skill(user_message, project_id)
+        effective_message = skill_invocation.get("expanded_prompt") if skill_invocation else user_message
+        effective_agent = agent or (skill_invocation.get("agent") if skill_invocation else None)
+        effective_metadata = {
+            **(metadata or {}),
+            **(
+                {
+                    "skillName": skill_invocation["skill"].name,
+                    "skillSource": skill_invocation["skill"].source,
+                    "skillInstructions": skill_invocation["skill"].prompt_template,
+                }
+                if skill_invocation
+                else {}
+            ),
+        }
+        heuristic_preferences = self._extract_preferences(user_message, thread_id)
+        if self.anthropic.enabled:
+            try:
+                async for event in self._route_with_anthropic(
+                    thread_id=thread_id,
+                    message_id=message_id,
+                    user_message=effective_message,
+                    context=context,
+                    create_run=True if skill_invocation and create_run is None else create_run,
+                    agent=effective_agent,
+                    command=command,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    metadata=effective_metadata,
+                    heuristic_preferences=heuristic_preferences,
+                ):
+                    yield event
+                return
+            except Exception:
+                pass
+
+        async for event in self._route_with_heuristic(
+            thread_id=thread_id,
+            message_id=message_id,
+            user_message=effective_message,
             context=context,
-            runs=runs,
-            recorded_preferences=recorded_preferences,
-            recorded_decisions=llm_decisions,
-            recorded_learnings=llm_learnings,
-            planner_summary=llm_plan.get("summary") or "",
-            router_mode=llm_plan.get("mode") or "heuristic",
+            create_run=True if skill_invocation and create_run is None else create_run,
+            agent=effective_agent,
+            command=command,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            metadata=effective_metadata,
+            heuristic_preferences=heuristic_preferences,
+        ):
+            yield event
+
+    async def ensure_restore_summary(self, thread_id: str) -> str | None:
+        thread = self.db.query(Thread).filter(Thread.id == thread_id).first()
+        if not thread or not thread.messages:
+            return None
+
+        last_message = list(thread.messages)[-1]
+        if last_message.created_at and last_message.created_at.date() == datetime.utcnow().date():
+            return None
+
+        latest_restore = (
+            self.db.query(Message)
+            .filter(Message.thread_id == thread_id, Message.role == "assistant")
+            .order_by(Message.created_at.desc())
+            .first()
         )
-        return {
-            "reply": reply,
-            "runs": [run.to_dict(include_artifacts=False) for run in runs],
-            "preferences": recorded_preferences,
-            "decisions": llm_decisions,
-            "learnings": llm_learnings,
+        if latest_restore and (latest_restore.metadata_ or {}).get("generatedBy") == "restore-summary":
+            if latest_restore.created_at and latest_restore.created_at.date() == datetime.utcnow().date():
+                return latest_restore.content
+
+        summary = await self.generate_restore_summary(thread_id)
+        if not summary:
+            return None
+
+        message = self.thread_service.create_message(
+            thread_id,
+            {
+                "role": "assistant",
+                "content": summary,
+                "metadata": {"generatedBy": "restore-summary"},
+            },
+        )
+        return message.content if message else summary
+
+    async def generate_restore_summary(self, thread_id: str) -> str:
+        context = self.context_assembler.assemble(thread_id) or {}
+        if not context:
+            return ""
+        if self.anthropic.enabled:
+            prompt = await self.anthropic.generate_text(
+                system=(
+                    "你是 KAM 的状态恢复助手。"
+                    "根据上下文给出 1 到 3 句话的恢复摘要，说明上次做到哪、最近一次 run 结果、下一步建议。"
+                    "只输出摘要正文。"
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": self._build_context_packet(context),
+                    }
+                ],
+                max_tokens=220,
+                model=settings.ANTHROPIC_SMALL_MODEL,
+            )
+            if prompt.strip():
+                return prompt.strip()
+
+        summary = context.get("summary") or ""
+        recent_runs = context.get("recentRuns") or []
+        run_summary = ""
+        if recent_runs:
+            latest = recent_runs[0]
+            latest_summary = str(latest.get("summary") or "").strip()
+            if latest_summary:
+                run_summary = f"最近一次 {latest.get('agent') or 'agent'} run 状态为 {latest.get('status') or 'unknown'}，{latest_summary[:120]}"
+        parts = [part for part in [summary.strip(), run_summary.strip()] if part]
+        return " ".join(parts)[:280]
+
+    async def _route_with_anthropic(
+        self,
+        *,
+        thread_id: str,
+        message_id: str,
+        user_message: str,
+        context: dict[str, Any],
+        create_run: bool | None,
+        agent: str | None,
+        command: str | None,
+        model: str | None,
+        reasoning_effort: str | None,
+        metadata: dict[str, Any] | None,
+        heuristic_preferences: list[dict[str, Any]],
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        client = self.anthropic.create_async_client()
+        if client is None:
+            raise RuntimeError("Anthropic client unavailable")
+
+        reply_chunks: list[str] = []
+        async with client.messages.stream(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=2048,
+            system=self._build_system_prompt(context),
+            messages=[
+                {
+                    "role": "user",
+                    "content": self._build_context_packet(context, user_message=user_message),
+                }
+            ],
+            tools=[
+                self._create_run_tool(),
+                self._record_memory_tool(),
+            ],
+        ) as stream:
+            async for delta in stream.text_stream:
+                text = str(delta or "")
+                if not text:
+                    continue
+                reply_chunks.append(text)
+                yield {"type": "text_delta", "delta": text}
+            final_message = await stream.get_final_message()
+
+        llm_preferences: list[dict[str, Any]] = []
+        llm_decisions: list[dict[str, Any]] = []
+        llm_learnings: list[dict[str, Any]] = []
+        created_runs: list[dict[str, Any]] = []
+        compare_group_id: str | None = None
+
+        for record in heuristic_preferences:
+            yield {"type": "memory_recorded", "kind": "preference", "record": record}
+
+        for tool_call in iter_tool_uses(final_message):
+            tool_name = str(tool_call.get("name") or "").strip()
+            tool_input = tool_call.get("input") or {}
+            if tool_name == "create_run":
+                if create_run is False:
+                    continue
+                created = self._create_run_from_tool(
+                    thread_id=thread_id,
+                    message_id=message_id,
+                    context=context,
+                    tool_input=tool_input,
+                    fallback_user_message=user_message,
+                    agent_override=agent,
+                    command=command,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    metadata=metadata,
+                )
+                if created:
+                    created_runs.extend(created)
+                continue
+            if tool_name == "record_memory":
+                recorded = self._record_memory_from_tool(
+                    tool_input,
+                    thread_id=thread_id,
+                    project_id=str((context.get("project") or {}).get("id") or "").strip() or None,
+                )
+                if not recorded:
+                    continue
+                kind, record = recorded
+                if kind == "preference":
+                    llm_preferences.append(record)
+                elif kind == "decision":
+                    llm_decisions.append(record)
+                elif kind == "learning":
+                    llm_learnings.append(record)
+                yield {"type": "memory_recorded", "kind": kind, "record": record}
+
+        if create_run and not created_runs:
+            fallback_runs, compare_group_id = self._create_runs_heuristically(
+                thread_id=thread_id,
+                message_id=message_id,
+                user_message=user_message,
+                context=context,
+                agent=agent,
+                command=command,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                metadata=metadata,
+                create_run=True,
+            )
+            created_runs.extend(fallback_runs)
+        elif len(created_runs) > 1:
+            compare_group_id = str(uuid4())
+
+        if created_runs:
+            yield {
+                "type": "runs_created",
+                "runs": created_runs,
+                "compareId": compare_group_id,
+            }
+
+        reply_text = extract_text_from_message(final_message) or "".join(reply_chunks).strip()
+        if not reply_text:
+            reply_text = self._build_fallback_reply(
+                user_message=user_message,
+                context=context,
+                runs=created_runs,
+                recorded_preferences=self._merge_preferences(heuristic_preferences, llm_preferences),
+                recorded_decisions=llm_decisions,
+                recorded_learnings=llm_learnings,
+                router_mode="llm",
+            )
+
+        yield {"type": "assistant_reply_final", "content": reply_text}
+        yield {
+            "type": "done",
             "context": context,
-            "routerMode": llm_plan.get("mode") or "heuristic",
+            "routerMode": "llm",
             "compareId": compare_group_id,
         }
 
-    def _route_with_llm(self, user_message: str, context: dict[str, Any]) -> dict[str, Any]:
-        if not settings.OPENAI_API_KEY.strip():
-            return {"mode": "heuristic"}
+    async def _route_with_heuristic(
+        self,
+        *,
+        thread_id: str,
+        message_id: str,
+        user_message: str,
+        context: dict[str, Any],
+        create_run: bool | None,
+        agent: str | None,
+        command: str | None,
+        model: str | None,
+        reasoning_effort: str | None,
+        metadata: dict[str, Any] | None,
+        heuristic_preferences: list[dict[str, Any]],
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        created_runs, compare_group_id = self._create_runs_heuristically(
+            thread_id=thread_id,
+            message_id=message_id,
+            user_message=user_message,
+            context=context,
+            agent=agent,
+            command=command,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            metadata=metadata,
+            create_run=create_run,
+        )
+        reply = self._build_fallback_reply(
+            user_message=user_message,
+            context=context,
+            runs=created_runs,
+            recorded_preferences=heuristic_preferences,
+            recorded_decisions=[],
+            recorded_learnings=[],
+            router_mode="heuristic",
+        )
 
+        for record in heuristic_preferences:
+            yield {"type": "memory_recorded", "kind": "preference", "record": record}
+
+        if created_runs:
+            yield {
+                "type": "runs_created",
+                "runs": created_runs,
+                "compareId": compare_group_id,
+            }
+
+        for chunk in self._chunk_text(reply):
+            yield {"type": "text_delta", "delta": chunk}
+            await asyncio.sleep(0)
+
+        yield {"type": "assistant_reply_final", "content": reply}
+        yield {
+            "type": "done",
+            "context": context,
+            "routerMode": "heuristic",
+            "compareId": compare_group_id,
+        }
+
+    def _build_system_prompt(self, context: dict[str, Any]) -> str:
+        return (
+            "你是 KAM 的 AI 控制台。"
+            "先用自然中文回复用户，必要时再调用工具。"
+            "当用户明确要求实现、修复、继续执行、对比多个 agent 时，调用 create_run。"
+            "当用户明确表达长期偏好、方案决策或稳定经验时，调用 record_memory。"
+            "回复保持直接、具体，不要复述整段上下文。"
+            f"\n\n当前上下文摘要：\n{context.get('summary') or '暂无摘要。'}"
+        )
+
+    def _build_context_packet(self, context: dict[str, Any], user_message: str | None = None) -> str:
+        project = context.get("project") or {}
         payload = {
-            "model": settings.ROUTER_MODEL,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是 KAM v2 的对话路由器。"
-                        "你必须调用函数 plan_kam_response 来输出结构化计划，不要输出 markdown。"
-                        "只有在用户明确表达长期偏好时才写 preferences。"
-                        "只有在用户明确做出方案选择、结论确认时才写 decisions。"
-                        "只有在用户陈述稳定、可复用的项目经验时才写 learnings。"
-                        "如果用户想比较多个 agent，请把 mode 设为 compare 并返回多个 agents。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "message": user_message,
-                            "contextSummary": context.get("summary") or "",
-                            "pinnedResources": context.get("pinnedResources") or [],
-                            "preferences": context.get("preferences") or [],
-                            "decisions": context.get("decisions") or [],
-                            "learnings": context.get("learnings") or [],
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
-            "tools": [self._planner_tool()],
-            "tool_choice": {
-                "type": "function",
-                "function": {
-                    "name": "plan_kam_response",
-                },
+            "project": {
+                "id": project.get("id"),
+                "title": project.get("title"),
+                "description": project.get("description"),
+                "repoPath": project.get("repoPath"),
+                "checkCommands": project.get("checkCommands") or [],
             },
+            "thread": context.get("thread") or {},
+            "summary": context.get("summary") or "",
+            "historyText": context.get("historyText") or "",
+            "recentRuns": context.get("recentRuns") or [],
+            "pinnedResources": context.get("pinnedResources") or [],
+            "preferences": context.get("preferences") or [],
+            "decisions": context.get("decisions") or [],
+            "learnings": context.get("learnings") or [],
+            "userMessage": user_message or "",
         }
-        headers = {
-            "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        }
-        try:
-            response = httpx.post(
-                f"{settings.OPENAI_BASE_URL.rstrip('/')}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=20,
-            )
-            response.raise_for_status()
-            message = response.json()["choices"][0]["message"]
-            parsed = self._extract_llm_plan(message)
-            return {
-                "mode": "llm",
-                "should_run": bool(parsed.get("should_run", False)),
-                "agents": parsed.get("agents") or [],
-                "preferences": parsed.get("preferences") or [],
-                "decisions": parsed.get("decisions") or [],
-                "learnings": parsed.get("learnings") or [],
-                "summary": parsed.get("summary") or "",
-            }
-        except Exception:
-            return {"mode": "heuristic"}
+        return json.dumps(payload, ensure_ascii=False)
 
-    def _planner_tool(self) -> dict[str, Any]:
+    def _create_run_tool(self) -> dict[str, Any]:
         return {
-            "type": "function",
-            "function": {
-                "name": "plan_kam_response",
-                "description": "Plan whether KAM should reply only, create one run, or create a compare run group.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "should_run": {
-                            "type": "boolean",
-                            "description": "Whether KAM should create runs for this message.",
-                        },
-                        "mode": {
-                            "type": "string",
-                            "enum": ["chat", "single_run", "compare"],
-                            "description": "Routing mode for this message.",
-                        },
-                        "agents": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "agent": {
-                                        "type": "string",
-                                        "enum": ["codex", "claude-code", "custom"],
-                                    },
-                                    "label": {"type": ["string", "null"]},
-                                    "command": {"type": ["string", "null"]},
-                                    "model": {"type": ["string", "null"]},
-                                    "reasoningEffort": {"type": ["string", "null"]},
-                                },
-                                "required": ["agent"],
-                                "additionalProperties": False,
-                            },
-                        },
-                        "preferences": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "category": {"type": "string"},
-                                    "key": {"type": "string"},
-                                    "value": {"type": "string"},
-                                },
-                                "required": ["key", "value"],
-                                "additionalProperties": False,
-                            },
-                        },
-                        "decisions": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "question": {"type": "string"},
-                                    "decision": {"type": "string"},
-                                    "reasoning": {"type": ["string", "null"]},
-                                },
-                                "required": ["decision"],
-                                "additionalProperties": False,
-                            },
-                        },
-                        "learnings": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "content": {"type": "string"},
-                                },
-                                "required": ["content"],
-                                "additionalProperties": False,
-                            },
-                        },
-                        "summary": {
-                            "type": "string",
-                            "description": "A concise assistant-facing summary of what KAM understood or will do.",
-                        },
+            "name": "create_run",
+            "description": "当需要真正执行代码修改、修复、调研或多 agent 对比时创建一个 run。",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task_description": {
+                        "type": "string",
+                        "description": "给 Agent 的完整任务描述，需要包含目标、边界与验收标准。",
                     },
-                    "required": ["should_run", "mode", "agents", "preferences", "decisions", "learnings", "summary"],
-                    "additionalProperties": False,
+                    "agent": {
+                        "type": "string",
+                        "enum": ["codex", "claude-code", "custom"],
+                        "description": "首选 agent。",
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "为什么创建这个 run。",
+                    },
                 },
+                "required": ["task_description"],
             },
         }
 
-    def _extract_llm_plan(self, message: dict[str, Any]) -> dict[str, Any]:
-        tool_calls = message.get("tool_calls") or []
-        for tool_call in tool_calls:
-            function_payload = tool_call.get("function") or {}
-            if function_payload.get("name") != "plan_kam_response":
-                continue
-            arguments = function_payload.get("arguments") or "{}"
-            parsed = self._parse_json_text(arguments)
-            return {
-                "should_run": bool(parsed.get("should_run", False)),
-                "mode": str(parsed.get("mode") or "chat"),
-                "agents": parsed.get("agents") or [],
-                "preferences": parsed.get("preferences") or [],
-                "decisions": parsed.get("decisions") or [],
-                "learnings": parsed.get("learnings") or [],
-                "summary": str(parsed.get("summary") or "").strip(),
-            }
-
-        content = message.get("content") or ""
-        parsed = self._parse_json_text(content) if content else {}
+    def _record_memory_tool(self) -> dict[str, Any]:
         return {
-            "should_run": bool(parsed.get("should_run", False)),
-            "mode": str(parsed.get("mode") or "chat"),
-            "agents": parsed.get("agents") or [],
-            "preferences": parsed.get("preferences") or [],
-            "decisions": parsed.get("decisions") or [],
-            "learnings": parsed.get("learnings") or [],
-            "summary": str(parsed.get("summary") or "").strip(),
+            "name": "record_memory",
+            "description": "记录用户偏好、项目决策或稳定经验。",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["preference", "decision", "learning"],
+                    },
+                    "category": {"type": "string"},
+                    "key": {"type": "string"},
+                    "value": {"type": "string"},
+                    "question": {"type": "string"},
+                    "decision": {"type": "string"},
+                    "reasoning": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["kind"],
+            },
         }
 
-    def _parse_json_text(self, content: str) -> dict[str, Any]:
-        text = content.strip()
-        if text.startswith("```"):
-            lines = [line for line in text.splitlines() if not line.startswith("```")]
-            text = "\n".join(lines).strip()
-        return json.loads(text or "{}")
+    def _try_expand_skill(self, user_message: str, project_id: str | None) -> dict[str, Any] | None:
+        text = user_message.strip()
+        if not text.startswith("/"):
+            return None
 
-    def _resolve_should_run(self, user_message: str, create_run: bool | None, llm_plan: dict[str, Any]) -> bool:
-        if create_run is not None:
-            return create_run
-        if "should_run" in llm_plan:
-            return bool(llm_plan["should_run"])
-        return self._looks_like_execution(user_message)
+        parts = text[1:].split(" ", 1)
+        name = parts[0].strip().lower()
+        args = parts[1].strip() if len(parts) > 1 else ""
+        if not name:
+            return None
 
-    def _resolve_agents(self, llm_plan: dict[str, Any], agent: str | None, command: str | None, user_message: str) -> list[dict[str, Any]]:
-        llm_agents = llm_plan.get("agents") or []
-        if llm_agents:
-            return llm_agents
+        skill = self.skill_service.find_skill(name, project_id=project_id)
+        if not skill:
+            return None
+
+        expanded = skill.prompt_template.replace("{args}", args)
+        if args and "{args}" not in skill.prompt_template:
+            expanded = f"{skill.prompt_template.rstrip()}\n\nArgs:\n{args}"
+        return {
+            "skill": skill,
+            "expanded_prompt": expanded,
+            "agent": skill.agent,
+        }
+
+    def _create_run_from_tool(
+        self,
+        *,
+        thread_id: str,
+        message_id: str,
+        context: dict[str, Any],
+        tool_input: dict[str, Any],
+        fallback_user_message: str,
+        agent_override: str | None,
+        command: str | None,
+        model: str | None,
+        reasoning_effort: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        agent = agent_override or str(tool_input.get("agent") or settings.DEFAULT_RUN_AGENT)
+        rationale = str(tool_input.get("rationale") or "").strip()
+        task_description = str(tool_input.get("task_description") or "").strip() or fallback_user_message.strip()
+        prompt = self._build_run_prompt(task_description, context, rationale=rationale)
+        run = self.run_service.create_run(
+            thread_id,
+            {
+                "agent": agent,
+                "command": command,
+                "prompt": prompt,
+                "model": model,
+                "reasoningEffort": reasoning_effort,
+                "context": context,
+                "metadata": {
+                    **(metadata or {}),
+                    "routedBy": "conversation-router",
+                    "routerModel": settings.ANTHROPIC_MODEL,
+                    "routerMode": "llm",
+                    "routerRationale": rationale,
+                },
+            },
+            message_id=message_id,
+            auto_start=True,
+        )
+        return [run.to_dict(include_artifacts=False)] if run else []
+
+    def _record_memory_from_tool(
+        self,
+        tool_input: dict[str, Any],
+        *,
+        thread_id: str,
+        project_id: str | None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        kind = str(tool_input.get("kind") or "").strip()
+        if kind == "preference":
+            key = str(tool_input.get("key") or "").strip()
+            value = str(tool_input.get("value") or "").strip()
+            if not key or not value:
+                return None
+            preference = self.memory_service.create_preference(
+                {
+                    "category": str(tool_input.get("category") or "general").strip() or "general",
+                    "key": key,
+                    "value": value,
+                    "sourceThreadId": thread_id,
+                }
+            )
+            return "preference", preference.to_dict()
+
+        if kind == "decision" and project_id:
+            decision = str(tool_input.get("decision") or "").strip()
+            if not decision:
+                return None
+            record = self.memory_service.ensure_decision(
+                {
+                    "projectId": project_id,
+                    "question": str(tool_input.get("question") or "本轮确认的方案").strip() or "本轮确认的方案",
+                    "decision": decision,
+                    "reasoning": str(tool_input.get("reasoning") or "").strip(),
+                    "sourceThreadId": thread_id,
+                }
+            )
+            return "decision", record.to_dict()
+
+        if kind == "learning" and project_id:
+            content = str(tool_input.get("content") or "").strip()
+            learning = self.memory_service.ensure_learning(
+                {
+                    "projectId": project_id,
+                    "content": content,
+                    "sourceThreadId": thread_id,
+                }
+            )
+            if learning:
+                return "learning", learning.to_dict()
+        return None
+
+    def _create_runs_heuristically(
+        self,
+        *,
+        thread_id: str,
+        message_id: str,
+        user_message: str,
+        context: dict[str, Any],
+        agent: str | None,
+        command: str | None,
+        model: str | None,
+        reasoning_effort: str | None,
+        metadata: dict[str, Any] | None,
+        create_run: bool | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        should_run = create_run if create_run is not None else self._looks_like_execution(user_message)
+        if not should_run:
+            return [], None
+
+        agents = self._resolve_agents(agent=agent, command=command, user_message=user_message)
+        compare_group_id = str(uuid4()) if len(agents) > 1 else None
+        runs: list[dict[str, Any]] = []
+        for agent_spec in agents:
+            run = self.run_service.create_run(
+                thread_id,
+                {
+                    "agent": agent_spec.get("agent") or settings.DEFAULT_RUN_AGENT,
+                    "command": agent_spec.get("command") or command,
+                    "prompt": self._build_run_prompt(user_message, context),
+                    "model": model or agent_spec.get("model"),
+                    "reasoningEffort": reasoning_effort or agent_spec.get("reasoningEffort"),
+                    "context": context,
+                    "metadata": {
+                        **(metadata or {}),
+                        "routedBy": "conversation-router",
+                        "routerMode": "heuristic",
+                        **(
+                            {
+                                "compareGroupId": compare_group_id,
+                                "compareLabel": agent_spec.get("label") or agent_spec.get("agent") or settings.DEFAULT_RUN_AGENT,
+                                "comparePrompt": user_message.strip(),
+                            }
+                            if compare_group_id
+                            else {}
+                        ),
+                    },
+                },
+                message_id=message_id,
+                auto_start=True,
+            )
+            if run:
+                runs.append(run.to_dict(include_artifacts=False))
+        return runs, compare_group_id
+
+    def _resolve_agents(self, *, agent: str | None, command: str | None, user_message: str) -> list[dict[str, Any]]:
         if not agent and self._looks_like_compare(user_message):
             return [
                 {
@@ -349,6 +724,11 @@ class ConversationRouter:
                 "reasoningEffort": settings.CODEX_REASONING_EFFORT if resolved_agent == "codex" else None,
             }
         ]
+
+    def _chunk_text(self, content: str, chunk_size: int = 36) -> list[str]:
+        if not content:
+            return []
+        return [content[index:index + chunk_size] for index in range(0, len(content), chunk_size)]
 
     def _looks_like_compare(self, user_message: str) -> bool:
         text = user_message.strip().lower()
@@ -399,77 +779,6 @@ class ConversationRouter:
 
         return recorded
 
-    def _persist_llm_preferences(self, preferences: list[dict[str, Any]], thread_id: str) -> list[dict[str, Any]]:
-        recorded = []
-        for item in preferences:
-            category = str(item.get("category") or "general").strip()
-            key = str(item.get("key") or "").strip()
-            value = str(item.get("value") or "").strip()
-            if not key or not value:
-                continue
-            preference = self.memory_service.create_preference(
-                {
-                    "category": category,
-                    "key": key,
-                    "value": value,
-                    "sourceThreadId": thread_id,
-                }
-            )
-            recorded.append(preference.to_dict())
-        return recorded
-
-    def _persist_llm_decisions(
-        self,
-        decisions: list[dict[str, Any]],
-        project_id: str | None,
-        thread_id: str,
-    ) -> list[dict[str, Any]]:
-        if not project_id:
-            return []
-
-        recorded = []
-        for item in decisions:
-            decision_value = str(item.get("decision") or "").strip()
-            question = str(item.get("question") or "").strip() or "本轮确认的方案"
-            if not decision_value:
-                continue
-            decision = self.memory_service.ensure_decision(
-                {
-                    "projectId": project_id,
-                    "question": question,
-                    "decision": decision_value,
-                    "reasoning": str(item.get("reasoning") or "").strip(),
-                    "sourceThreadId": thread_id,
-                }
-            )
-            recorded.append(decision.to_dict())
-        return recorded
-
-    def _persist_llm_learnings(
-        self,
-        learnings: list[dict[str, Any]],
-        project_id: str | None,
-        thread_id: str,
-    ) -> list[dict[str, Any]]:
-        if not project_id:
-            return []
-
-        recorded = []
-        for item in learnings:
-            content = str(item.get("content") or "").strip()
-            if not content:
-                continue
-            learning = self.memory_service.ensure_learning(
-                {
-                    "projectId": project_id,
-                    "content": content,
-                    "sourceThreadId": thread_id,
-                }
-            )
-            if learning:
-                recorded.append(learning.to_dict())
-        return recorded
-
     def _merge_preferences(self, left: list[dict[str, Any]], right: list[dict[str, Any]]) -> list[dict[str, Any]]:
         merged: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
@@ -481,7 +790,7 @@ class ConversationRouter:
             merged.append(item)
         return merged
 
-    def _build_run_prompt(self, user_message: str, context: dict[str, Any]) -> str:
+    def _build_run_prompt(self, user_message: str, context: dict[str, Any], rationale: str = "") -> str:
         summary = context.get("summary") or "暂无上下文摘要。"
         pinned_resources = context.get("pinnedResources") or []
         preferences = context.get("preferences") or []
@@ -496,63 +805,78 @@ class ConversationRouter:
             summary,
         ]
 
+        if rationale:
+            lines.extend(["", "# Why This Run", rationale.strip()])
+
+        history_text = str(context.get("historyText") or "").strip()
+        if history_text:
+            lines.extend(["", "# Thread History", history_text])
+
         if pinned_resources:
-            lines.extend([
-                "",
-                "# Pinned Resources",
-                *[
-                    f"- [{resource.get('type')}] {resource.get('title') or resource.get('uri')}: {resource.get('uri')}"
-                    for resource in pinned_resources[:8]
-                ],
-            ])
+            lines.extend(
+                [
+                    "",
+                    "# Pinned Resources",
+                    *[
+                        f"- [{resource.get('type')}] {resource.get('title') or resource.get('uri')}: {resource.get('uri')}"
+                        for resource in pinned_resources[:8]
+                    ],
+                ]
+            )
 
         if preferences:
-            lines.extend([
-                "",
-                "# Preferences",
-                *[
-                    f"- {item.get('category')} / {item.get('key')}: {item.get('value')}"
-                    for item in preferences[:8]
-                ],
-            ])
+            lines.extend(
+                [
+                    "",
+                    "# Preferences",
+                    *[
+                        f"- {item.get('category')} / {item.get('key')}: {item.get('value')}"
+                        for item in preferences[:8]
+                    ],
+                ]
+            )
 
         if decisions:
-            lines.extend([
-                "",
-                "# Decisions",
-                *[
-                    f"- {item.get('question')}: {item.get('decision')}"
-                    for item in decisions[:5]
-                ],
-            ])
+            lines.extend(
+                [
+                    "",
+                    "# Decisions",
+                    *[
+                        f"- {item.get('question')}: {item.get('decision')}"
+                        for item in decisions[:5]
+                    ],
+                ]
+            )
 
         if learnings:
-            lines.extend([
-                "",
-                "# Project Learnings",
-                *[
-                    f"- {item.get('content')}"
-                    for item in learnings[:5]
-                ],
-            ])
+            lines.extend(
+                [
+                    "",
+                    "# Project Learnings",
+                    *[
+                        f"- {item.get('content')}"
+                        for item in learnings[:5]
+                    ],
+                ]
+            )
 
         return "\n".join(lines)
 
-    def _build_reply(
+    def _build_fallback_reply(
         self,
         *,
         user_message: str,
         context: dict[str, Any],
-        runs: list[Any],
+        runs: list[dict[str, Any]],
         recorded_preferences: list[dict[str, Any]],
         recorded_decisions: list[dict[str, Any]],
         recorded_learnings: list[dict[str, Any]],
-        planner_summary: str,
         router_mode: str,
     ) -> str:
         reply_lines = []
-        if planner_summary:
-            reply_lines.append(planner_summary)
+        context_summary = str(context.get("summary") or "").strip()
+        if context_summary:
+            reply_lines.append("我已经结合当前 Thread 历史理解你的需求。")
 
         if recorded_preferences:
             memory_text = "，".join(f"{item['key']}={item['value']}" for item in recorded_preferences)
@@ -585,19 +909,19 @@ class ConversationRouter:
             if len(runs) == 1:
                 run = runs[0]
                 reply_lines.append(
-                    f"已基于当前 Thread 自动创建 1 个 {run.agent} run，默认模型 {run.model or '未指定'} / {run.reasoning_effort or 'default'}。"
+                    f"已基于当前 Thread 创建 1 个 {run.get('agent')} run，默认模型 {run.get('model') or '未指定'} / {run.get('reasoningEffort') or 'default'}。"
                 )
             else:
-                agents = "、".join(run.agent for run in runs)
+                agents = "、".join(str(run.get("agent") or "") for run in runs)
                 reply_lines.append(f"已并发创建 {len(runs)} 个 runs：{agents}。")
-            if context.get("summary"):
+            if context_summary:
                 reply_lines.append("我已自动组装当前 Project、最近 Thread 摘要、钉住资源、历史偏好和决策作为执行上下文。")
             if router_mode == "llm":
                 reply_lines.append("本轮意图判断已优先使用 LLM 路由。")
         else:
             reply_lines.append("我已把这条消息记入当前 Thread。")
             if self._looks_like_execution(user_message):
-                reply_lines.append("如果你希望我直接开跑，也可以在发送时显式打开自动 Run。")
+                reply_lines.append("如果你希望我直接开跑，也可以显式要求创建 run。")
 
         return " ".join(reply_lines)
 

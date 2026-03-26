@@ -114,6 +114,7 @@ class Run(Base):
     metadata_ = Column("metadata", JSON, default=dict)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    adopted_at = Column(DateTime(timezone=True), nullable=True)
 
     thread = relationship("Thread", back_populates="runs")
     message = relationship("Message", back_populates="runs")
@@ -148,6 +149,7 @@ class Run(Base):
             "metadata": self.metadata_ or {},
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "completedAt": self.completed_at.isoformat() if self.completed_at else None,
+            "adoptedAt": self.adopted_at.isoformat() if self.adopted_at else None,
         }
         if include_artifacts:
             data["artifacts"] = [artifact.to_dict() for artifact in self.artifacts] if self.artifacts else []

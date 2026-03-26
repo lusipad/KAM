@@ -4,13 +4,17 @@ KAM v2 线程与消息服务
 from __future__ import annotations
 
 import re
+import threading
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.events import event_bus
+from app.db.base import SessionLocal
 from app.models.conversation import Message, Thread
 from app.models.project import Project, ProjectResource
+from app.services.anthropic_service import AnthropicService
 
 
 URL_PATTERN = re.compile(r"""https?://[^\s<>"'）)\]]+""")
@@ -21,6 +25,7 @@ TRAILING_PUNCTUATION = ",.;:!?)，。；：！？】》）」』'\""
 class ThreadService:
     def __init__(self, db: Session):
         self.db = db
+        self.anthropic = AnthropicService()
 
     def list_threads(self, project_id: str, status: str | None = None) -> list[Thread]:
         query = self.db.query(Thread).filter(Thread.project_id == project_id)
@@ -54,16 +59,22 @@ class ThreadService:
             return None
 
         had_messages = bool(thread.messages)
+        message_role = data.get("role", "user")
+        should_generate_title = (
+            not had_messages
+            and message_role == "user"
+            and (thread.title or "新对话") == "新对话"
+        )
         message = Message(
             thread_id=thread.id,
-            role=data.get("role", "user"),
+            role=message_role,
             content=data["content"],
             metadata_=data.get("metadata") or {},
         )
         self.db.add(message)
         self.db.flush()
 
-        if not had_messages and (thread.title or "新对话") == "新对话" and message.role == "user":
+        if should_generate_title:
             normalized = message.content.strip().replace("\n", " ")
             if normalized:
                 thread.title = normalized[:40]
@@ -87,7 +98,63 @@ class ThreadService:
             thread.project.updated_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(message)
+        event_bus.publish(
+            f"thread:{thread_id}",
+            {
+                "type": "thread-updated",
+                "threadId": thread_id,
+                "messageId": str(message.id),
+                "role": message.role,
+            },
+        )
+        if should_generate_title:
+            self._schedule_thread_title(str(thread.id), message.content)
         return message
+
+    def _schedule_thread_title(self, thread_id: str, first_message: str):
+        worker = threading.Thread(
+            target=self._update_thread_title,
+            args=(thread_id, first_message),
+            daemon=True,
+        )
+        worker.start()
+
+    def _update_thread_title(self, thread_id: str, first_message: str):
+        db = SessionLocal()
+        try:
+            thread = db.query(Thread).filter(Thread.id == thread_id).first()
+            if not thread:
+                return
+            title = self._generate_thread_title(first_message)
+            if not title:
+                return
+            thread.title = title
+            thread.updated_at = datetime.utcnow()
+            db.commit()
+            event_bus.publish(
+                f"thread:{thread_id}",
+                {
+                    "type": "thread-updated",
+                    "threadId": thread_id,
+                },
+            )
+        finally:
+            db.close()
+
+    def _generate_thread_title(self, first_message: str) -> str:
+        normalized = " ".join(first_message.strip().split())
+        if not normalized:
+            return "新对话"
+        if self.anthropic.enabled:
+            title = self.anthropic.generate_text_sync(
+                system="用不超过 10 个汉字概括这个工作，只输出标题。",
+                messages=[{"role": "user", "content": normalized[:240]}],
+                max_tokens=32,
+            )
+            title = title.strip().strip('"').strip("《》[]【】")
+            if title:
+                return title[:10]
+        return normalized[:10]
 
     def _auto_extract_resources(self, *, project_id: str, thread_id: str, message_id: str, content: str) -> int:
         created = 0

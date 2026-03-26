@@ -47,6 +47,12 @@ class Project(Base):
         cascade="all, delete-orphan",
         order_by="ProjectLearning.created_at.desc()",
     )
+    skills = relationship(
+        "Skill",
+        back_populates="project",
+        cascade="all, delete-orphan",
+        order_by="Skill.created_at.desc()",
+    )
 
     __table_args__ = (
         Index("idx_projects_status", "status"),

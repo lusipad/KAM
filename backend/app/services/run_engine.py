@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+from queue import Empty, Queue
 import shutil
 import subprocess
 import threading
@@ -14,10 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.core.events import event_bus
 from app.db.base import SessionLocal
 from app.models.conversation import Message, Run, Thread, ThreadRunArtifact
 from app.models.project import Project, ProjectResource
+from app.services.anthropic_service import AnthropicService
 from app.services.memory_service import MemoryService
+from app.services.thread_service import ThreadService
 
 
 TERMINAL_RUN_STATUSES = {"passed", "failed", "cancelled"}
@@ -55,6 +59,8 @@ class V2RunExecutionManager:
         self._threads: dict[str, threading.Thread] = {}
         self._processes: dict[str, subprocess.Popen] = {}
         self._cancel_flags: set[str] = set()
+        self._anthropic = AnthropicService()
+        self._claude_help_text: str | None = None
 
     def launch_run(self, run_id: str) -> bool:
         with self._lock:
@@ -97,7 +103,6 @@ class V2RunExecutionManager:
 
     def _execute_run(self, run_id: str):
         db = SessionLocal()
-        process: subprocess.Popen | None = None
         try:
             run = db.query(Run).filter(Run.id == run_id).first()
             if not run:
@@ -112,7 +117,7 @@ class V2RunExecutionManager:
 
             run_root = Path(run.work_dir or settings.AGENT_WORKROOT).resolve()
             run_root.mkdir(parents=True, exist_ok=True)
-            execution_cwd, worktree = self._resolve_execution_cwd(thread, run_root)
+            execution_cwd, worktree, worktree_branch = self._resolve_execution_cwd(thread, run_root, run_id)
 
             base_prompt = self._artifact_content(db, run.id, "prompt") or ""
             base_context = self._artifact_content(db, run.id, "context") or "{}"
@@ -146,6 +151,7 @@ class V2RunExecutionManager:
                 command, display_command = self._build_command(
                     run=run,
                     prompt_text=prompt_text,
+                    base_context=base_context,
                     run_root=run_root,
                     round_dir=round_dir,
                     execution_cwd=execution_cwd,
@@ -161,6 +167,7 @@ class V2RunExecutionManager:
                     "executionCwd": str(execution_cwd),
                     "commandLine": display_command,
                     "worktree": str(worktree) if worktree else None,
+                    "worktreeBranch": worktree_branch,
                     "startedAt": (run.metadata_ or {}).get("startedAt") or datetime.utcnow().isoformat(),
                 }
                 if round_number == 1:
@@ -173,28 +180,29 @@ class V2RunExecutionManager:
                     metadata={"commandLine": display_command},
                 )
                 db.commit()
+                self._publish_run_event(
+                    run,
+                    "run-progress",
+                    stdoutTail="",
+                    stderrTail="",
+                    stage="started",
+                )
 
-                with open(stdout_path, "w", encoding="utf-8") as stdout_file, open(stderr_path, "w", encoding="utf-8") as stderr_file:
-                    process = subprocess.Popen(
-                        command,
-                        cwd=str(execution_cwd),
-                        stdout=stdout_file,
-                        stderr=stderr_file,
-                        stdin=subprocess.DEVNULL,
-                        text=True,
-                    )
-                    with self._lock:
-                        self._processes[run_id] = process
-                    run.metadata_ = {
-                        **(run.metadata_ or {}),
-                        "pid": process.pid,
-                    }
-                    db.commit()
-                    return_code = process.wait()
+                return_code, stdout_text, stderr_text, stream_summary, pid = self._execute_process_streaming(
+                    run=run,
+                    run_id=run_id,
+                    command=command,
+                    execution_cwd=execution_cwd,
+                    stdout_path=stdout_path,
+                    stderr_path=stderr_path,
+                )
+                run.metadata_ = {
+                    **(run.metadata_ or {}),
+                    "pid": pid,
+                }
+                db.commit()
 
-                stdout_text = _read_text(stdout_path)
-                stderr_text = _read_text(stderr_path)
-                summary_text = self._resolve_summary(summary_path, stdout_text, stderr_text)
+                summary_text = self._resolve_summary(summary_path, stdout_text, stderr_text, stream_summary)
 
                 self._record_artifact(db, run.id, "stdout", f"stdout round {round_number}", stdout_text, stdout_path, round_number)
                 self._record_artifact(db, run.id, "stderr", f"stderr round {round_number}", stderr_text, stderr_path, round_number)
@@ -212,18 +220,16 @@ class V2RunExecutionManager:
                     return
 
                 if return_code != 0:
-                    run.status = "failed"
-                    run.error = stderr_text or f"进程退出码 {return_code}"
-                    run.completed_at = datetime.utcnow()
-                    run.duration_ms = self._duration_ms(run)
-                    self._record_thread_event(
+                    self._mark_terminal_run(
                         db,
                         run,
-                        f"{run.agent} 第 {round_number} 轮执行失败",
-                        "run-failed",
-                        metadata={"errorPreview": _tail_text(run.error or "", 600)},
+                        status="failed",
+                        event_type="run-failed",
+                        content=f"{run.agent} 第 {round_number} 轮执行失败",
+                        error=stderr_text or f"进程退出码 {return_code}",
+                        metadata={"errorPreview": _tail_text(stderr_text or "", 600)},
                     )
-                    db.commit()
+                    self._schedule_run_digest(run.id, str(run.thread_id), "failed")
                     return
 
                 run.status = "checking"
@@ -234,6 +240,7 @@ class V2RunExecutionManager:
                     "run-checking",
                 )
                 db.commit()
+                self._publish_run_event(run, "run-progress", stage="checking", stdoutTail=_tail_text(stdout_text, 400))
 
                 check_results = self._execute_checks(
                     run_id=run.id,
@@ -258,34 +265,30 @@ class V2RunExecutionManager:
                 db.commit()
 
                 if all_passed:
-                    run.status = "passed"
-                    run.error = None
-                    run.completed_at = datetime.utcnow()
-                    run.duration_ms = self._duration_ms(run)
                     self._capture_project_learning(db, run, summary_text)
-                    self._record_thread_event(
+                    self._mark_terminal_run(
                         db,
                         run,
-                        f"{run.agent} 第 {round_number} 轮检查通过",
-                        "run-passed",
-                        metadata={"durationMs": run.duration_ms},
+                        status="passed",
+                        event_type="run-passed",
+                        content=f"{run.agent} 第 {round_number} 轮检查通过",
+                        metadata={"durationMs": self._duration_ms(run)},
                     )
-                    db.commit()
+                    self._schedule_run_digest(run.id, str(run.thread_id), "passed")
                     return
 
                 if round_number >= (run.max_rounds or 1):
-                    run.status = "failed"
-                    run.error = self._build_retry_feedback(check_results)
-                    run.completed_at = datetime.utcnow()
-                    run.duration_ms = self._duration_ms(run)
-                    self._record_thread_event(
+                    failure_feedback = self._build_retry_feedback(check_results)
+                    self._mark_terminal_run(
                         db,
                         run,
-                        f"{run.agent} 在第 {round_number} 轮后仍未通过检查",
-                        "run-failed",
-                        metadata={"errorPreview": _tail_text(run.error or "", 600)},
+                        status="failed",
+                        event_type="run-failed",
+                        content=f"{run.agent} 在第 {round_number} 轮后仍未通过检查",
+                        error=failure_feedback,
+                        metadata={"errorPreview": _tail_text(failure_feedback, 600)},
                     )
-                    db.commit()
+                    self._schedule_run_digest(run.id, str(run.thread_id), "failed")
                     return
 
                 feedback_text = self._build_retry_feedback(check_results)
@@ -312,38 +315,52 @@ class V2RunExecutionManager:
                     metadata={"nextRound": round_number + 1, "errorPreview": _tail_text(feedback_text, 600)},
                 )
                 db.commit()
+                self._publish_run_event(
+                    run,
+                    "run-progress",
+                    stage="retrying",
+                    stdoutTail=_tail_text(stdout_text, 400),
+                    stderrTail=_tail_text(feedback_text, 400),
+                )
                 round_number += 1
         except Exception as exc:
+            db.rollback()
             run = db.query(Run).filter(Run.id == run_id).first()
             if run and run.status != "cancelled":
-                run.status = "failed"
-                run.error = str(exc)
-                run.completed_at = datetime.utcnow()
-                run.duration_ms = self._duration_ms(run)
-                self._record_thread_event(
+                self._mark_terminal_run(
                     db,
                     run,
-                    f"{run.agent} 执行异常终止",
-                    "run-failed",
-                    metadata={"errorPreview": _tail_text(run.error or "", 600)},
+                    status="failed",
+                    event_type="run-failed",
+                    content=f"{run.agent} 执行异常终止",
+                    error=str(exc),
+                    metadata={"errorPreview": _tail_text(str(exc), 600)},
                 )
-                db.commit()
+                self._schedule_run_digest(run.id, str(run.thread_id), "failed")
         finally:
+            final_db = SessionLocal()
+            try:
+                final_run = final_db.query(Run).filter(Run.id == run_id).first()
+                if final_run and final_run.status in {"failed", "cancelled"}:
+                    self._cleanup_run_worktree(final_run)
+            finally:
+                final_db.close()
             with self._lock:
                 self._processes.pop(run_id, None)
                 self._threads.pop(run_id, None)
                 self._cancel_flags.discard(run_id)
             db.close()
 
-    def _resolve_execution_cwd(self, thread: Thread, run_root: Path) -> tuple[Path, Path | None]:
+    def _resolve_execution_cwd(self, thread: Thread, run_root: Path, run_id: str) -> tuple[Path, Path | None, str | None]:
         repo_path = self._resolve_repo_path(thread.project)
         if not repo_path:
-            return run_root, None
+            return run_root, None, None
 
         candidate_worktree = run_root / "workspace"
-        if self._create_git_worktree(repo_path, candidate_worktree):
-            return candidate_worktree, candidate_worktree
-        return repo_path, None
+        worktree_branch = f"kam-run-{str(run_id).replace('-', '')[:12]}"
+        if self._create_git_worktree(repo_path, candidate_worktree, worktree_branch):
+            return candidate_worktree, candidate_worktree, worktree_branch
+        return repo_path, None, None
 
     def _resolve_repo_path(self, project: Project | None) -> Path | None:
         if not project:
@@ -386,6 +403,7 @@ class V2RunExecutionManager:
         *,
         run: Run,
         prompt_text: str,
+        base_context: str,
         run_root: Path,
         round_dir: Path,
         execution_cwd: Path,
@@ -407,6 +425,10 @@ class V2RunExecutionManager:
             return self._build_custom_command(command_text)
 
         if run.agent == "codex":
+            self._prepare_codex_context(
+                execution_cwd=execution_cwd,
+                skill_instructions=str((run.metadata_ or {}).get("skillInstructions") or "").strip() or None,
+            )
             executable = self._resolve_cli(settings.CODEX_CLI_PATH, "codex")
             command = [
                 executable,
@@ -427,18 +449,318 @@ class V2RunExecutionManager:
 
         if run.agent in {"claude", "claude-code"}:
             executable = self._resolve_cli(settings.CLAUDE_CODE_CLI_PATH, "claude")
+            prompt_with_context = f"# Context\n\n{base_context}\n\n# Task\n\n{prompt_text}"
             command = [
                 executable,
                 "-p",
-                "--permission-mode",
-                "bypassPermissions",
+                "--dangerously-skip-permissions",
                 "--output-format",
-                "text",
-                prompt_text,
+                "stream-json",
             ]
+            if self._claude_supports_flag("--cwd"):
+                command.extend(["--cwd", str(execution_cwd)])
+            command.append(prompt_with_context)
             return command, (subprocess.list2cmdline(command) if os.name == "nt" else " ".join(command))
 
         raise RuntimeError(f"不支持的 agent: {run.agent}")
+
+    def _execute_process_streaming(
+        self,
+        *,
+        run: Run,
+        run_id: str,
+        command: list[str],
+        execution_cwd: Path,
+        stdout_path: Path,
+        stderr_path: Path,
+    ) -> tuple[int, str, str, str, int | None]:
+        stdout_parts: list[str] = []
+        stderr_parts: list[str] = []
+        assistant_parts: list[str] = []
+        stream_queue: Queue[tuple[str, str | None]] = Queue()
+
+        with open(stdout_path, "w", encoding="utf-8") as stdout_file, open(stderr_path, "w", encoding="utf-8") as stderr_file:
+            process = subprocess.Popen(
+                command,
+                cwd=str(execution_cwd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+            with self._lock:
+                self._processes[run_id] = process
+
+            def reader(pipe, stream_name: str, sink):
+                try:
+                    if pipe is None:
+                        return
+                    for line in iter(pipe.readline, ""):
+                        sink.write(line)
+                        sink.flush()
+                        stream_queue.put((stream_name, line))
+                finally:
+                    if pipe is not None:
+                        pipe.close()
+                    stream_queue.put((stream_name, None))
+
+            stdout_thread = threading.Thread(target=reader, args=(process.stdout, "stdout", stdout_file), daemon=True)
+            stderr_thread = threading.Thread(target=reader, args=(process.stderr, "stderr", stderr_file), daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
+
+            closed_streams = 0
+            last_publish = 0.0
+            while closed_streams < 2:
+                if self._is_cancelled(run_id) and process.poll() is None:
+                    process.terminate()
+                try:
+                    stream_name, line = stream_queue.get(timeout=0.25)
+                except Empty:
+                    if process.poll() is not None and not stdout_thread.is_alive() and not stderr_thread.is_alive():
+                        break
+                    continue
+
+                if line is None:
+                    closed_streams += 1
+                    continue
+
+                if stream_name == "stdout":
+                    stdout_parts.append(line)
+                    assistant_parts.extend(self._extract_stream_json_text(line))
+                else:
+                    stderr_parts.append(line)
+
+                now = time.time()
+                if now - last_publish >= 0.2:
+                    self._publish_run_event(
+                        run,
+                        "run-progress",
+                        stage="streaming",
+                        stdoutTail=_tail_text("".join(stdout_parts), 400),
+                        stderrTail=_tail_text("".join(stderr_parts), 400),
+                    )
+                    last_publish = now
+
+            return_code = process.wait()
+            stdout_thread.join(timeout=1)
+            stderr_thread.join(timeout=1)
+
+        stdout_text = "".join(stdout_parts)
+        stderr_text = "".join(stderr_parts)
+        return return_code, stdout_text, stderr_text, "".join(assistant_parts).strip(), process.pid
+
+    def _extract_stream_json_text(self, line: str) -> list[str]:
+        try:
+            payload = json.loads(line)
+        except Exception:
+            return []
+        if not isinstance(payload, dict):
+            return []
+        collected: list[str] = []
+        for key in ("text", "delta", "message", "content"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                collected.append(value)
+        delta = payload.get("delta")
+        if isinstance(delta, dict):
+            text = delta.get("text")
+            if isinstance(text, str):
+                collected.append(text)
+        content = payload.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        collected.append(text)
+        return collected
+
+    def _publish_run_event(self, run: Run | None, event_type: str, **payload: Any):
+        if not run:
+            return
+        event = {
+            "type": event_type,
+            "runId": str(run.id),
+            "threadId": str(run.thread_id),
+            "status": run.status,
+            "round": run.round,
+            **payload,
+        }
+        event_bus.publish(f"thread:{run.thread_id}", event)
+        event_bus.publish(f"run:{run.id}", event)
+
+    def _mark_terminal_run(
+        self,
+        db,
+        run: Run,
+        *,
+        status: str,
+        event_type: str,
+        content: str,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ):
+        run.status = status
+        run.error = error
+        run.completed_at = datetime.utcnow()
+        run.duration_ms = self._duration_ms(run)
+        event_metadata = {
+            **(metadata or {}),
+            "durationMs": run.duration_ms,
+            "errorPreview": _tail_text(error or "", 600) if error else (metadata or {}).get("errorPreview"),
+        }
+        self._record_thread_event(db, run, content, event_type, metadata=event_metadata)
+        db.commit()
+        self._publish_run_event(
+            run,
+            "thread-done" if status in TERMINAL_RUN_STATUSES else "run-progress",
+            stage=status,
+            stdoutTail="",
+            stderrTail=_tail_text(error or "", 400),
+        )
+
+    def _schedule_run_digest(self, run_id: str, thread_id: str, status: str):
+        worker = threading.Thread(
+            target=self._do_run_digest,
+            args=(run_id, thread_id, status),
+            daemon=True,
+        )
+        worker.start()
+
+    def _do_run_digest(self, run_id: str, thread_id: str, status: str):
+        db = SessionLocal()
+        try:
+            run = db.query(Run).filter(Run.id == run_id).first()
+            if not run:
+                return
+
+            digest = self._call_digest_llm(
+                status=status,
+                agent=run.agent,
+                rounds=run.round or 1,
+                duration_ms=run.duration_ms,
+                summary=self._artifact_content(db, run_id, "summary"),
+                check_results=self._artifact_content(db, run_id, "check_result"),
+                changes=self._artifact_content(db, run_id, "changes"),
+                error=run.error or "",
+            )
+            if not digest.strip():
+                return
+
+            message = ThreadService(db).create_message(
+                thread_id,
+                {
+                    "role": "assistant",
+                    "content": digest,
+                    "metadata": {
+                        "generatedBy": "run-digest",
+                        "runId": run_id,
+                        "runStatus": status,
+                    },
+                },
+            )
+            if message:
+                event_bus.publish(
+                    f"thread:{thread_id}",
+                    {
+                        "type": "thread-updated",
+                        "runId": run_id,
+                        "threadId": thread_id,
+                        "status": status,
+                    },
+                )
+        finally:
+            db.close()
+
+    def _call_digest_llm(
+        self,
+        *,
+        status: str,
+        agent: str,
+        rounds: int,
+        duration_ms: int | None,
+        summary: str,
+        check_results: str,
+        changes: str,
+        error: str,
+    ) -> str:
+        if self._anthropic.enabled:
+            prompt = self._anthropic.generate_text_sync(
+                system=(
+                    "你是 KAM 的 run 结果摘要器。"
+                    "基于执行摘要、检查结果和变更列表，输出 1 到 4 句话，直接说明完成了什么、失败原因或下一步。"
+                    "不要罗列原始 JSON，不要加标题。"
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "status": status,
+                                "agent": agent,
+                                "rounds": rounds,
+                                "durationMs": duration_ms,
+                                "summary": summary[:4000],
+                                "checkResults": check_results[:4000],
+                                "changes": changes[:4000],
+                                "error": error[:2000],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+                max_tokens=280,
+                model=settings.ANTHROPIC_SMALL_MODEL,
+            )
+            if prompt.strip():
+                return prompt.strip()
+        return self._build_digest_fallback(
+            status=status,
+            agent=agent,
+            rounds=rounds,
+            duration_ms=duration_ms,
+            summary=summary,
+            check_results=check_results,
+            changes=changes,
+            error=error,
+        )
+
+    def _build_digest_fallback(
+        self,
+        *,
+        status: str,
+        agent: str,
+        rounds: int,
+        duration_ms: int | None,
+        summary: str,
+        check_results: str,
+        changes: str,
+        error: str,
+    ) -> str:
+        duration_text = f"，耗时 {duration_ms}ms" if duration_ms else ""
+        clean_summary = " ".join((summary or "").strip().split())
+        if status == "passed":
+            parts = [f"{agent} 已在第 {rounds} 轮完成本次执行{duration_text}。"]
+            if clean_summary:
+                parts.append(clean_summary[:220])
+            change_preview = " ".join((changes or "").strip().split())
+            if change_preview:
+                parts.append(f"变更概览：{change_preview[:180]}")
+            if check_results.strip():
+                parts.append("相关检查已执行，可在 Run 详情查看结果。")
+            return " ".join(parts)
+
+        failure = " ".join((error or clean_summary or "").strip().split())
+        parts = [f"{agent} 本次执行失败，停止在第 {rounds} 轮{duration_text}。"]
+        if failure:
+            parts.append(failure[:220])
+        if check_results.strip():
+            parts.append("建议先查看失败检查和 stderr，再决定是否重试。")
+        return " ".join(parts)
 
     def _execute_checks(
         self,
@@ -568,11 +890,13 @@ class V2RunExecutionManager:
         db.add(artifact)
         return artifact
 
-    def _resolve_summary(self, summary_path: Path | None, stdout_text: str, stderr_text: str) -> str:
+    def _resolve_summary(self, summary_path: Path | None, stdout_text: str, stderr_text: str, stream_summary: str = "") -> str:
         if summary_path and summary_path.exists():
             summary = _read_text(summary_path)
             if summary.strip():
                 return summary
+        if stream_summary.strip():
+            return stream_summary
         if stdout_text.strip():
             return stdout_text
         return stderr_text
@@ -732,7 +1056,35 @@ class V2RunExecutionManager:
     def _resolve_cli(self, configured: str, fallback: str) -> str:
         return shutil.which(configured) or shutil.which(fallback) or configured
 
-    def _create_git_worktree(self, repo_path: Path, worktree_path: Path) -> bool:
+    def _prepare_codex_context(self, execution_cwd: Path, skill_instructions: str | None):
+        if not skill_instructions:
+            return
+        agents_path = execution_cwd / "AGENTS.md"
+        project_agents = agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
+        combined = project_agents.rstrip()
+        if combined:
+            combined += "\n\n"
+        combined += f"## Invoked Skill\n{skill_instructions.strip()}\n"
+        _write_text(agents_path, combined)
+
+    def _claude_supports_flag(self, flag: str) -> bool:
+        if self._claude_help_text is None:
+            try:
+                executable = self._resolve_cli(settings.CLAUDE_CODE_CLI_PATH, "claude")
+                result = subprocess.run(
+                    [executable, "--help"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                self._claude_help_text = f"{result.stdout}\n{result.stderr}"
+            except Exception:
+                self._claude_help_text = ""
+        return flag in (self._claude_help_text or "")
+
+    def _create_git_worktree(self, repo_path: Path, worktree_path: Path, branch_name: str) -> bool:
         repo_root = self._get_git_root(repo_path)
         if not repo_root:
             return False
@@ -740,7 +1092,7 @@ class V2RunExecutionManager:
             return True
         try:
             subprocess.run(
-                ["git", "-C", str(repo_root), "worktree", "add", "--detach", str(worktree_path)],
+                ["git", "-C", str(repo_root), "worktree", "add", "-b", branch_name, str(worktree_path), "HEAD"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -765,6 +1117,211 @@ class V2RunExecutionManager:
             return Path(root) if root else None
         except Exception:
             return None
+
+    def adopt_run(self, run_id: str) -> dict[str, Any]:
+        db = SessionLocal()
+        try:
+            run = db.query(Run).filter(Run.id == run_id).first()
+            if not run:
+                return {"success": False, "error": "Run 不存在"}
+            if run.status != "passed":
+                return {"success": False, "error": "只有 passed 的 Run 才能采纳"}
+
+            worktree_path = Path(str((run.metadata_ or {}).get("worktree") or "")).resolve() if (run.metadata_ or {}).get("worktree") else None
+            if worktree_path:
+                return self._adopt_via_worktree_merge(run, worktree_path, db)
+
+            patch_content = self._artifact_content(db, run_id, "patch")
+            if patch_content:
+                return self._adopt_via_patch(run, patch_content, db)
+
+            return {"success": False, "error": "没有可采纳的变更"}
+        finally:
+            db.close()
+
+    def _adopt_via_worktree_merge(self, run: Run, worktree: Path, db) -> dict[str, Any]:
+        repo_path = self._resolve_repo_path(run.thread.project)
+        if not repo_path:
+            return {"success": False, "error": "项目没有可用仓库"}
+
+        branch = str((run.metadata_ or {}).get("worktreeBranch") or "").strip()
+        if not branch:
+            return {"success": False, "error": "worktree 分支信息缺失"}
+
+        if not self._git_tracked_clean(repo_path):
+            return {"success": False, "error": "目标仓库存在未提交的跟踪文件变更，无法自动 merge"}
+
+        worktree_status = self._git_output(worktree, ["status", "--short", "--untracked-files=all"])
+        if worktree_status.strip():
+            try:
+                subprocess.run(
+                    ["git", "-C", str(worktree), "add", "-A"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(worktree),
+                        "-c",
+                        "user.name=KAM",
+                        "-c",
+                        "user.email=kam@example.com",
+                        "commit",
+                        "-m",
+                        f"KAM adopt run {run.id}",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except subprocess.CalledProcessError as exc:
+                return {"success": False, "error": (exc.stderr or exc.stdout or "worktree 提交失败").strip()}
+
+        try:
+            subprocess.run(
+                ["git", "-C", str(repo_path), "merge", "--no-ff", "--no-edit", branch],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except subprocess.CalledProcessError as exc:
+            return {"success": False, "error": (exc.stderr or exc.stdout or "merge 失败").strip()}
+
+        adopted_at = datetime.utcnow()
+        run.adopted_at = adopted_at
+        run.metadata_ = {
+            **(run.metadata_ or {}),
+            "adopted": True,
+            "adoptedAt": adopted_at.isoformat(),
+            "adoptedVia": "worktree-merge",
+        }
+        db.commit()
+        self._cleanup_run_worktree(run)
+        self._record_adoption_memory(db, run)
+        event_bus.publish(
+            f"thread:{run.thread_id}",
+            {
+                "type": "thread-updated",
+                "runId": str(run.id),
+                "threadId": str(run.thread_id),
+                "status": run.status,
+            },
+        )
+        return {"success": True}
+
+    def _adopt_via_patch(self, run: Run, patch_content: str, db) -> dict[str, Any]:
+        repo_path = self._resolve_repo_path(run.thread.project)
+        if not repo_path:
+            return {"success": False, "error": "项目没有可用仓库"}
+        if not self._git_tracked_clean(repo_path):
+            return {"success": False, "error": "目标仓库存在未提交的跟踪文件变更，无法自动应用 patch"}
+
+        patch_path = Path(run.work_dir or settings.AGENT_WORKROOT) / "adopt.patch"
+        _write_text(patch_path, patch_content)
+        try:
+            subprocess.run(
+                ["git", "-C", str(repo_path), "apply", "--index", str(patch_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except subprocess.CalledProcessError as exc:
+            return {"success": False, "error": (exc.stderr or exc.stdout or "patch 应用失败").strip()}
+
+        adopted_at = datetime.utcnow()
+        run.adopted_at = adopted_at
+        run.metadata_ = {
+            **(run.metadata_ or {}),
+            "adopted": True,
+            "adoptedAt": adopted_at.isoformat(),
+            "adoptedVia": "patch",
+        }
+        db.commit()
+        self._record_adoption_memory(db, run)
+        event_bus.publish(
+            f"thread:{run.thread_id}",
+            {
+                "type": "thread-updated",
+                "runId": str(run.id),
+                "threadId": str(run.thread_id),
+                "status": run.status,
+            },
+        )
+        return {"success": True}
+
+    def _cleanup_run_worktree(self, run: Run | None):
+        if not run:
+            return
+        metadata = run.metadata_ or {}
+        worktree_value = str(metadata.get("worktree") or "").strip()
+        branch = str(metadata.get("worktreeBranch") or "").strip()
+        if not worktree_value:
+            return
+
+        repo_path = self._resolve_repo_path(run.thread.project)
+        repo_root = self._get_git_root(repo_path) if repo_path else None
+        if repo_root:
+            subprocess.run(
+                ["git", "-C", str(repo_root), "worktree", "remove", "--force", worktree_value],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if branch:
+                subprocess.run(
+                    ["git", "-C", str(repo_root), "branch", "-D", branch],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+
+    def _git_tracked_clean(self, repo_path: Path) -> bool:
+        unstaged = subprocess.run(
+            ["git", "-C", str(repo_path), "diff", "--quiet", "HEAD", "--"],
+            check=False,
+        )
+        staged = subprocess.run(
+            ["git", "-C", str(repo_path), "diff", "--cached", "--quiet", "HEAD", "--"],
+            check=False,
+        )
+        return unstaged.returncode == 0 and staged.returncode == 0
+
+    def _record_adoption_memory(self, db, run: Run) -> None:
+        compare_group_id = (run.metadata_ or {}).get("compareGroupId")
+        compare_prompt = str((run.metadata_ or {}).get("comparePrompt") or "").strip()
+        compare_label = str((run.metadata_ or {}).get("compareLabel") or run.agent).strip()
+        if not compare_group_id or not compare_prompt or not run.thread.project_id:
+            return
+
+        summary = " ".join(self._artifact_content(db, run.id, "summary").strip().split())
+        reasoning = f"用户在 Compare 中采纳了方案：{compare_label}。"
+        if summary:
+            reasoning = f"{reasoning} 结果摘要：{summary[:240]}"
+
+        MemoryService(db).ensure_decision(
+            {
+                "projectId": str(run.thread.project_id),
+                "question": compare_prompt,
+                "decision": compare_label,
+                "reasoning": reasoning,
+                "sourceThreadId": str(run.thread_id),
+            }
+        )
 
     def _is_cancelled(self, run_id: str) -> bool:
         with self._lock:
@@ -802,12 +1359,14 @@ class V2RunExecutionManager:
         run = db.query(Run).filter(Run.id == run_id).first()
         if not run:
             return
-        run.status = "cancelled"
-        run.error = message
-        run.completed_at = datetime.utcnow()
-        run.duration_ms = self._duration_ms(run)
-        self._record_thread_event(db, run, f"{run.agent} 已取消", "run-cancelled")
-        db.commit()
+        self._mark_terminal_run(
+            db,
+            run,
+            status="cancelled",
+            event_type="run-cancelled",
+            content=f"{run.agent} 已取消",
+            error=message,
+        )
 
 
     def _capture_project_learning(self, db, run: Run | None, summary_text: str):

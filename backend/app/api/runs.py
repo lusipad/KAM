@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.core.events import event_bus
 from app.db.base import SessionLocal, get_db
 from app.services.run_engine import TERMINAL_RUN_STATUSES
 from app.services.run_service import RunService
@@ -117,41 +118,51 @@ async def stream_run_events(
     if not run:
         raise HTTPException(status_code=404, detail="Run 不存在")
 
+    def snapshot_payload():
+        stream_db = SessionLocal()
+        try:
+            stream_service = RunService(stream_db)
+            current_run = stream_service.get_run(run_id)
+            if not current_run:
+                return None
+            artifacts = [
+                stream_service.hydrate_artifact(artifact, max_chars=tail_chars)
+                for artifact in stream_service.list_artifacts(run_id)
+            ]
+            return {
+                "run": current_run.to_dict(include_artifacts=False),
+                "artifacts": artifacts,
+            }
+        finally:
+            stream_db.close()
+
     async def event_stream():
-        last_payload: str | None = None
+        subscription = await event_bus.subscribe(f"run:{run_id}")
+        try:
+            payload = snapshot_payload()
+            if not payload:
+                return
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            if payload["run"]["status"] in TERMINAL_RUN_STATUSES:
+                return
 
-        while True:
-            if await request.is_disconnected():
-                break
-
-            stream_db = SessionLocal()
-            try:
-                stream_service = RunService(stream_db)
-                current_run = stream_service.get_run(run_id)
-                if not current_run:
-                    break
-
-                artifacts = [
-                    stream_service.hydrate_artifact(artifact, max_chars=tail_chars)
-                    for artifact in stream_service.list_artifacts(run_id)
-                ]
-                payload = {
-                    "run": current_run.to_dict(include_artifacts=False),
-                    "artifacts": artifacts,
-                }
-                serialized = json.dumps(payload, ensure_ascii=False)
-                if serialized != last_payload:
-                    last_payload = serialized
-                    yield f"data: {serialized}\n\n"
-                else:
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    await asyncio.wait_for(subscription.queue.get(), timeout=30)
+                except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"
+                    continue
 
-                if current_run.status in TERMINAL_RUN_STATUSES:
-                    break
-            finally:
-                stream_db.close()
-
-            await asyncio.sleep(1)
+                payload = snapshot_payload()
+                if not payload:
+                    return
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                if payload["run"]["status"] in TERMINAL_RUN_STATUSES:
+                    return
+        finally:
+            await event_bus.unsubscribe(subscription)
 
     return StreamingResponse(
         event_stream(),
@@ -185,7 +196,10 @@ async def retry_run(run_id: str, db: Session = Depends(get_db)):
 @router.post("/runs/{run_id}/adopt")
 async def adopt_run(run_id: str, db: Session = Depends(get_db)):
     service = RunService(db)
-    run = service.adopt_run(run_id)
+    try:
+        run = service.adopt_run(run_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     if not run:
         raise HTTPException(status_code=404, detail="Run 不存在")
     return run.to_dict(include_artifacts=False)
