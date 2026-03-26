@@ -166,6 +166,19 @@ export function ThreadView({
             const runs = (message.runs || []).map((run) => runDetailsById[run.id] || run);
             const systemEventType = asString(message.metadata?.eventType);
             const comparePrompt = asString(message.metadata?.comparePrompt) || message.content.replace(/^并发对比：/, '');
+            const isRunLifecycleEvent = [
+              'run-created',
+              'run-started',
+              'run-checking',
+              'run-retrying',
+              'run-passed',
+              'run-failed',
+              'run-cancelled',
+            ].includes(systemEventType);
+
+            if (message.role === 'system' && isRunLifecycleEvent && !runs.length) {
+              return null;
+            }
 
             if (message.role === 'system' && systemEventType) {
               const eventLabelMap: Record<string, string> = {

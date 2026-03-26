@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import close_all_sessions
 
 
 os.environ["DATABASE_URL"] = "sqlite:///./storage/test-v2-preview.db"
@@ -20,6 +21,7 @@ from app.main import app
 from app.core.config import settings
 from app.db.base import Base, SessionLocal, engine
 from app.services.context_assembler import ContextAssembler
+from app.services.run_engine import run_engine
 
 
 class V2WorkspaceApiTests(unittest.TestCase):
@@ -31,6 +33,10 @@ class V2WorkspaceApiTests(unittest.TestCase):
         if self.workroot.exists():
             self._remove_workroot()
         self.workroot.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        close_all_sessions()
+        engine.dispose()
 
     def _remove_workroot(self):
         deadline = time.time() + 5
@@ -596,6 +602,30 @@ class V2WorkspaceApiTests(unittest.TestCase):
 
             if __name__ == "__main__":
                 main()
+            """,
+        )
+
+    def _create_skill_fixture(self, repo_root: Path):
+        self._write_fixture(
+            repo_root / ".claude" / "skills" / "review-pr.md",
+            """
+            # Review PR
+
+            Review the current branch carefully and report findings first.
+
+            Scope:
+            {args}
+            """,
+        )
+        self._write_fixture(
+            repo_root / ".claude" / "skills" / "commit.md",
+            """
+            # Commit Changes
+
+            Prepare a clean commit without pushing.
+
+            Requested context:
+            {args}
             """,
         )
 
@@ -1319,6 +1349,73 @@ class V2WorkspaceApiTests(unittest.TestCase):
             thread_detail = client.get(f"/api/v2/threads/{payload['thread']['id']}")
             self.assertEqual(thread_detail.status_code, 200)
             self.assertGreaterEqual(len(thread_detail.json()['messages']), 2)
+
+    def test_project_skill_directory_sync_and_slash_command_run(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            repo_root = Path(repo_dir)
+            self._create_skill_fixture(repo_root)
+
+            with TestClient(app) as client:
+                project = client.post(
+                    '/api/v2/projects',
+                    json={'title': 'Skill project', 'repoPath': str(repo_root)},
+                ).json()
+                thread = client.post(
+                    f"/api/v2/projects/{project['id']}/threads",
+                    json={'title': 'Skill thread'},
+                ).json()
+
+                skills_response = client.get(f"/api/v2/projects/{project['id']}/skills")
+                self.assertEqual(skills_response.status_code, 200)
+                skills = skills_response.json()['skills']
+                skill_names = {item['name'] for item in skills}
+                self.assertIn('review-pr', skill_names)
+                self.assertIn('commit', skill_names)
+
+                command = (
+                    "printf '%s' 'review ok' > '{summary_file}'"
+                    if os.name != 'nt'
+                    else "Set-Content -Path '{summary_file}' -Value 'review ok'"
+                )
+                posted = client.post(
+                    f"/api/v2/threads/{thread['id']}/messages",
+                    json={
+                        'content': '/review-pr auth refresh flow',
+                        'agent': 'custom',
+                        'command': command,
+                    },
+                )
+                self.assertEqual(posted.status_code, 200)
+                payload = posted.json()
+                self.assertEqual(len(payload['runs']), 1)
+                self.assertEqual(payload['runs'][0]['metadata']['skillName'], 'review-pr')
+                self.assertEqual(payload['runs'][0]['metadata']['skillSource'], 'claude-skills-dir')
+
+                run_payload = self._wait_run(client, payload['runs'][0]['id'])
+                self.assertEqual(run_payload['status'], 'passed')
+                self.assertEqual(run_payload['metadata']['skillName'], 'review-pr')
+
+                artifacts = client.get(f"/api/v2/runs/{run_payload['id']}/artifacts")
+                self.assertEqual(artifacts.status_code, 200)
+                prompt_artifact = next(item for item in artifacts.json()['artifacts'] if item['type'] == 'prompt')
+                self.assertIn('Review the current branch carefully', prompt_artifact['content'])
+                self.assertIn('auth refresh flow', prompt_artifact['content'])
+
+    def test_prepare_codex_context_appends_skill_instructions_to_agents_file(self):
+        with tempfile.TemporaryDirectory() as repo_dir:
+            repo_root = Path(repo_dir)
+            agents_path = repo_root / 'AGENTS.md'
+            agents_path.write_text('# Existing Repo Rules\n- keep tests green\n', encoding='utf-8')
+
+            run_engine._prepare_codex_context(
+                execution_cwd=repo_root,
+                skill_instructions='## Skill Rule\n- review only staged diff',
+            )
+
+            content = agents_path.read_text(encoding='utf-8')
+            self.assertIn('# Existing Repo Rules', content)
+            self.assertIn('## Invoked Skill', content)
+            self.assertIn('review only staged diff', content)
 
     def test_user_message_auto_extracts_resources_to_project(self):
         with TestClient(app) as client:
