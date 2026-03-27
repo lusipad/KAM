@@ -179,7 +179,7 @@ class WatcherEngine:
                         Message(
                             thread_id=thread.id,
                             role="assistant",
-                            content=f"{len(cards)} 条新的 review comment 已完成分流。",
+                            content=f"{len(cards)} 条新的评审评论已完成分流。",
                             metadata_={"kind": "review-triage", "eventId": event.id, "cards": cards},
                         )
                     )
@@ -276,10 +276,10 @@ class WatcherEngine:
     def _title_for(self, watcher: Watcher, changes: dict[str, Any]) -> str:
         if watcher.source_type == "ci_pipeline" and changes.get("created"):
             item = changes["created"][0]
-            return f"CI failed on {item.get('head_branch', 'default')}"
+            return f"{item.get('head_branch', '默认')} 分支 CI 失败"
         created = len(changes.get("created", []))
         updated = len(changes.get("updated", []))
-        return f"{watcher.name}: {created} new, {updated} updated"
+        return f"{watcher.name}：{created} 个新增，{updated} 个更新"
 
 
 watcher_engine = WatcherEngine()

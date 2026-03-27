@@ -74,7 +74,7 @@ async def create_thread(project_id: str, payload: ThreadCreate, db: AsyncSession
         raise HTTPException(status_code=404, detail="Project not found")
     thread = Thread(
         project_id=project_id,
-        title=(payload.title or "New conversation").strip(),
+        title=(payload.title or "新对话").strip(),
         external_ref=payload.externalRef,
     )
     db.add(thread)

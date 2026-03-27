@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -16,6 +17,15 @@ from models import Run, WatcherEvent
 
 
 router = APIRouter(prefix="/home", tags=["home"])
+
+
+def _greeting_for_now() -> str:
+    hour = datetime.now().hour
+    if hour < 12:
+        return "上午好"
+    if hour < 18:
+        return "下午好"
+    return "晚上好"
 
 
 def _run_item(run: Run) -> dict[str, Any]:
@@ -50,10 +60,11 @@ async def get_feed(db: AsyncSession = Depends(get_db)):
     attention_events = list(attention_events_result.scalars())
     running = list(running_result.scalars())
     recent = list(recent_result.scalars())
+    pending_adoptions = sum(1 for item in attention_runs if item.status == "passed")
 
     return {
-        "greeting": "Good afternoon",
-        "summary": f"{len(running)} tasks running, {len(attention_events)} watcher alerts, {sum(1 for item in attention_runs if item.status == 'passed')} tasks waiting to adopt.",
+        "greeting": _greeting_for_now(),
+        "summary": f"后台有 {len(running)} 个任务执行中，{len(attention_events)} 条监控提醒，{pending_adoptions} 个结果等待采纳。",
         "needsAttention": [_run_item(run) for run in attention_runs] + [_watcher_event_item(event) for event in attention_events],
         "running": [_run_item(run) for run in running],
         "recent": [_run_item(run) for run in recent],
@@ -71,7 +82,7 @@ async def stream_home_events(request: Request):
                     break
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=20)
-                    yield {"event": event.get("type", "message"), "data": json.dumps(event)}
+                    yield {"event": event.get("type", "message"), "data": json.dumps(event, ensure_ascii=False)}
                 except asyncio.TimeoutError:
                     yield {"comment": "keepalive"}
         finally:

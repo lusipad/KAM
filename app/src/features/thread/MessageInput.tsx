@@ -16,7 +16,7 @@ export function MessageInput({
   placeholder,
   isSending = false,
   toneLabel = 'Claude Code',
-  detailLabel = 'Auto-detected',
+  detailLabel = '自动识别',
   onChange,
   onSubmit,
 }: MessageInputProps) {

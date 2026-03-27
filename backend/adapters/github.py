@@ -81,11 +81,11 @@ class GitHubPRAdapter:
         if changes.get("review_comments"):
             return [
                 {
-                    "label": "Analyze comments",
+                    "label": "分析评论",
                     "kind": "create_run",
                     "params": {
                         "agent": "codex",
-                        "task": f"Analyze new PR review comments for {watcher['name']} and prepare fixes or replies.",
+                        "task": f"分析监控 {watcher['name']} 新发现的 PR 评审评论，并准备修复或回复。",
                     },
                 }
             ]

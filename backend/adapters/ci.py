@@ -65,15 +65,15 @@ class CIAdapter:
         latest = changes["created"][0]
         return [
             {
-                "label": "Auto-fix",
+                "label": "自动修复",
                 "kind": "create_run",
                 "params": {
                     "agent": "codex",
-                    "task": f"Investigate failed CI run #{latest['run_number']} for watcher {watcher['name']} and propose a fix.",
+                    "task": f"检查监控 {watcher['name']} 发现的 CI 失败 #{latest['run_number']}，并给出修复方案。",
                 },
             },
             {
-                "label": "Rerun workflow",
+                "label": "重新运行流水线",
                 "kind": "rerun_workflow",
                 "params": {"repo": watcher["config"]["repo"], "run_id": latest["id"]},
             },

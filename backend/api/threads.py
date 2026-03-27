@@ -83,7 +83,7 @@ async def send_message(thread_id: str, payload: MessageCreate, request: Request,
                 thread.updated_at = now()
                 await db.commit()
                 await event_bus.publish(f"thread:{thread.id}", {"type": "thread_updated", "threadId": thread.id})
-            yield {"event": event["type"], "data": json.dumps(event)}
+            yield {"event": event["type"], "data": json.dumps(event, ensure_ascii=False)}
         yield {"event": "done", "data": "{}"}
 
     return EventSourceResponse(generate())
@@ -100,7 +100,7 @@ async def stream_events(thread_id: str, request: Request):
                     break
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=20)
-                    yield {"event": event.get("type", "message"), "data": json.dumps(event)}
+                    yield {"event": event.get("type", "message"), "data": json.dumps(event, ensure_ascii=False)}
                 except asyncio.TimeoutError:
                     yield {"comment": "keepalive"}
         finally:

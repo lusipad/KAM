@@ -61,11 +61,11 @@ class AzureDevOpsAdapter:
             return []
         return [
             {
-                "label": "Plan my sprint",
+                "label": "规划迭代",
                 "kind": "create_run",
                 "params": {
                     "agent": "codex",
-                    "task": f"Review the new Azure DevOps work items surfaced by watcher {watcher['name']} and produce a concise plan.",
+                    "task": f"检查监控 {watcher['name']} 新发现的 Azure DevOps 工作项，并输出简明计划。",
                 },
             }
         ]

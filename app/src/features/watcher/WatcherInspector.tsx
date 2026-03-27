@@ -1,6 +1,17 @@
 import { useState } from 'react'
 
-import { formatRelativeTime, humanizeSchedule, watcherAutomationLabel, watcherDescription, watcherGlyph, watcherSourceLabel, watcherTargetSummary, watcherTone } from '@/lib/v3-ui'
+import {
+  formatRelativeTime,
+  humanizeSchedule,
+  watcherAutomationLabel,
+  watcherDescription,
+  watcherEventStatusLabel,
+  watcherGlyph,
+  watcherSourceLabel,
+  watcherStatusLabel,
+  watcherTargetSummary,
+  watcherTone,
+} from '@/lib/v3-ui'
 import type { WatcherEventRecord, WatcherRecord, WatcherUpdatePayload } from '@/types/v3'
 
 type WatcherInspectorProps = {
@@ -22,7 +33,7 @@ export function WatcherInspector({ watcher, events, mode, loading, onModeChange,
   if (!watcher) {
     return (
       <aside className="watcher-inspector is-empty">
-        <div className="feed-empty">Select a watcher to inspect its history or operating settings.</div>
+        <div className="feed-empty">选择一个监控，查看历史或调整设置。</div>
       </aside>
     )
   }
@@ -37,7 +48,7 @@ export function WatcherInspector({ watcher, events, mode, loading, onModeChange,
           <div className="watcher-card-title-stack">
             <div className="watcher-card-title-row">
               <div className="watcher-card-title">{watcher.name}</div>
-              <span className="watcher-status">{watcher.status}</span>
+              <span className="watcher-status">{watcherStatusLabel(watcher.status)}</span>
             </div>
             <div className="watcher-card-meta">
               {watcherSourceLabel(watcher.sourceType)} · {humanizeSchedule(watcher)}
@@ -51,29 +62,29 @@ export function WatcherInspector({ watcher, events, mode, loading, onModeChange,
 
       <div className="watcher-inspector-grid">
         <div>
-          <div className="watcher-inspector-label">Target</div>
+          <div className="watcher-inspector-label">目标</div>
           <div className="watcher-inspector-value">{watcherTargetSummary(watcher)}</div>
         </div>
         <div>
-          <div className="watcher-inspector-label">Last run</div>
+          <div className="watcher-inspector-label">最近执行</div>
           <div className="watcher-inspector-value">{formatRelativeTime(watcher.lastRunAt ?? watcher.createdAt)}</div>
         </div>
         <div>
-          <div className="watcher-inspector-label">Mode</div>
+          <div className="watcher-inspector-label">模式</div>
           <div className="watcher-inspector-value">{watcherAutomationLabel(watcher.autoActionLevel)}</div>
         </div>
       </div>
 
       <div className="watcher-inspector-tabs">
         <button type="button" className={`watcher-tab ${mode === 'history' ? 'is-active' : ''}`} onClick={() => onModeChange('history')}>
-          History
+          历史
         </button>
         <button type="button" className={`watcher-tab ${mode === 'edit' ? 'is-active' : ''}`} onClick={() => onModeChange('edit')}>
-          Edit
+          编辑
         </button>
       </div>
 
-      {loading ? <div className="feed-empty">Loading watcher…</div> : null}
+      {loading ? <div className="feed-empty">正在加载监控…</div> : null}
 
       {!loading && mode === 'history' ? (
         <div className="watcher-history-list">
@@ -85,7 +96,7 @@ export function WatcherInspector({ watcher, events, mode, loading, onModeChange,
                     <div className="watcher-history-title">{event.title}</div>
                     <div className="watcher-card-copy">{formatRelativeTime(event.createdAt)}</div>
                   </div>
-                  <span className="watcher-history-status">{event.status}</span>
+                  <span className="watcher-history-status">{watcherEventStatusLabel(event.status)}</span>
                 </div>
                 <div className="watcher-card-description">{event.summary}</div>
                 {event.actions.length ? (
@@ -100,14 +111,14 @@ export function WatcherInspector({ watcher, events, mode, loading, onModeChange,
                 {event.threadId ? (
                   <div className="watcher-actions">
                     <button type="button" className="button-secondary" onClick={() => onOpenThread(event.threadId!)}>
-                      Open thread
+                      打开线程
                     </button>
                   </div>
                 ) : null}
               </article>
             ))
           ) : (
-            <div className="feed-empty">No watcher events yet. Run it once and the timeline will appear here.</div>
+            <div className="feed-empty">还没有监控事件。先运行一次，这里就会出现时间线。</div>
           )}
         </div>
       ) : null}
@@ -133,17 +144,17 @@ export function WatcherInspector({ watcher, events, mode, loading, onModeChange,
           }}
         >
           <label className="watcher-field">
-            <span className="watcher-inspector-label">Name</span>
+            <span className="watcher-inspector-label">名称</span>
             <input className="watcher-input" value={draftName} onChange={(event) => setDraftName(event.target.value)} />
           </label>
 
           <label className="watcher-field">
-            <span className="watcher-inspector-label">Frequency</span>
+            <span className="watcher-inspector-label">频率</span>
             <input className="watcher-input" value={draftScheduleValue} onChange={(event) => setDraftScheduleValue(event.target.value)} />
           </label>
 
           <div className="watcher-field">
-            <span className="watcher-inspector-label">Automation level</span>
+            <span className="watcher-inspector-label">自动化级别</span>
             <div className="watcher-level-row">
               {[1, 2, 3].map((level) => (
                 <button
@@ -159,12 +170,12 @@ export function WatcherInspector({ watcher, events, mode, loading, onModeChange,
           </div>
 
           <div className="watcher-edit-note">
-            Source bindings stay attached to the original AI-generated watcher. Ask AI in a thread if you need to retarget the source itself.
+            来源绑定仍附着在原始 AI 生成的监控上；如果要改监控目标，请回到线程里直接告诉 AI。
           </div>
 
           <div className="watcher-actions">
             <button type="submit" className="button-primary" disabled={saving || !draftName.trim() || !draftScheduleValue.trim()}>
-              Save changes
+              保存修改
             </button>
             <button
               type="button"
@@ -176,7 +187,7 @@ export function WatcherInspector({ watcher, events, mode, loading, onModeChange,
                 onModeChange('history')
               }}
             >
-              Cancel
+              取消
             </button>
           </div>
         </form>

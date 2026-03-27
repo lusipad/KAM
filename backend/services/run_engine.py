@@ -41,7 +41,7 @@ class RunEngine:
             thread.updated_at = now()
         await self.db.commit()
         await self.db.refresh(run)
-        await self._publish(run, "run_queued", {"progress": "Queued"})
+        await self._publish(run, "run_queued", {"progress": "已排队"})
         task_handle = asyncio.create_task(self._execute_run(run.id))
         _STATE.tasks[run.id] = task_handle
         return run
@@ -96,7 +96,7 @@ class RunEngine:
                     if thread is not None:
                         thread.updated_at = now()
                     await session.commit()
-                    await self._publish(run, "run_started", {"progress": "Starting"})
+                    await self._publish(run, "run_started", {"progress": "开始执行"})
 
                     started_at = asyncio.get_event_loop().time()
                     worktree_path, command = await self._prepare_execution(run, project)

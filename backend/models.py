@@ -49,7 +49,7 @@ class Thread(Base):
 
     id: Mapped[str] = mapped_column(String(12), primary_key=True, default=new_id)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
-    title: Mapped[str] = mapped_column(String(200), default="New conversation")
+    title: Mapped[str] = mapped_column(String(200), default="新对话")
     external_ref: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)

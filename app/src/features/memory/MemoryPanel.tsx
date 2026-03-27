@@ -18,15 +18,15 @@ function groupMemories(memories: MemoryItem[]) {
 export function MemoryPanel({ project, latestRun, memories }: MemoryPanelProps) {
   const grouped = groupMemories(memories)
   const sections = [
-    { label: 'PREFERENCES', items: grouped.get('preference') ?? [] },
-    { label: 'DECISIONS', items: grouped.get('decision') ?? [] },
-    { label: 'LEARNINGS', items: grouped.get('learning') ?? [] },
+    { label: '偏好', items: grouped.get('preference') ?? [] },
+    { label: '决策', items: grouped.get('decision') ?? [] },
+    { label: '经验', items: grouped.get('learning') ?? [] },
   ]
 
   return (
     <div className="memory-panel">
-      <div className="memory-title">AI memory</div>
-      <div className="memory-subtle">What KAM knows about this project</div>
+      <div className="memory-title">AI 记忆</div>
+      <div className="memory-subtle">KAM 已经记住的项目上下文</div>
 
       {sections.map(({ label, items }) => (
         <section key={label} className="memory-section">
@@ -39,28 +39,28 @@ export function MemoryPanel({ project, latestRun, memories }: MemoryPanelProps) 
               </div>
             ))
           ) : (
-            <div className="memory-empty">Nothing captured yet.</div>
+            <div className="memory-empty">暂时还没有沉淀内容。</div>
           )}
         </section>
       ))}
 
       <section className="memory-section">
-        <div className="section-label">PROJECT CONTEXT</div>
+        <div className="section-label">项目上下文</div>
         {project ? (
           <div className="memory-chip">
-            <strong>Project</strong>
+            <strong>项目</strong>
             <span>{project.title}</span>
           </div>
         ) : null}
         {project?.repoPath ? (
           <div className="memory-chip">
-            <strong>Repo</strong>
+            <strong>仓库</strong>
             <span>{project.repoPath}</span>
           </div>
         ) : null}
         {latestRun ? (
           <div className="memory-chip">
-            <strong>Last run</strong>
+            <strong>最近一次执行</strong>
             <span>{runStatusLabel(latestRun.status)}{latestRun.resultSummary ? ` · ${latestRun.resultSummary}` : ''}</span>
           </div>
         ) : null}

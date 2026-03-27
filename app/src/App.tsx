@@ -37,12 +37,12 @@ function EmptyState({
   return (
     <div className="empty-state">
       <div className="empty-icon">+</div>
-      <div className="empty-title">What are you working on?</div>
-      <div className="empty-copy">Describe your task or paste a repo path. KAM will figure out the rest.</div>
+      <div className="empty-title">你现在要处理什么？</div>
+      <div className="empty-copy">描述任务，或者直接贴仓库路径，剩下的交给 KAM。</div>
       <div className="empty-composer">
         <MessageInput
           value={value}
-          placeholder="Describe what you need..."
+          placeholder="说下你要我做什么..."
           isSending={isBusy}
           onChange={onChange}
           onSubmit={onSubmit}
@@ -169,10 +169,10 @@ function App() {
             const payload = JSON.parse(event.data) as { runId: string; threadId: string; summary?: string; status?: string }
             pushToast({
               id: `${payload.runId}-${Date.now()}`,
-              message: payload.summary || 'A background task just finished.',
+              message: payload.summary || '一个后台任务刚刚完成。',
               tone: payload.status === 'failed' ? 'red' : 'green',
               action: {
-                label: 'View',
+                label: '查看',
                 onClick: () => handleOpenThread(payload.threadId),
               },
             })
@@ -201,15 +201,15 @@ function App() {
 
   const breadcrumb = useMemo(() => {
     if (view === 'thread' && thread) {
-      return `${thread.project?.title ?? 'Project'} / ${thread.title}`
+      return `${thread.project?.title ?? '项目'} / ${thread.title}`
     }
     if (view === 'watchers') {
-      return 'Watchers'
+      return '监控'
     }
     if (view === 'home') {
-      return 'Home'
+      return '首页'
     }
-    return 'New conversation'
+    return '新对话'
   }, [thread, view])
 
   const selectedProject = thread?.project ?? null
@@ -224,7 +224,7 @@ function App() {
           activeThreadId={selectedThreadId}
           activeView={view}
           memoryOpen={memoryOpen}
-          summary={feed?.summary ?? 'No active items'}
+          summary={feed?.summary ?? '当前没有待处理项'}
           onSelectHome={() => setView('home')}
           onSelectThread={handleOpenThread}
           onSelectWatchers={() => setView('watchers')}
@@ -244,7 +244,7 @@ function App() {
             watchers={watchers}
             onCreateByConversation={() => {
               setView('empty')
-              setEmptyPrompt('Monitor ')
+              setEmptyPrompt('监控 ')
             }}
             onOpenThread={handleOpenThread}
             onRefresh={async () => {

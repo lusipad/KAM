@@ -30,6 +30,8 @@ from db import async_session, engine  # noqa: E402
 from main import app  # noqa: E402
 from models import Message, Project, Run, Thread  # noqa: E402
 from services.digest import DigestService  # noqa: E402
+
+
 class V3ApiTests(unittest.TestCase):
     def setUp(self):
         AppStatus.should_exit_event = asyncio.Event()
@@ -46,8 +48,8 @@ class V3ApiTests(unittest.TestCase):
         shutil.rmtree(TMP_ROOT, ignore_errors=True)
 
     def test_project_thread_message_and_run_flow(self):
-        project = self.client.post("/api/projects", json={"title": "Noise Probe", "repoPath": None}).json()
-        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "Fix login timeout"}).json()
+        project = self.client.post("/api/projects", json={"title": "信号探针", "repoPath": None}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "修复登录超时"}).json()
 
         async def fake_execute(_, run_id: str):
             async with async_session() as session:
@@ -55,17 +57,17 @@ class V3ApiTests(unittest.TestCase):
                 run.status = "passed"
                 run.changed_files = ["auth.ts"]
                 run.check_passed = True
-                run.result_summary = "Updated auth.ts and passed the check."
+                run.result_summary = "已更新 auth.ts，检查通过。"
                 await session.commit()
 
         with patch("services.run_engine.RunEngine._execute_run", new=fake_execute):
-            body = self._stream_message(thread["id"], "Fix login timeout in the auth flow")
+            body = self._stream_message(thread["id"], "修复鉴权流程中的登录超时")
 
         self.assertIn("text_delta", body)
         self.assertIn("text_done", body)
 
         detail = self.client.get(f"/api/threads/{thread['id']}").json()
-        self.assertEqual(detail["title"], "Fix login timeout")
+        self.assertEqual(detail["title"], "修复登录超时")
         self.assertGreaterEqual(len(detail["messages"]), 2)
 
         run = self._wait_for_run(detail["runs"][0]["id"])
@@ -76,29 +78,29 @@ class V3ApiTests(unittest.TestCase):
         self.assertTrue(any(item["kind"] == "run" for item in feed["needsAttention"]))
 
     def test_memory_create_and_search(self):
-        project = self.client.post("/api/projects", json={"title": "Memory Lab"}).json()
+        project = self.client.post("/api/projects", json={"title": "记忆实验室"}).json()
         created = self.client.post(
             "/api/memory",
             json={
                 "projectId": project["id"],
                 "category": "preference",
-                "content": "Testing: always run backend tests before marking done",
-                "rationale": "User explicitly asked for it.",
+                "content": "测试要求：标记完成前必须先跑后端测试",
+                "rationale": "这是用户明确提出的要求。",
             },
         ).json()
         self.assertEqual(created["category"], "preference")
 
-        search = self.client.get("/api/memory/search", params={"project_id": project["id"], "query": "backend tests"}).json()
+        search = self.client.get("/api/memory/search", params={"project_id": project["id"], "query": "后端测试"}).json()
         self.assertEqual(len(search["memories"]), 1)
-        self.assertIn("backend tests", search["memories"][0]["content"])
+        self.assertIn("后端测试", search["memories"][0]["content"])
 
     def test_digest_failure_summary_suggests_next_step(self):
         run = Run(
             thread_id="thread123",
             agent="codex",
             status="failed",
-            task="Fix the flaky memory API test",
-            raw_output="Traceback\nAssertionError: expected 200 but received 204",
+            task="修复不稳定的 memory API 测试",
+            raw_output="Traceback\nAssertionError: 预期 200，实际 204",
         )
 
         summary = asyncio.run(DigestService(None).summarize_run(run))
@@ -107,17 +109,17 @@ class V3ApiTests(unittest.TestCase):
         self.assertIn("建议先查看最后一条报错并在修正后重试", summary)
 
     def test_watcher_run_now_creates_event(self):
-        project = self.client.post("/api/projects", json={"title": "Watcher Lab"}).json()
+        project = self.client.post("/api/projects", json={"title": "监控实验室"}).json()
 
         class FakeAdapter:
             async def fetch(self, config):
-                return {"items": [{"id": 1, "title": "CI red", "head_branch": "main"}]}
+                return {"items": [{"id": 1, "title": "CI 失败", "head_branch": "main"}]}
 
             def diff(self, previous, current):
                 return {"created": current["items"], "updated": []}
 
             def recommended_actions(self, watcher, changes):
-                return [{"label": "Auto-fix", "kind": "create_run", "params": {"agent": "codex", "task": "Fix CI"}}]
+                return [{"label": "自动修复", "kind": "create_run", "params": {"agent": "codex", "task": "修复 CI"}}]
 
             async def perform(self, action):
                 return {"ok": True}
@@ -127,7 +129,7 @@ class V3ApiTests(unittest.TestCase):
                 "/api/watchers",
                 json={
                     "projectId": project["id"],
-                    "name": "CI monitor",
+                    "name": "CI 监控",
                     "sourceType": "ci_pipeline",
                     "config": {"repo": "owner/repo", "provider": "github_actions"},
                     "scheduleType": "interval",
@@ -140,12 +142,12 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(event_payload["event"]["status"], "pending")
 
     def test_router_parses_github_review_watcher_from_natural_language(self):
-        project = self.client.post("/api/projects", json={"title": "Review Watch"}).json()
-        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "Review monitor"}).json()
+        project = self.client.post("/api/projects", json={"title": "评审监控"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "PR 评审监控"}).json()
 
         body = self._stream_message(
             thread["id"],
-            "Monitor lusipad/KAM PR #4518 for review comments every 30m and auto-fix what you can.",
+            "监控 lusipad/KAM 的 PR #4518 review 评论，每 30 分钟检查一次，能自动修复的就直接修。",
         )
 
         self.assertIn("text_done", body)
@@ -161,8 +163,8 @@ class V3ApiTests(unittest.TestCase):
         self.assertTrue(any(message["metadata"].get("kind") == "watcher-config" for message in detail["messages"]))
 
     def test_router_honors_skill_and_agent_hints_for_runs(self):
-        project = self.client.post("/api/projects", json={"title": "Skill Lab"}).json()
-        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "Review triage"}).json()
+        project = self.client.post("/api/projects", json={"title": "技能实验室"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "评审分流"}).json()
 
         async def fake_create_run(router_run_engine, *, thread_id: str, agent: str, task: str):
             run = Run(thread_id=thread_id, agent=agent, task=task, status="pending")
@@ -178,12 +180,12 @@ class V3ApiTests(unittest.TestCase):
         detail = self.client.get(f"/api/threads/{thread['id']}").json()
         self.assertEqual(len(detail["runs"]), 1)
         self.assertEqual(detail["runs"][0]["agent"], "claude-code")
-        self.assertIn("Review the latest PR comments", detail["runs"][0]["task"])
+        self.assertIn("检查最新的 PR 评论", detail["runs"][0]["task"])
         self.assertIn("latest feedback", detail["runs"][0]["task"])
 
     def test_router_maps_commit_skill_to_run_task(self):
-        project = self.client.post("/api/projects", json={"title": "Commit Lab"}).json()
-        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "Commit helper"}).json()
+        project = self.client.post("/api/projects", json={"title": "提交实验室"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "提交助手"}).json()
 
         async def fake_create_run(router_run_engine, *, thread_id: str, agent: str, task: str):
             run = Run(thread_id=thread_id, agent=agent, task=task, status="pending")
@@ -199,18 +201,18 @@ class V3ApiTests(unittest.TestCase):
         detail = self.client.get(f"/api/threads/{thread['id']}").json()
         self.assertEqual(len(detail["runs"]), 1)
         self.assertEqual(detail["runs"][0]["agent"], "codex")
-        self.assertIn("create a clean commit", detail["runs"][0]["task"])
+        self.assertIn("创建一条干净的提交", detail["runs"][0]["task"])
         self.assertIn("message short and conventional", detail["runs"][0]["task"])
 
     def test_router_records_decision_memory(self):
-        project = self.client.post("/api/projects", json={"title": "Memory Router"}).json()
-        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "Architecture notes"}).json()
+        project = self.client.post("/api/projects", json={"title": "记忆路由"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "架构记录"}).json()
 
-        body = self._stream_message(thread["id"], "Decision: V3 uses /api only and drops /api/v2 compatibility.")
+        body = self._stream_message(thread["id"], "决定：V3 只保留 /api，去掉 /api/v2 兼容。")
 
         self.assertIn("text_done", body)
         memories = self.client.get("/api/memory", params={"project_id": project["id"]}).json()["memories"]
-        self.assertTrue(any(item["category"] == "decision" and "/api only" in item["content"] for item in memories))
+        self.assertTrue(any(item["category"] == "decision" and "只保留 /api" in item["content"] for item in memories))
 
     def test_router_continue_request_surfaces_recent_progress(self):
         thread_id = asyncio.run(self._seed_stale_thread())
@@ -218,20 +220,20 @@ class V3ApiTests(unittest.TestCase):
         body = self._stream_message(thread_id, "继续昨天的工作")
 
         self.assertIn("text_done", body)
-        self.assertIn("Patched retry backoff", body)
+        self.assertIn("已调整重试退避", body)
 
     def test_watcher_detail_update_and_history(self):
-        project = self.client.post("/api/projects", json={"title": "Watcher Admin"}).json()
+        project = self.client.post("/api/projects", json={"title": "监控管理"}).json()
 
         class FakeAdapter:
             async def fetch(self, config):
-                return {"items": [{"id": 18, "title": "Review queue growing", "head_branch": "main"}]}
+                return {"items": [{"id": 18, "title": "评审队列增长", "head_branch": "main"}]}
 
             def diff(self, previous, current):
                 return {"created": current["items"], "updated": []}
 
             def recommended_actions(self, watcher, changes):
-                return [{"label": "Inspect", "kind": "create_run", "params": {"agent": "codex", "task": "Inspect watcher event"}}]
+                return [{"label": "检查事件", "kind": "create_run", "params": {"agent": "codex", "task": "检查监控事件"}}]
 
             async def perform(self, action):
                 return {"ok": True}
@@ -241,7 +243,7 @@ class V3ApiTests(unittest.TestCase):
                 "/api/watchers",
                 json={
                     "projectId": project["id"],
-                    "name": "Build monitor",
+                    "name": "构建监控",
                     "sourceType": "ci_pipeline",
                     "config": {"repo": "owner/repo", "provider": "github_actions"},
                     "scheduleType": "interval",
@@ -252,21 +254,21 @@ class V3ApiTests(unittest.TestCase):
             self.client.post(f"/api/watchers/{watcher['id']}/run-now")
 
         detail = self.client.get(f"/api/watchers/{watcher['id']}").json()
-        self.assertEqual(detail["name"], "Build monitor")
+        self.assertEqual(detail["name"], "构建监控")
         self.assertEqual(detail["scheduleValue"], "15m")
 
         updated = self.client.put(
             f"/api/watchers/{watcher['id']}",
-            json={"name": "Build monitor v2", "scheduleValue": "30m", "autoActionLevel": 2},
+            json={"name": "构建监控 v2", "scheduleValue": "30m", "autoActionLevel": 2},
         ).json()
-        self.assertEqual(updated["name"], "Build monitor v2")
+        self.assertEqual(updated["name"], "构建监控 v2")
         self.assertEqual(updated["scheduleValue"], "30m")
         self.assertEqual(updated["autoActionLevel"], 2)
 
         events = self.client.get(f"/api/watchers/{watcher['id']}/events").json()["events"]
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0]["title"], "CI failed on main")
-        self.assertEqual(events[0]["watcher"]["name"], "Build monitor v2")
+        self.assertEqual(events[0]["title"], "main 分支 CI 失败")
+        self.assertEqual(events[0]["watcher"]["name"], "构建监控 v2")
 
     def test_get_thread_appends_restore_summary_once_for_stale_thread(self):
         thread_id = asyncio.run(self._seed_stale_thread())
@@ -275,7 +277,7 @@ class V3ApiTests(unittest.TestCase):
         restore_messages = [message for message in first_detail["messages"] if message["metadata"].get("kind") == "restore-summary"]
         self.assertEqual(len(restore_messages), 1)
         self.assertIn("上次做到这里：", restore_messages[0]["content"])
-        self.assertIn("Patched retry backoff", restore_messages[0]["content"])
+        self.assertIn("已调整重试退避", restore_messages[0]["content"])
 
         second_detail = self.client.get(f"/api/threads/{thread_id}").json()
         second_restore_messages = [message for message in second_detail["messages"] if message["metadata"].get("kind") == "restore-summary"]
@@ -288,14 +290,14 @@ class V3ApiTests(unittest.TestCase):
 
         threads = self.client.get("/api/threads").json()["threads"]
         self.assertEqual(len(threads), 2)
-        self.assertEqual(threads[0]["project"]["title"], "Noise Probe")
+        self.assertEqual(threads[0]["project"]["title"], "信号探针")
 
         feed = self.client.get("/api/home/feed").json()
         self.assertEqual(len(feed["needsAttention"]), 3)
         self.assertTrue(any(item["kind"] == "watcher_event" for item in feed["needsAttention"]))
 
         detail = self.client.get("/api/threads/demo-login").json()
-        self.assertEqual(detail["title"], "Fix login timeout")
+        self.assertEqual(detail["title"], "修复登录超时")
         self.assertEqual(detail["runs"][0]["status"], "passed")
 
         memories = self.client.get("/api/memory", params={"project_id": "demo-noise"}).json()["memories"]
@@ -327,13 +329,13 @@ class V3ApiTests(unittest.TestCase):
     async def _seed_stale_thread(self) -> str:
         base = datetime.now(UTC) - timedelta(days=3)
         async with async_session() as session:
-            project = Project(title="Restore Lab")
+            project = Project(title="恢复实验室")
             session.add(project)
             await session.flush()
 
             thread = Thread(
                 project_id=project.id,
-                title="Resume payment fix",
+                title="继续修复支付重试",
                 created_at=base,
                 updated_at=base + timedelta(minutes=3),
             )
@@ -345,25 +347,25 @@ class V3ApiTests(unittest.TestCase):
                     Message(
                         thread_id=thread.id,
                         role="user",
-                        content="Fix the payment retry flow before the weekend release.",
+                        content="周末发版前把支付重试流程修好。",
                         created_at=base + timedelta(minutes=1),
                     ),
                     Message(
                         thread_id=thread.id,
                         role="assistant",
-                        content="I started a focused run against the billing path.",
+                        content="我已经针对计费链路启动了一次聚焦执行。",
                         created_at=base + timedelta(minutes=2),
                     ),
                     Run(
                         thread_id=thread.id,
                         agent="codex",
                         status="passed",
-                        task="Fix payment retry flow",
-                        result_summary="Patched retry backoff and added API coverage.",
+                        task="修复支付重试流程",
+                        result_summary="已调整重试退避，并补上 API 覆盖。",
                         changed_files=["backend/payments.py", "backend/tests/test_payments.py"],
                         check_passed=True,
                         duration_ms=980,
-                        raw_output="2 tests passed",
+                        raw_output="2 项测试通过",
                         created_at=base + timedelta(minutes=3),
                     ),
                 ]

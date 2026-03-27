@@ -169,9 +169,17 @@ class DigestService:
     def _fallback_comment_triage(self, comment: dict[str, Any]) -> dict[str, Any]:
         body = (comment.get("body") or "").strip()
         lowered = body.lower()
-        classification = "needs_input" if any(token in lowered for token in {"why", "should", "clarify", "tradeoff", "?"}) else "ai_can_fix"
-        draft_reply = "Thanks. I reviewed this and will adjust the implementation." if classification == "ai_can_fix" else "I considered this tradeoff for the current approach because it preserves the intended behavior."
-        fix_plan = "Apply the suggested code change and reply once updated." if classification == "ai_can_fix" else ""
+        classification = (
+            "needs_input"
+            if any(token in lowered for token in {"why", "should", "clarify", "tradeoff", "?", "为什么", "是否", "解释", "取舍", "？"})
+            else "ai_can_fix"
+        )
+        draft_reply = (
+            "收到，我已经看过这条评论，会按建议调整实现。"
+            if classification == "ai_can_fix"
+            else "我采用当前实现是基于既定行为和取舍，下面把原因说明清楚。"
+        )
+        fix_plan = "按建议修改代码，并在更新后同步回复结果。" if classification == "ai_can_fix" else ""
         return {
             "commentId": comment.get("id"),
             "reviewer": comment.get("user", "reviewer"),

@@ -16,8 +16,8 @@ from services.watcher import watcher_engine
 
 
 SKILL_TEMPLATES = {
-    "review-pr": "Review the latest PR comments, separate what needs user input from what AI can fix, then prepare the fixes or replies.",
-    "commit": "Review the current working tree, stage the relevant changes, create a clean commit, and report the exact commit message.",
+    "review-pr": "检查最新的 PR 评论，区分哪些需要用户决策、哪些可以由 AI 直接修复，并准备相应的修复或回复。",
+    "commit": "检查当前工作树，暂存相关改动，创建一条干净的提交，并明确给出最终提交信息。",
 }
 
 
@@ -58,7 +58,7 @@ class ConversationRouter:
                 Message(
                     thread_id=thread_id,
                     role="system",
-                    content=f"Configured watcher {watcher.name}.",
+                    content=f"已配置监控 {watcher.name}。",
                     metadata_={"kind": "watcher-config", "watcher": watcher.to_dict()},
                 )
             )
@@ -134,13 +134,13 @@ class ConversationRouter:
 
     def _memory_payloads(self, text: str, lower: str) -> list[dict[str, str]]:
         if any(token in lower for token in {"decision:", "decide", "decision", "决定", "统一", "drop ", "不再兼容", "只走", "只保留"}):
-            return [{"category": "decision", "content": text, "rationale": "Captured from an explicit architectural or workflow decision."}]
+            return [{"category": "decision", "content": text, "rationale": "来自明确的架构或流程决策。"}]
         if any(token in lower for token in {"always", "never", "prefer", "偏好", "以后都", "不要", "默认"}):
-            return [{"category": "preference", "content": text, "rationale": "Captured from a direct user preference."}]
+            return [{"category": "preference", "content": text, "rationale": "来自用户直接表达的偏好。"}]
         if any(token in lower for token in {"learned", "lesson", "发现", "经验", "教训"}):
-            return [{"category": "learning", "content": text, "rationale": "Captured from a stated lesson or learning."}]
+            return [{"category": "learning", "content": text, "rationale": "来自明确说明的经验或教训。"}]
         if any(token in lower for token in {"fact:", "repo path", "branch is", "地址是", "位于"}):
-            return [{"category": "fact", "content": text, "rationale": "Captured as durable project context."}]
+            return [{"category": "fact", "content": text, "rationale": "作为稳定的项目上下文记录。"}]
         return []
 
     def _watcher_payload(self, text: str, lower: str) -> dict[str, Any] | None:
@@ -263,13 +263,13 @@ class ConversationRouter:
 
     def _watcher_name(self, text: str, source_type: str, config: dict[str, Any]) -> str:
         if source_type == "ci_pipeline":
-            return "CI monitor"
+            return "CI 监控"
         if source_type == "azure_devops":
-            return "DevOps task sync"
+            return "DevOps 任务同步"
         number = config.get("number")
         if number:
-            return f"PR #{number} review monitor"
-        return self._title_from(text, prefix="Watcher")
+            return f"PR #{number} 评审监控"
+        return self._title_from(text, prefix="监控")
 
     def _title_from(self, text: str, prefix: str) -> str:
         compact = " ".join(text.split())
@@ -284,10 +284,19 @@ class ConversationRouter:
     def _skill_task(self, skill_name: str, skill_args: str, context: dict[str, Any]) -> str:
         base = SKILL_TEMPLATES.get(skill_name)
         if base is None:
-            return self._run_task(f"Execute the /{skill_name} workflow. {skill_args}".strip(), context)
+            return self._run_task(f"执行 /{skill_name} 工作流。{skill_args}".strip(), context)
         if skill_args:
-            return f"{base} Focus: {skill_args}"
+            return f"{base} 重点：{skill_args}"
         return base
+
+    def _humanize_schedule_value(self, value: str) -> str:
+        match = re.match(r"^(\d+)([mhd])$", value)
+        if not match:
+            return value
+        amount = match.group(1)
+        unit = match.group(2)
+        label = "分钟" if unit == "m" else "小时" if unit == "h" else "天"
+        return f"每 {amount} {label}"
 
     def _agent_from_text(self, lower: str) -> str:
         if "claude-code" in lower or "claude code" in lower or re.search(r"\bclaude\b", lower):
@@ -317,7 +326,8 @@ class ConversationRouter:
             agent_label = "Claude Code" if run["agent"] == "claude-code" else "Codex"
             parts.append(f"我已经安排 {agent_label} 开始处理，结果会直接折回当前线程。")
         if watcher:
-            parts.append(f"也已配置一个 {self._watcher_label(watcher['sourceType'])} watcher，按 {watcher['scheduleValue']} 持续把需要决策的事件推到 Home。")
+            schedule_label = self._humanize_schedule_value(watcher["scheduleValue"])
+            parts.append(f"也已配置一个 {self._watcher_label(watcher['sourceType'])} 监控，按 {schedule_label} 持续把需要决策的事件推到首页。")
         if memories:
             categories = "、".join(self._memory_label(item["category"]) for item in memories)
             parts.append(f"同时记住这条{categories}。")

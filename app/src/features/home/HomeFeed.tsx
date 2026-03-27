@@ -34,7 +34,7 @@ function FeedCard({
             <div className="feed-card-title-stack">
               <div className="feed-card-title">{item.title}</div>
               <div className="feed-card-subtle">
-                Watcher: {item.watcher?.name ?? 'Watcher'} · {formatRelativeTime(item.createdAt)}
+                监控：{item.watcher?.name ?? '监控'} · {formatRelativeTime(item.createdAt)}
               </div>
             </div>
           </div>
@@ -61,11 +61,11 @@ function FeedCard({
               void dismissWatcherEvent(item.id).then(() => onRefresh())
             }}
           >
-            Dismiss
+            忽略
           </button>
           {item.threadId ? (
             <button type="button" className="button-secondary" onClick={() => onOpenThread(item.threadId!)}>
-              View thread
+              打开线程
             </button>
           ) : null}
         </div>
@@ -111,7 +111,7 @@ function FeedCard({
           </div>
         </>
       ) : null}
-      {item.status === 'failed' && hint ? <div className="feed-card-hint">Likely cause: {hint}</div> : null}
+      {item.status === 'failed' && hint ? <div className="feed-card-hint">可能原因：{hint}</div> : null}
       <div className="feed-actions">
         {item.status === 'passed' && !item.adoptedAt ? (
           <button
@@ -121,12 +121,12 @@ function FeedCard({
               void adoptRun(item.id).then(() => onRefresh())
             }}
           >
-            Adopt changes
+            采纳改动
           </button>
         ) : null}
         {item.threadId ? (
           <button type="button" className="button-secondary" onClick={() => onOpenThread(item.threadId)}>
-            View
+            查看
           </button>
         ) : null}
       </div>
@@ -136,13 +136,13 @@ function FeedCard({
 
 export function HomeFeed({ feed, threads, onOpenThread, onRefresh }: HomeFeedProps) {
   if (!feed) {
-    return <div className="empty-panel">Loading home feed…</div>
+    return <div className="empty-panel">正在加载首页…</div>
   }
 
   const sections: Array<{ label: string; items: FeedItem[]; compact?: boolean }> = [
-    { label: 'NEEDS YOUR ATTENTION', items: feed.needsAttention },
-    { label: 'RUNNING IN BACKGROUND', items: feed.running },
-    { label: 'RECENT', items: feed.recent, compact: true },
+    { label: '需要你处理', items: feed.needsAttention },
+    { label: '后台进行中', items: feed.running },
+    { label: '最近更新', items: feed.recent, compact: true },
   ]
 
   return (
@@ -168,7 +168,7 @@ export function HomeFeed({ feed, threads, onOpenThread, onRefresh }: HomeFeedPro
                 />
               ))
             ) : (
-              <div className="feed-empty">Nothing here right now.</div>
+              <div className="feed-empty">现在还没有内容。</div>
             )}
           </section>
         ))}

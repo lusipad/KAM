@@ -16,7 +16,7 @@ type SidebarProps = {
 function groupThreads(threads: ThreadSummary[]) {
   const grouped = new Map<string, ThreadSummary[]>()
   for (const thread of threads) {
-    const label = (thread.project?.title ?? 'No project').toUpperCase()
+    const label = (thread.project?.title ?? '未归属项目').toUpperCase()
     grouped.set(label, [...(grouped.get(label) ?? []), thread])
   }
   return Array.from(grouped.entries())
@@ -39,13 +39,13 @@ export function Sidebar({
         <div className="brand-mark">K</div>
         <div>
           <div className="brand-name">KAM</div>
-          <div className="brand-subtle">Outside brain</div>
+          <div className="brand-subtle">外脑</div>
         </div>
       </div>
 
       <button type="button" className={`active-rail ${activeView === 'home' ? 'is-active' : ''}`} onClick={onSelectHome}>
         <span className="status-dot is-amber" />
-        <span>{summary || 'No active items'}</span>
+        <span>{summary || '当前没有待处理项'}</span>
       </button>
 
       <div className="sidebar-scroll">
@@ -72,13 +72,13 @@ export function Sidebar({
 
       <div className="sidebar-footer">
         <button type="button" className={`footer-tab ${activeView === 'home' ? 'is-active' : ''}`} onClick={onSelectHome}>
-          Home
+          首页
         </button>
         <button type="button" className={`footer-tab ${activeView === 'watchers' ? 'is-active' : ''}`} onClick={onSelectWatchers}>
-          Watchers
+          监控
         </button>
         <button type="button" className={`footer-tab is-wide ${memoryOpen ? 'is-active' : ''}`} onClick={onToggleMemory}>
-          Memory
+          记忆
         </button>
       </div>
     </aside>

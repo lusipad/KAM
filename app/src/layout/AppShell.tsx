@@ -22,7 +22,7 @@ export function AppShell({ sidebar, main, panel, memoryOpen, breadcrumb, onToggl
         <header className="topbar">
           <div className="breadcrumb">{breadcrumb}</div>
           <button type="button" className={`memory-toggle ${memoryOpen ? 'is-active' : ''}`} onClick={onToggleMemory}>
-            Memory
+            记忆
           </button>
         </header>
 

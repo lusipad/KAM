@@ -6,6 +6,7 @@ import { MessageBubble } from '@/features/thread/MessageBubble'
 import { MessageInput } from '@/features/thread/MessageInput'
 import { RunCard } from '@/features/thread/RunCard'
 import { useSendMessage } from '@/hooks/useSendMessage'
+import { humanizeScheduleValue, watcherSourceLabel } from '@/lib/v3-ui'
 import type { MessageRecord, ThreadDetail } from '@/types/v3'
 
 type ThreadViewProps = {
@@ -63,11 +64,11 @@ export function ThreadView({ thread, loading, pendingPrompt, onPendingPromptCons
   }, [isSending, onPendingPromptConsumed, pendingPrompt, send, thread])
 
   if (loading) {
-    return <div className="empty-panel">Loading thread…</div>
+    return <div className="empty-panel">正在加载线程…</div>
   }
 
   if (!thread) {
-    return <div className="empty-panel">Select a thread to continue.</div>
+    return <div className="empty-panel">选择一个线程继续工作。</div>
   }
 
   return (
@@ -94,10 +95,10 @@ export function ThreadView({ thread, loading, pendingPrompt, onPendingPromptCons
               const watcher = item.message.metadata.watcher as { name?: string; sourceType?: string; scheduleValue?: string } | undefined
               return (
                 <article key={item.message.id} className="watcher-config-card">
-                  <div className="watcher-config-title">{watcher?.name ?? 'New watcher'}</div>
+                  <div className="watcher-config-title">{watcher?.name ?? '新监控'}</div>
                   <div className="watcher-config-grid">
-                    <span>Source: {watcher?.sourceType ?? 'unknown'}</span>
-                    <span>Frequency: {watcher?.scheduleValue ?? '15m'}</span>
+                    <span>来源：{watcherSourceLabel(watcher?.sourceType)}</span>
+                    <span>频率：{humanizeScheduleValue(watcher?.scheduleValue ?? '15m')}</span>
                   </div>
                 </article>
               )
@@ -134,7 +135,7 @@ export function ThreadView({ thread, loading, pendingPrompt, onPendingPromptCons
         <div className="thread-column">
           <MessageInput
             value={draft}
-            placeholder="Reply..."
+            placeholder="继续输入你的要求..."
             isSending={isSending}
             onChange={setDraft}
             onSubmit={() => {

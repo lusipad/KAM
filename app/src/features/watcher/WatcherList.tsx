@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { getWatcher, getWatcherEvents, pauseWatcher, resumeWatcher, runWatcherNow, updateWatcher } from '@/api/client'
 import { WatcherInspector } from '@/features/watcher/WatcherInspector'
-import { formatRelativeTime, humanizeSchedule, watcherDescription, watcherGlyph, watcherSourceLabel, watcherTone } from '@/lib/v3-ui'
+import { formatRelativeTime, humanizeSchedule, watcherDescription, watcherGlyph, watcherSourceLabel, watcherStatusLabel, watcherTone } from '@/lib/v3-ui'
 import type { WatcherEventRecord, WatcherRecord } from '@/types/v3'
 
 type WatcherListProps = {
@@ -81,8 +81,8 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
       <div className="watcher-layout">
         <div className="watcher-column">
           <div className="watcher-header">
-            <div className="home-greeting">Watchers · {watchers.filter((watcher) => watcher.status === 'active').length} active</div>
-            <div className="home-summary">AI monitors these sources in the background and surfaces events on your Home feed.</div>
+            <div className="home-greeting">监控 · {watchers.filter((watcher) => watcher.status === 'active').length} 个运行中</div>
+            <div className="home-summary">AI 会在后台持续监控这些来源，只把真正需要你处理的事件推到首页。</div>
           </div>
 
           {watchers.length ? (
@@ -101,7 +101,7 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                       <div className="watcher-card-title-stack">
                         <div className="watcher-card-title-row">
                           <div className="watcher-card-title">{watcher.name}</div>
-                          <span className="watcher-status">{watcher.status}</span>
+                          <span className="watcher-status">{watcherStatusLabel(watcher.status)}</span>
                         </div>
                         <div className="watcher-card-meta">
                           {watcherSourceLabel(watcher.sourceType)} · {humanizeSchedule(watcher)}
@@ -110,7 +110,7 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                     </div>
                   </div>
 
-                  <div className="watcher-card-copy">Last: {formatRelativeTime(watcher.lastRunAt ?? watcher.createdAt)}</div>
+                  <div className="watcher-card-copy">最近执行：{formatRelativeTime(watcher.lastRunAt ?? watcher.createdAt)}</div>
                   <div className="watcher-card-description">{watcherDescription(watcher)}</div>
                 </button>
 
@@ -122,7 +122,7 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                       selectWatcher(watcher.id, 'edit')
                     }}
                   >
-                    Edit
+                    编辑
                   </button>
                   <button
                     type="button"
@@ -131,7 +131,7 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                       selectWatcher(watcher.id, 'history')
                     }}
                   >
-                    View history
+                    查看历史
                   </button>
                   <button
                     type="button"
@@ -142,7 +142,7 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                       void runWatcherNow(watcher.id).then(() => refreshSelection(watcher.id))
                     }}
                   >
-                    Run now
+                    立即执行
                   </button>
                   {watcher.status === 'active' ? (
                     <button
@@ -152,7 +152,7 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                         void pauseWatcher(watcher.id).then(() => refreshSelection(watcher.id))
                       }}
                     >
-                      Pause
+                      暂停
                     </button>
                   ) : (
                     <button
@@ -162,18 +162,18 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                         void resumeWatcher(watcher.id).then(() => refreshSelection(watcher.id))
                       }}
                     >
-                      Resume
+                      恢复
                     </button>
                   )}
                 </div>
               </article>
             ))
           ) : (
-            <div className="feed-empty">No watchers configured yet.</div>
+            <div className="feed-empty">还没有配置监控。</div>
           )}
 
           <button type="button" className="watcher-create" onClick={onCreateByConversation}>
-            Tell AI what to watch to add a new watcher…
+            告诉 AI 你要监控什么，即可新增监控…
           </button>
         </div>
 
