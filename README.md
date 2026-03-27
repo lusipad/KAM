@@ -89,6 +89,13 @@ python -m uvicorn main:app --reload --port 8000
 ./start.sh
 ```
 
+Windows PowerShell:
+
+```powershell
+pwsh -File .\start.ps1
+pwsh -File .\start.ps1 -Port 8012
+```
+
 Docker 版本会：
 
 - 构建 `app/dist`
