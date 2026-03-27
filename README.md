@@ -39,6 +39,13 @@ backend/
   services/            router / run / digest / watcher / memory
   adapters/            GitHub / Azure / CI 适配器
   alembic/             V3 baseline migration
+
+docs/
+  README.md            文档索引
+  design/              设计稿、架构稿、UI 规范
+  roadmap/             路线图与执行计划
+  migration/           迁移文档
+  archive/legacy/      历史方案归档
 ```
 
 ## 本地开发
@@ -162,6 +169,7 @@ npm run test:smoke:local
 
 ## 规范来源
 
-- `KAM_V3_DESIGN.md`
-- `KAM_V3_UI_SPEC.md`
-- `KAM_ROADMAP.md`
+- [`docs/README.md`](docs/README.md)
+- [`docs/design/v3_architecture_design.md`](docs/design/v3_architecture_design.md)
+- [`docs/design/v3_ui_spec.md`](docs/design/v3_ui_spec.md)
+- [`docs/roadmap/v2_implementation_roadmap.md`](docs/roadmap/v2_implementation_roadmap.md)
