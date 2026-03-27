@@ -29,6 +29,7 @@ os.environ["ANTHROPIC_API_KEY"] = ""
 from db import async_session, engine  # noqa: E402
 from main import app  # noqa: E402
 from models import Message, Project, Run, Thread  # noqa: E402
+from services.digest import DigestService  # noqa: E402
 class V3ApiTests(unittest.TestCase):
     def setUp(self):
         AppStatus.should_exit_event = asyncio.Event()
@@ -90,6 +91,20 @@ class V3ApiTests(unittest.TestCase):
         search = self.client.get("/api/memory/search", params={"project_id": project["id"], "query": "backend tests"}).json()
         self.assertEqual(len(search["memories"]), 1)
         self.assertIn("backend tests", search["memories"][0]["content"])
+
+    def test_digest_failure_summary_suggests_next_step(self):
+        run = Run(
+            thread_id="thread123",
+            agent="codex",
+            status="failed",
+            task="Fix the flaky memory API test",
+            raw_output="Traceback\nAssertionError: expected 200 but received 204",
+        )
+
+        summary = asyncio.run(DigestService(None).summarize_run(run))
+
+        self.assertIn("执行失败：", summary)
+        self.assertIn("建议先查看最后一条报错并在修正后重试", summary)
 
     def test_watcher_run_now_creates_event(self):
         project = self.client.post("/api/projects", json={"title": "Watcher Lab"}).json()

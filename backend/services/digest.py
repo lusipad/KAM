@@ -21,7 +21,8 @@ class DigestService:
             return self._fallback_run_summary(run)
         prompt = (
             "Summarize this coding run for a developer UI. "
-            "Be concrete, one short paragraph, and mention changed files or failure cause.\n\n"
+            "Be concrete, one short paragraph, mention changed files or failure cause, "
+            "and when the run failed include the most sensible next step.\n\n"
             f"Task: {run.task}\nStatus: {run.status}\nChanged files: {json.dumps(run.changed_files or [])}\n"
             f"Raw output:\n{(run.raw_output or '')[:6000]}"
         )
@@ -160,7 +161,7 @@ class DigestService:
         if run.status == "failed":
             tail = (run.raw_output or "").strip().splitlines()
             reason = tail[-1] if tail else "执行失败。"
-            return f"执行失败：{reason[:220]}"
+            return f"执行失败：{reason[:220]} 建议先查看最后一条报错并在修正后重试。"
         if run.status == "running":
             return "正在执行中。"
         return "任务已进入队列。"
