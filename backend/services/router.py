@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -20,6 +21,63 @@ SKILL_TEMPLATES = {
     "commit": "检查当前工作树，暂存相关改动，创建一条干净的提交，并明确给出最终提交信息。",
 }
 
+TOOL_SCHEMAS = [
+    {
+        "name": "record_memory",
+        "description": "记录稳定的偏好、决策、事实或经验，供后续对话与执行复用。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "enum": ["preference", "decision", "fact", "learning"]},
+                "content": {"type": "string"},
+                "rationale": {"type": "string"},
+                "scope": {"type": "string", "enum": ["project", "global"]},
+            },
+            "required": ["category", "content"],
+        },
+    },
+    {
+        "name": "create_watcher",
+        "description": "为 GitHub PR、CI 流水线或 Azure DevOps 任务创建持续监控。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "sourceType": {"type": "string", "enum": ["github_pr", "ci_pipeline", "azure_devops"]},
+                "config": {"type": "object"},
+                "scheduleType": {"type": "string", "enum": ["interval", "cron"]},
+                "scheduleValue": {"type": "string"},
+                "autoActionLevel": {"type": "integer", "minimum": 1, "maximum": 3},
+            },
+            "required": ["name", "sourceType", "config", "scheduleType", "scheduleValue"],
+        },
+    },
+    {
+        "name": "create_run",
+        "description": "把实现、修复、部署、评审处理等具体工作下发给 agent 执行。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent": {"type": "string", "enum": ["codex", "claude-code", "custom"]},
+                "task": {"type": "string"},
+            },
+            "required": ["agent", "task"],
+        },
+    },
+]
+
+
+@dataclass(slots=True)
+class PlannedAction:
+    tool: str
+    input: dict[str, Any]
+
+
+@dataclass(slots=True)
+class OrchestrationPlan:
+    assistant_reply: str
+    actions: list[PlannedAction] = field(default_factory=list)
+
 
 class ConversationRouter:
     def __init__(self, db: AsyncSession) -> None:
@@ -28,31 +86,52 @@ class ConversationRouter:
 
     async def route_message(self, *, thread_id: str, message_content: str, project_id: str | None) -> list[dict[str, Any]]:
         context = await ContextAssembler(self.db).build(thread_id=thread_id, project_id=project_id, query=message_content)
-        decision = await self._decide(message_content, context)
+        resolved_project_id = project_id or getattr(context.get("thread"), "project_id", None)
+        plan = await self._decide(message_content, context)
         events: list[dict[str, Any]] = []
 
-        memory_service = MemoryService(self.db)
-        for memory_payload in decision.get("memories", []):
-            memory = await memory_service.record(
+        for action in plan.actions:
+            result_event = await self._apply_action(action, thread_id=thread_id, project_id=resolved_project_id)
+            if result_event is not None:
+                events.append(result_event)
+
+        reply = plan.assistant_reply.strip() or self._assistant_reply(actions=plan.actions, context=context, lower=message_content.lower())
+        await self._touch_thread(thread_id)
+        for fragment in self._stream_text(reply):
+            events.append({"type": "text_delta", "delta": fragment})
+        events.append({"type": "text_done", "content": reply})
+        return events
+
+    async def _apply_action(
+        self,
+        action: PlannedAction,
+        *,
+        thread_id: str,
+        project_id: str | None,
+    ) -> dict[str, Any] | None:
+        if action.tool == "record_memory":
+            memory = await MemoryService(self.db).record(
                 project_id=project_id,
-                category=memory_payload["category"],
-                content=memory_payload["content"],
-                rationale=memory_payload.get("rationale"),
+                category=action.input["category"],
+                content=action.input["content"],
+                rationale=action.input.get("rationale"),
+                scope=action.input.get("scope", "project"),
                 source_thread_id=thread_id,
             )
-            events.append({"type": "tool_result", "tool": "record_memory", "memory": memory.to_dict()})
+            return {"type": "tool_result", "tool": "record_memory", "memory": memory.to_dict()}
 
-        watcher_payload = decision.get("watcher")
-        if watcher_payload:
+        if action.tool == "create_watcher":
+            if project_id is None:
+                return None
             watcher = await watcher_engine.create_watcher(
                 self.db,
                 project_id=project_id,
-                name=watcher_payload["name"],
-                source_type=watcher_payload["sourceType"],
-                config=watcher_payload["config"],
-                schedule_type=watcher_payload["scheduleType"],
-                schedule_value=watcher_payload["scheduleValue"],
-                auto_action_level=watcher_payload.get("autoActionLevel", 1),
+                name=action.input["name"],
+                source_type=action.input["sourceType"],
+                config=action.input["config"],
+                schedule_type=action.input["scheduleType"],
+                schedule_value=action.input["scheduleValue"],
+                auto_action_level=action.input.get("autoActionLevel", 1),
             )
             self.db.add(
                 Message(
@@ -62,23 +141,18 @@ class ConversationRouter:
                     metadata_={"kind": "watcher-config", "watcher": watcher.to_dict()},
                 )
             )
-            events.append({"type": "tool_result", "tool": "create_watcher", "watcher": watcher.to_dict()})
+            await self.db.commit()
+            return {"type": "tool_result", "tool": "create_watcher", "watcher": watcher.to_dict()}
 
-        run_payload = decision.get("run")
-        if run_payload:
+        if action.tool == "create_run":
             run = await RunEngine(self.db).create_run(
                 thread_id=thread_id,
-                agent=run_payload["agent"],
-                task=run_payload["task"],
+                agent=action.input["agent"],
+                task=action.input["task"],
             )
-            events.append({"type": "tool_result", "tool": "create_run", "run": run.to_dict()})
+            return {"type": "tool_result", "tool": "create_run", "run": run.to_dict()}
 
-        reply = decision.get("assistantReply", "收到。")
-        await self._touch_thread(thread_id)
-        for fragment in self._stream_text(reply):
-            events.append({"type": "text_delta", "delta": fragment})
-        events.append({"type": "text_done", "content": reply})
-        return events
+        return None
 
     async def _touch_thread(self, thread_id: str) -> None:
         thread = await self.db.get(Thread, thread_id)
@@ -86,51 +160,184 @@ class ConversationRouter:
             thread.updated_at = now()
             await self.db.commit()
 
-    async def _decide(self, message_content: str, context: dict[str, Any]) -> dict[str, Any]:
+    async def _decide(self, message_content: str, context: dict[str, Any]) -> OrchestrationPlan:
+        fallback = self._fallback_plan(message_content, context)
         if self.client is None:
-            return self._fallback_decision(message_content, context)
+            return fallback
 
         prompt = (
-            "You are the KAM orchestration core. Return strict JSON with keys "
-            "assistantReply, run, watcher, memories. Keep assistantReply concise. "
-            "run or watcher may be null. memories is an array. "
-            "Available slash skills: /review-pr, /commit. "
-            "Respect explicit agent hints such as claude-code or codex, and infer watcher schedules when the user asks to monitor something.\n\n"
-            f"{context['project_block']}\n\n{context['memory_block']}\n\n{context['recent_context']}\n\n"
-            f"User: {message_content}"
+            f"{context['prompt_context']}\n\n"
+            "## 用户请求\n"
+            f"{message_content.strip()}\n"
         )
-        fallback = self._fallback_decision(message_content, context)
+
         try:
             response = await self.client.messages.create(
                 model=settings.chat_model,
-                max_tokens=600,
+                max_tokens=700,
                 temperature=0,
+                system=self._tool_system_prompt(),
                 messages=[{"role": "user", "content": prompt}],
+                tools=TOOL_SCHEMAS,
             )
         except Exception:
             return fallback
 
-        text = "".join(getattr(block, "text", "") for block in response.content).strip()
+        return self._extract_plan_from_response(response, fallback)
+
+    def _tool_system_prompt(self) -> str:
+        return (
+            "你是 KAM 的 orchestration core。你的目标是把用户输入转成最小且正确的后台动作。\n"
+            "规则：\n"
+            "1. 需要执行实现、修复、部署、评审处理时，调用 create_run。\n"
+            "2. 用户表达稳定偏好、流程决策、长期事实或经验时，调用 record_memory。\n"
+            "3. 用户要求持续监控时，调用 create_watcher。\n"
+            "4. 可以连续调用多个工具；顺序就是实际执行顺序。\n"
+            "5. 给用户的文字回复必须是简短中文，不暴露 JSON、schema 或内部推理。\n"
+            "6. 如果只是继续解释、确认或承接上下文，可以不调用工具。"
+        )
+
+    def _extract_plan_from_response(self, response: Any, fallback: OrchestrationPlan) -> OrchestrationPlan:
+        text_fragments: list[str] = []
+        actions: list[PlannedAction] = []
+        for block in getattr(response, "content", []):
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
+                text = getattr(block, "text", "").strip()
+                if text:
+                    text_fragments.append(text)
+                continue
+            if block_type == "tool_use":
+                action = self._normalize_model_action(getattr(block, "name", ""), getattr(block, "input", {}))
+                if action is not None:
+                    actions.append(action)
+
+        text_reply = " ".join(fragment for fragment in text_fragments if fragment).strip()
+        if not actions and text_reply.startswith("{") and text_reply.endswith("}"):
+            legacy_plan = self._parse_legacy_json_plan(text_reply, fallback)
+            if legacy_plan.actions or legacy_plan.assistant_reply:
+                return legacy_plan
+
+        if not actions and not text_reply:
+            return fallback
+
+        return OrchestrationPlan(
+            assistant_reply=text_reply or fallback.assistant_reply,
+            actions=self._dedupe_actions(actions or fallback.actions),
+        )
+
+    def _parse_legacy_json_plan(self, raw_text: str, fallback: OrchestrationPlan) -> OrchestrationPlan:
         try:
-            parsed = json.loads(text)
+            payload = json.loads(raw_text)
         except json.JSONDecodeError:
             return fallback
-        parsed.setdefault("assistantReply", fallback["assistantReply"])
-        parsed.setdefault("memories", [])
-        return parsed
 
-    def _fallback_decision(self, message_content: str, context: dict[str, Any]) -> dict[str, Any]:
+        actions: list[PlannedAction] = []
+        for memory_payload in payload.get("memories", []):
+            action = self._normalize_model_action("record_memory", memory_payload)
+            if action is not None:
+                actions.append(action)
+        if payload.get("watcher"):
+            action = self._normalize_model_action("create_watcher", payload["watcher"])
+            if action is not None:
+                actions.append(action)
+        if payload.get("run"):
+            action = self._normalize_model_action("create_run", payload["run"])
+            if action is not None:
+                actions.append(action)
+
+        reply = str(payload.get("assistantReply", "")).strip() or fallback.assistant_reply
+        return OrchestrationPlan(assistant_reply=reply, actions=self._dedupe_actions(actions or fallback.actions))
+
+    def _normalize_model_action(self, tool_name: str, payload: Any) -> PlannedAction | None:
+        if not isinstance(payload, dict):
+            return None
+
+        if tool_name == "record_memory":
+            category = str(payload.get("category", "")).strip().lower()
+            content = str(payload.get("content", "")).strip()
+            if category not in {"preference", "decision", "fact", "learning"} or not content:
+                return None
+            scope = str(payload.get("scope", "project")).strip().lower()
+            if scope not in {"project", "global"}:
+                scope = "project"
+            rationale = str(payload.get("rationale", "")).strip() or None
+            return PlannedAction(
+                tool="record_memory",
+                input={"category": category, "content": content, "rationale": rationale, "scope": scope},
+            )
+
+        if tool_name == "create_watcher":
+            name = str(payload.get("name", "")).strip()
+            source_type = str(payload.get("sourceType", "")).strip()
+            config = payload.get("config")
+            schedule_type = str(payload.get("scheduleType", "interval")).strip()
+            schedule_value = str(payload.get("scheduleValue", "")).strip()
+            if not name or source_type not in {"github_pr", "ci_pipeline", "azure_devops"}:
+                return None
+            if not isinstance(config, dict) or not schedule_value:
+                return None
+            if schedule_type not in {"interval", "cron"}:
+                schedule_type = "interval"
+            auto_action_level = self._coerce_auto_action_level(payload.get("autoActionLevel"))
+            return PlannedAction(
+                tool="create_watcher",
+                input={
+                    "name": name,
+                    "sourceType": source_type,
+                    "config": config,
+                    "scheduleType": schedule_type,
+                    "scheduleValue": schedule_value,
+                    "autoActionLevel": auto_action_level,
+                },
+            )
+
+        if tool_name == "create_run":
+            agent = str(payload.get("agent", "")).strip().lower()
+            task = str(payload.get("task", "")).strip()
+            if agent not in {"codex", "claude-code", "custom"} or not task:
+                return None
+            return PlannedAction(tool="create_run", input={"agent": agent, "task": task})
+
+        return None
+
+    def _coerce_auto_action_level(self, value: Any) -> int:
+        try:
+            level = int(value)
+        except (TypeError, ValueError):
+            return 1
+        return min(3, max(1, level))
+
+    def _dedupe_actions(self, actions: list[PlannedAction]) -> list[PlannedAction]:
+        seen: set[str] = set()
+        deduped: list[PlannedAction] = []
+        for action in actions:
+            fingerprint = f"{action.tool}:{json.dumps(action.input, sort_keys=True, ensure_ascii=False)}"
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            deduped.append(action)
+        return deduped
+
+    def _fallback_plan(self, message_content: str, context: dict[str, Any]) -> OrchestrationPlan:
         text = " ".join(message_content.strip().split())
         lower = text.lower()
         skill_name, skill_args = self._extract_skill(text)
 
+        actions: list[PlannedAction] = []
         memories = self._memory_payloads(text, lower)
+        actions.extend(PlannedAction(tool="record_memory", input=payload) for payload in memories)
 
         watcher = self._watcher_payload(text, lower)
-        run = self._run_payload(text, lower, context, skill_name, skill_args)
-        reply = self._assistant_reply(run=run, watcher=watcher, memories=memories, context=context, lower=lower)
+        if watcher:
+            actions.append(PlannedAction(tool="create_watcher", input=watcher))
 
-        return {"assistantReply": reply, "run": run, "watcher": watcher, "memories": memories}
+        run = self._run_payload(text, lower, context, skill_name, skill_args)
+        if run:
+            actions.append(PlannedAction(tool="create_run", input=run))
+
+        reply = self._assistant_reply(actions=actions, context=context, lower=lower)
+        return OrchestrationPlan(assistant_reply=reply, actions=self._dedupe_actions(actions))
 
     def _memory_payloads(self, text: str, lower: str) -> list[dict[str, str]]:
         if any(token in lower for token in {"decision:", "decide", "decision", "决定", "统一", "drop ", "不再兼容", "只走", "只保留"}):
@@ -315,12 +522,13 @@ class ConversationRouter:
     def _assistant_reply(
         self,
         *,
-        run: dict[str, str] | None,
-        watcher: dict[str, Any] | None,
-        memories: list[dict[str, str]],
+        actions: list[PlannedAction],
         context: dict[str, Any],
         lower: str,
     ) -> str:
+        run = next((action.input for action in actions if action.tool == "create_run"), None)
+        watcher = next((action.input for action in actions if action.tool == "create_watcher"), None)
+        memories = [action.input for action in actions if action.tool == "record_memory"]
         parts: list[str] = []
         if run:
             agent_label = "Claude Code" if run["agent"] == "claude-code" else "Codex"
@@ -342,12 +550,12 @@ class ConversationRouter:
             if continued:
                 return continued
 
-        if context.get("memory_block"):
+        if context.get("has_memory"):
             memory_hint = self._memory_hint(context)
             if memory_hint:
                 return f"收到。我会沿用“{memory_hint}”继续判断，你可以直接让我实现、修复、监控或记录新的决定。"
             return "收到。我会沿用当前项目记忆继续判断，你可以直接让我实现、修复、监控或记录新的决定。"
-        if context.get("recent_context"):
+        if context.get("has_recent_activity"):
             return "收到。我会接着这个线程最近的上下文继续，你可以直接给我要执行或监控的目标。"
         return "收到。你继续描述目标，我会把需要执行、监控或记录的部分直接转成后台动作。"
 
@@ -395,6 +603,10 @@ class ConversationRouter:
         return None
 
     def _memory_hint(self, context: dict[str, Any]) -> str | None:
+        memory_pack = context.get("memory_pack") or {}
+        for memory in memory_pack.get("always", []) + memory_pack.get("relevant", []):
+            if getattr(memory, "content", None):
+                return str(memory.content)[:120]
         memory_block = context.get("memory_block") or ""
         for line in memory_block.splitlines():
             if line.startswith("- ["):

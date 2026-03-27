@@ -29,7 +29,10 @@ os.environ["ANTHROPIC_API_KEY"] = ""
 from db import async_session, engine  # noqa: E402
 from main import app  # noqa: E402
 from models import Message, Project, Run, Thread  # noqa: E402
+from services.context import ContextAssembler  # noqa: E402
 from services.digest import DigestService  # noqa: E402
+from services.memory import MemoryService  # noqa: E402
+from services.router import ConversationRouter  # noqa: E402
 
 
 class V3ApiTests(unittest.TestCase):
@@ -183,6 +186,40 @@ class V3ApiTests(unittest.TestCase):
         self.assertIn("检查最新的 PR 评论", detail["runs"][0]["task"])
         self.assertIn("latest feedback", detail["runs"][0]["task"])
 
+    def test_router_executes_tool_plan_from_model_blocks(self):
+        project = self.client.post("/api/projects", json={"title": "模型编排"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "动作规划"}).json()
+
+        events = asyncio.run(
+            self._route_with_fake_model(
+                thread_id=thread["id"],
+                project_id=project["id"],
+                content="以后默认先跑后端测试，然后修复 token 刷新。",
+                blocks=[
+                    self._fake_tool_block(
+                        "record_memory",
+                        {"category": "preference", "content": "默认先跑后端测试。", "rationale": "用户明确提出。"},
+                    ),
+                    self._fake_tool_block(
+                        "create_run",
+                        {"agent": "codex", "task": "[模型编排] 修复 token 刷新并验证后端测试"},
+                    ),
+                    self._fake_text_block("我已经把记忆和执行都安排好了。"),
+                ],
+            )
+        )
+
+        self.assertTrue(any(event["type"] == "tool_result" and event["tool"] == "record_memory" for event in events))
+        self.assertTrue(any(event["type"] == "tool_result" and event["tool"] == "create_run" for event in events))
+        self.assertTrue(any(event["type"] == "text_done" and "安排好了" in event["content"] for event in events))
+
+        detail = self.client.get(f"/api/threads/{thread['id']}").json()
+        self.assertEqual(len(detail["runs"]), 1)
+        self.assertEqual(detail["runs"][0]["agent"], "codex")
+
+        memories = self.client.get("/api/memory", params={"project_id": project["id"]}).json()["memories"]
+        self.assertTrue(any(item["category"] == "preference" and "后端测试" in item["content"] for item in memories))
+
     def test_router_maps_commit_skill_to_run_task(self):
         project = self.client.post("/api/projects", json={"title": "提交实验室"}).json()
         thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "提交助手"}).json()
@@ -221,6 +258,26 @@ class V3ApiTests(unittest.TestCase):
 
         self.assertIn("text_done", body)
         self.assertIn("已调整重试退避", body)
+
+    def test_memory_context_pack_supersedes_subject_duplicates_and_respects_budget(self):
+        project = self.client.post("/api/projects", json={"title": "预算记忆"}).json()
+
+        pack = asyncio.run(self._build_memory_pack(project["id"]))
+
+        self.assertIn("## Active memory", pack["text"])
+        self.assertIn("先跑后端测试，再跑 smoke", pack["text"])
+        self.assertNotIn("只跑后端测试。", pack["text"])
+        self.assertLessEqual(pack["budget"]["usedTokens"], 60)
+
+    def test_context_build_returns_budgeted_prompt_context(self):
+        thread_id = asyncio.run(self._seed_stale_thread())
+
+        context = asyncio.run(self._build_context(thread_id, "继续昨天的工作"))
+
+        self.assertIn("## Current project", context["prompt_context"])
+        self.assertIn("## Recent context", context["prompt_context"])
+        self.assertTrue(context["has_recent_activity"])
+        self.assertLessEqual(context["budget"]["usedTokens"], context["budget"]["totalTokens"])
 
     def test_watcher_detail_update_and_history(self):
         project = self.client.post("/api/projects", json={"title": "监控管理"}).json()
@@ -372,3 +429,63 @@ class V3ApiTests(unittest.TestCase):
             )
             await session.commit()
             return thread.id
+
+    async def _route_with_fake_model(self, *, thread_id: str, project_id: str, content: str, blocks: list[object]) -> list[dict]:
+        class FakeMessages:
+            def __init__(self, response_blocks: list[object]):
+                self._response_blocks = response_blocks
+
+            async def create(self, **_kwargs):
+                return type("FakeResponse", (), {"content": self._response_blocks})()
+
+        async def fake_create_run(router_run_engine, *, thread_id: str, agent: str, task: str):
+            run = Run(thread_id=thread_id, agent=agent, task=task, status="pending")
+            router_run_engine.db.add(run)
+            await router_run_engine.db.commit()
+            await router_run_engine.db.refresh(run)
+            return run
+
+        async with async_session() as session:
+            router = ConversationRouter(session)
+            router.client = type("FakeClient", (), {"messages": FakeMessages(blocks)})()
+            with patch("services.router.RunEngine.create_run", new=fake_create_run):
+                return await router.route_message(thread_id=thread_id, message_content=content, project_id=project_id)
+
+    async def _build_memory_pack(self, project_id: str) -> dict:
+        async with async_session() as session:
+            service = MemoryService(session)
+            first = await service.record(
+                project_id=project_id,
+                category="preference",
+                content="默认测试顺序：只跑后端测试。",
+            )
+            replacement = await service.record(
+                project_id=project_id,
+                category="preference",
+                content="默认测试顺序：先跑后端测试，再跑 smoke。",
+            )
+            await service.record(
+                project_id=project_id,
+                category="decision",
+                content="提交前必须跑本地 smoke。",
+            )
+            await session.refresh(first)
+            pack = await service.build_context_pack(
+                project_id,
+                "后端测试 smoke",
+                always_budget_tokens=40,
+                relevant_budget_tokens=20,
+            )
+            assert first.superseded_by == replacement.id
+            return pack
+
+    async def _build_context(self, thread_id: str, query: str) -> dict:
+        async with async_session() as session:
+            thread = await session.get(Thread, thread_id)
+            return await ContextAssembler(session).build(thread_id=thread_id, project_id=thread.project_id, query=query)
+
+    def _fake_text_block(self, text: str):
+        return type("FakeTextBlock", (), {"type": "text", "text": text})()
+
+    def _fake_tool_block(self, name: str, payload: dict[str, object]):
+        return type("FakeToolBlock", (), {"type": "tool_use", "name": name, "input": payload})()
