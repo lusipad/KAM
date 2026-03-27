@@ -52,17 +52,17 @@ export function useSendMessage(threadId: string | null, handlers: SendHandlers) 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let didNotifyDone = false
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) {
-          break
+      const notifyDone = () => {
+        if (didNotifyDone) {
+          return
         }
+        didNotifyDone = true
+        handlers.onDone?.()
+      }
 
-        buffer += decoder.decode(value, { stream: true })
-        const blocks = buffer.split('\n\n')
-        buffer = blocks.pop() ?? ''
-
+      const processBlocks = (blocks: string[]) => {
         for (const block of blocks) {
           const parsed = parseEventBlock(block)
           if (!parsed.data) {
@@ -77,12 +77,27 @@ export function useSendMessage(threadId: string | null, handlers: SendHandlers) 
             handlers.onToolResult?.()
           }
           if (parsed.event === 'done') {
-            handlers.onDone?.()
+            notifyDone()
           }
         }
       }
 
-      handlers.onDone?.()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          buffer += decoder.decode()
+          const finalBlocks = buffer.split('\n\n').filter(Boolean)
+          processBlocks(finalBlocks)
+          break
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split('\n\n')
+        buffer = blocks.pop() ?? ''
+        processBlocks(blocks)
+      }
+
+      notifyDone()
     } finally {
       setIsSending(false)
     }

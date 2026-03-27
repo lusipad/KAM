@@ -15,8 +15,8 @@ export function MessageInput({
   value,
   placeholder,
   isSending = false,
-  toneLabel = 'Claude Code',
-  detailLabel = '自动识别',
+  toneLabel = '自动选择',
+  detailLabel = '当前会按任务判断',
   onChange,
   onSubmit,
 }: MessageInputProps) {

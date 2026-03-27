@@ -35,6 +35,45 @@ function reviewCardsFromMessage(message: MessageRecord) {
   return Array.isArray(cards) ? cards : []
 }
 
+function agentLabel(agent: string | null | undefined) {
+  if (agent === 'claude-code') {
+    return 'Claude Code'
+  }
+  if (agent === 'codex') {
+    return 'Codex'
+  }
+  if (agent === 'custom') {
+    return '自定义 Agent'
+  }
+  return '自动选择'
+}
+
+function composerMeta(thread: ThreadDetail, isSending: boolean) {
+  const latestRun = thread.runs.at(-1) ?? null
+  if (!latestRun) {
+    return {
+      toneLabel: '自动选择',
+      detailLabel: isSending ? '正在判断本轮任务' : '当前会按任务判断',
+    }
+  }
+
+  const detailLabel =
+    latestRun.status === 'running'
+      ? '执行中'
+      : latestRun.status === 'pending'
+        ? '已排队'
+        : latestRun.status === 'passed'
+          ? '沿用最近一次执行上下文'
+          : latestRun.status === 'failed'
+            ? '最近一次执行失败'
+            : '自动识别'
+
+  return {
+    toneLabel: agentLabel(latestRun.agent),
+    detailLabel: isSending ? '正在判断本轮任务' : detailLabel,
+  }
+}
+
 export function ThreadView({ thread, loading, pendingPrompt, onPendingPromptConsumed, onRefresh }: ThreadViewProps) {
   const [draft, setDraft] = useState('')
   const [streaming, setStreaming] = useState('')
@@ -70,6 +109,8 @@ export function ThreadView({ thread, loading, pendingPrompt, onPendingPromptCons
   if (!thread) {
     return <div className="empty-panel">选择一个线程继续工作。</div>
   }
+
+  const composer = composerMeta(thread, isSending)
 
   return (
     <div className="thread-view">
@@ -137,6 +178,8 @@ export function ThreadView({ thread, loading, pendingPrompt, onPendingPromptCons
             value={draft}
             placeholder="继续输入你的要求..."
             isSending={isSending}
+            toneLabel={composer.toneLabel}
+            detailLabel={composer.detailLabel}
             onChange={setDraft}
             onSubmit={() => {
               void send(draft)
