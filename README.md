@@ -54,6 +54,7 @@ Windows PowerShell:
 ```powershell
 pwsh -File .\start-local.ps1
 pwsh -File .\verify-local.ps1
+pwsh -File .\seed-demo.ps1
 ```
 
 这个脚本会先构建前端，再启动：
