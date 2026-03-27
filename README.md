@@ -1,134 +1,135 @@
-# KAM
+# KAM V3
 
-KAM 是一个**可以长时间指挥 AI 工作的个人控制台**：围绕 `Project / Thread / Run / Memory` 组织持续上下文、并发执行与结果收口。
+KAM V3 是一个三栏 AI 工作台：左侧是按项目分组的线程导航，中间是 Home feed / Thread 对话，右侧是随时可展开的 Memory panel。主线 API 已切到 `/api/*`，本地默认运行新的 `backend/main.py`。
 
-## 当前状态
+## 当前主线
 
-当前仓库已经以 **v2 工作台** 为主：
+- 三栏工作台
+  - Sidebar：活跃任务摘要、项目分组线程、Home / Watchers / Memory 入口
+  - Main：Empty state、Home feed、Thread conversation、Watcher 管理
+  - Memory：按偏好 / 决策 / learnings / project context 展示
+- V3 后端
+  - `Project / Thread / Message / Run / Memory / Watcher / WatcherEvent`
+  - SSE 事件推送
+  - Run adopt / retry
+  - Watcher run-now / pause / resume / action / dismiss
+- 运行方式
+  - 后端直接服务前端构建产物
+  - 默认数据库：`sqlite+aiosqlite:///./storage/kam-v3.db`
+  - Alembic 迁移链已重置为 V3 baseline
 
-- 前端默认直接进入 v2 工作区
-- 后端默认以 `/api/v2` 作为主工作流接口
-- 对话路由已支持基于 OpenAI function calling 的结构化编排，失败时自动回退规则路由
-- Codex 默认模型已切到 `gpt-5.4` + `xhigh`
-- 旧 Lite / Autonomy 运行时入口已移除，仓库只保留 v2 主链路
-
-## v2 核心能力
-
-- `Project`
-  - 项目级描述、仓库路径、检查命令、资源钉住、归档
-- `Thread`
-  - 项目内连续对话与工作流
-- `Run`
-  - Codex / Claude Code / Custom Command 执行
-  - 内置 artifacts、检查结果、失败反馈、重试、取消、采纳
-- `Memory`
-  - preferences / decisions / learnings / search
-  - 在配置 `OPENAI_API_KEY` 时，preferences / decisions / learnings 都会参与 embedding 检索
-  - search 会优先返回语义相关的历史偏好、决策和项目 learnings
-- `Compare`
-  - 在同一 Thread 中并发发起多 Agent 对比
-  - 支持按文件查看 changes / patch，并在 compare 中按同一文件横向对照
-
-## 当前 UI
-
-右侧主工作区已经补齐四块核心面板：
-
-- `Project`：项目设置、资源管理、检查命令、repo 文件树
-- `Memory`：偏好、决策、项目 learnings、搜索
-- `Detail`：Run artifacts、checks、命令、摘要与文件级 diff 预览
-- `Compare`：多 Agent / custom command 并发对比、按文件查看 patch 差异
-
-## API
-
-主接口位于 `/api/v2`：
-
-- `GET/POST /api/v2/projects`
-- `GET/PUT /api/v2/projects/:id`
-- `GET/POST/DELETE /api/v2/projects/:id/resources`
-- `GET/POST /api/v2/projects/:id/threads`
-- `GET /api/v2/threads/:id`
-- `POST /api/v2/threads/:id/messages`
-  - 默认返回 JSON
-  - 当 `Accept: text/event-stream` 时返回 SSE
-- `GET/POST /api/v2/threads/:id/runs`
-- `POST /api/v2/threads/:id/compare`
-- `GET /api/v2/runs/:id`
-- `GET /api/v2/runs/:id/artifacts`
-- `GET /api/v2/runs/:id/events`
-- `POST /api/v2/runs/:id/cancel|retry|adopt`
-- `GET/POST/PUT /api/v2/memory/preferences`
-- `GET/POST /api/v2/memory/decisions`
-- `GET/POST /api/v2/memory/learnings`
-- `GET /api/v2/memory/search`
-
-## 代码结构
+## 目录
 
 ```text
 app/
   src/
-    components/Layout/         应用壳层与导航
-    components/V2/             v2 主工作区
-    lib/api-v2.ts              v2 API 客户端
-    types/v2.ts                v2 类型定义
+    layout/            三栏壳层
+    features/home/     Home feed
+    features/thread/   对话流、Run 卡片、输入框
+    features/review/   PR review 卡片
+    features/memory/   右侧记忆面板
+    features/watcher/  Watcher 管理
 
 backend/
-  app/api/
-    projects.py                v2 项目 API
-    threads.py                 v2 线程与消息 API
-    runs.py                    v2 Run / Compare API
-    memory.py                  v2 记忆 API
-  app/services/
-    conversation_router.py     对话路由
-    context_assembler.py       上下文自动组装
-    run_service.py             Run / Compare 服务
-    run_engine.py              Run 生命周期与执行
-    memory_service.py          记忆读写
-  tests/test_v2_workspace.py     v2 回归测试
+  main.py              FastAPI 入口
+  config.py            V3 settings
+  db.py                async engine / session / init_db
+  models.py            V3 SQLAlchemy 模型
+  api/                 /api 路由
+  services/            router / run / digest / watcher / memory
+  adapters/            GitHub / Azure / CI 适配器
+  alembic/             V3 baseline migration
 ```
 
 ## 本地开发
 
-### 前端
+### 一键本地预览
+
+```bash
+./start-local.sh
+```
+
+这个脚本会先构建前端，再启动：
+
+```bash
+cd backend
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+### 分开运行
+
+前端构建：
 
 ```bash
 cd app
 npm install
-npm run dev
+npm run build
 ```
 
-### 后端
+后端启动：
 
 ```bash
 cd backend
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+python -m uvicorn main:app --reload --port 8000
 ```
 
-默认本地数据库：`sqlite:///./storage/dev.db`
+打开 `http://localhost:8000`。
+
+## Docker
+
+```bash
+./start.sh
+```
+
+Docker 版本会：
+
+- 构建 `app/dist`
+- 在单个容器内运行 `backend/main.py`
+- 使用挂载卷持久化 `backend/storage`
+
+## API
+
+主接口位于 `/api`：
+
+- `GET/POST /api/projects`
+- `POST /api/projects/{project_id}/threads`
+- `GET /api/threads`
+- `GET /api/threads/{thread_id}`
+- `POST /api/threads/{thread_id}/messages`
+- `GET /api/threads/{thread_id}/events`
+- `GET /api/home/feed`
+- `GET /api/home/events`
+- `GET/POST /api/memory`
+- `GET /api/watchers`
+- `POST /api/watchers`
+- `POST /api/watchers/{watcher_id}/pause`
+- `POST /api/watchers/{watcher_id}/resume`
+- `POST /api/watchers/{watcher_id}/run-now`
+- `POST /api/watchers/events/{event_id}/actions/{action_index}`
+- `POST /api/watchers/events/{event_id}/dismiss`
+- `POST /api/runs/{run_id}/retry`
+- `POST /api/runs/{run_id}/adopt`
 
 ## 验证
 
-后端测试：
+后端：
 
 ```bash
-cd backend
-python3 -m unittest discover -s tests -v
+python -m unittest backend.tests.test_v3_api -v
 ```
 
-其中 `tests.test_v2_workspace` 已包含一个真实仓库场景回归：通过 `bootstrap/message` 生成并验收一个静态天气页面，用来验证 Project / Thread / Run / checks 的端到端链路。
-
-前端构建：
+前端：
 
 ```bash
 cd app
 npm run build
 ```
 
-## 文档
+浏览器验收截图输出到 `output/playwright/`。
 
-- `README.md`
-- `system_architecture.md`
-- `MVP_BACKLOG.md`
-- `AI工作助手产品需求文档(PRD).md`
-- `docs/autonomy-v2.md`
-- `docs/archive/legacy/`
+## 规范来源
+
+- `KAM_V3_DESIGN.md`
+- `KAM_V3_UI_SPEC.md`
+- `KAM_ROADMAP.md`

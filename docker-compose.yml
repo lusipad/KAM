@@ -1,5 +1,5 @@
 services:
-  backend:
+  kam:
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -8,43 +8,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:postgres@postgres:5432/kam_lite}
-      APP_CORS_ORIGINS: ${APP_CORS_ORIGINS:-http://localhost:8000,http://localhost,http://localhost:5173}
-      AGENT_WORKROOT: ${AGENT_WORKROOT:-./storage/agent-runs}
-      CODEX_CLI_PATH: ${CODEX_CLI_PATH:-codex}
-      CLAUDE_CODE_CLI_PATH: ${CLAUDE_CODE_CLI_PATH:-claude}
-    depends_on:
-      postgres:
-        condition: service_healthy
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./storage/kam-v3.db}
+      APP_CORS_ORIGINS: ${APP_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000,http://localhost:5173,http://127.0.0.1:5173}
+      CODEX_PATH: ${CODEX_PATH:-codex}
+      CLAUDE_CODE_PATH: ${CLAUDE_CODE_PATH:-claude}
     volumes:
-      - storage:/app/storage
-    networks:
-      - kam-lite
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: kam_lite
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    networks:
-      - kam-lite
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d kam_lite"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      - storage:/workspace/backend/storage
     restart: unless-stopped
 
 volumes:
-  postgres_data:
   storage:
-
-networks:
-  kam-lite:
-    driver: bridge

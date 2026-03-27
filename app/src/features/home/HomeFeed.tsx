@@ -1,0 +1,178 @@
+import { adoptRun, dismissWatcherEvent, executeWatcherAction } from '@/api/client'
+import { formatRelativeTime, lastLogLine, runStatusLabel, watcherSourceLabel, watcherTone } from '@/lib/v3-ui'
+import type { FeedItem, HomeFeedPayload, ThreadSummary } from '@/types/v3'
+
+type HomeFeedProps = {
+  feed: HomeFeedPayload | null
+  threads: Record<string, ThreadSummary>
+  onOpenThread: (threadId: string) => void
+  onRefresh: () => Promise<void>
+}
+
+function FeedCard({
+  item,
+  thread,
+  compact = false,
+  onOpenThread,
+  onRefresh,
+}: {
+  item: FeedItem
+  thread?: ThreadSummary
+  compact?: boolean
+  onOpenThread: (threadId: string) => void
+  onRefresh: () => Promise<void>
+}) {
+  if (item.kind === 'watcher_event') {
+    const tone = watcherTone(item.watcher?.sourceType)
+    const sourceLabel = watcherSourceLabel(item.watcher?.sourceType)
+
+    return (
+      <article className="feed-card is-watcher">
+        <div className="feed-card-head">
+          <div className="feed-card-leading">
+            <div className={`feed-icon-badge is-${tone}`}>{tone === 'red' ? 'C' : 'W'}</div>
+            <div className="feed-card-title-stack">
+              <div className="feed-card-title">{item.title}</div>
+              <div className="feed-card-subtle">
+                Watcher: {item.watcher?.name ?? 'Watcher'} · {formatRelativeTime(item.createdAt)}
+              </div>
+            </div>
+          </div>
+          <span className="feed-card-badge">{sourceLabel}</span>
+        </div>
+        <div className="feed-card-copy">{item.summary}</div>
+        <div className="feed-actions">
+          {item.actions.map((action, index) => (
+            <button
+              type="button"
+              key={`${item.id}-${action.label}`}
+              className={index === item.actions.length - 1 ? 'button-primary' : 'button-secondary'}
+              onClick={() => {
+                void executeWatcherAction(item.id, index).then(() => onRefresh())
+              }}
+            >
+              {action.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="button-secondary"
+            onClick={() => {
+              void dismissWatcherEvent(item.id).then(() => onRefresh())
+            }}
+          >
+            Dismiss
+          </button>
+          {item.threadId ? (
+            <button type="button" className="button-secondary" onClick={() => onOpenThread(item.threadId!)}>
+              View thread
+            </button>
+          ) : null}
+        </div>
+      </article>
+    )
+  }
+
+  const projectTitle = thread?.project?.title ?? 'Unknown project'
+  const statusLabel = runStatusLabel(item.status)
+  const summary = item.resultSummary || item.task
+  const hint = item.status === 'failed' ? lastLogLine(item.rawOutput) : null
+
+  if (compact) {
+    return (
+      <article className={`feed-card is-recent is-${item.status}`}>
+        <div className="feed-card-head">
+          <div className="feed-card-title">{summary}</div>
+        </div>
+        <div className="feed-card-subtle">
+          {projectTitle} · {formatRelativeTime(item.createdAt)}
+        </div>
+      </article>
+    )
+  }
+
+  return (
+    <article className={`feed-card is-${item.status}`}>
+      <div className="feed-card-head">
+        <div className="feed-card-title-stack">
+          <div className="feed-card-title">{summary}</div>
+          <div className="feed-card-subtle">
+            {projectTitle} · {formatRelativeTime(item.createdAt)}
+          </div>
+        </div>
+        <span className="feed-card-badge">{statusLabel}</span>
+      </div>
+      {item.status !== 'running' ? <div className="feed-card-copy">{summary}</div> : null}
+      {item.status === 'running' ? (
+        <>
+          <div className="feed-card-copy">{item.rawOutput || item.task}</div>
+          <div className="run-progress-bar">
+            <span className="run-progress-fill" />
+          </div>
+        </>
+      ) : null}
+      {item.status === 'failed' && hint ? <div className="feed-card-hint">Likely cause: {hint}</div> : null}
+      <div className="feed-actions">
+        {item.status === 'passed' && !item.adoptedAt ? (
+          <button
+            type="button"
+            className="button-primary"
+            onClick={() => {
+              void adoptRun(item.id).then(() => onRefresh())
+            }}
+          >
+            Adopt changes
+          </button>
+        ) : null}
+        {item.threadId ? (
+          <button type="button" className="button-secondary" onClick={() => onOpenThread(item.threadId)}>
+            View
+          </button>
+        ) : null}
+      </div>
+    </article>
+  )
+}
+
+export function HomeFeed({ feed, threads, onOpenThread, onRefresh }: HomeFeedProps) {
+  if (!feed) {
+    return <div className="empty-panel">Loading home feed…</div>
+  }
+
+  const sections: Array<{ label: string; items: FeedItem[]; compact?: boolean }> = [
+    { label: 'NEEDS YOUR ATTENTION', items: feed.needsAttention },
+    { label: 'RUNNING IN BACKGROUND', items: feed.running },
+    { label: 'RECENT', items: feed.recent, compact: true },
+  ]
+
+  return (
+    <div className="home-feed">
+      <div className="home-column">
+        <div className="home-hero">
+          <div className="home-greeting">{feed.greeting}</div>
+          <div className="home-summary">{feed.summary}</div>
+        </div>
+
+        {sections.map((section) => (
+          <section key={section.label} className="feed-section">
+            <div className="section-label">{section.label}</div>
+            {section.items.length ? (
+              section.items.map((item) => (
+                <FeedCard
+                  key={`${item.kind}-${item.id}`}
+                  item={item}
+                  thread={item.kind === 'run' ? threads[item.threadId] : item.threadId ? threads[item.threadId] : undefined}
+                  compact={section.compact}
+                  onOpenThread={onOpenThread}
+                  onRefresh={onRefresh}
+                />
+              ))
+            ) : (
+              <div className="feed-empty">Nothing here right now.</div>
+            )}
+          </section>
+        ))}
+      </div>
+    </div>
+  )
+}

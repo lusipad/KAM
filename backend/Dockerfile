@@ -1,7 +1,7 @@
-# AI工作助手后端 Dockerfile（内置前端静态构建）
+# KAM V3 Dockerfile（内置前端静态构建）
 FROM node:20-alpine AS frontend-build
 
-WORKDIR /frontend
+WORKDIR /workspace/app
 COPY app/package*.json ./
 RUN npm ci
 COPY app/ ./
@@ -11,24 +11,19 @@ RUN npm run build
 
 FROM python:3.11-slim
 
-WORKDIR /app
+WORKDIR /workspace
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
-# 安装 Python 依赖
-COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/requirements.txt ./backend/requirements.txt
+RUN pip install --no-cache-dir -r ./backend/requirements.txt
 
-# 复制后端代码
-COPY backend/app/ ./app/
+COPY backend/ ./backend/
 
-# 复制前端构建产物，供 FastAPI 直接服务
-COPY --from=frontend-build /frontend/dist/ ./dist/
+COPY --from=frontend-build /workspace/app/dist/ ./app/dist/
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+WORKDIR /workspace/backend
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

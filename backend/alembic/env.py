@@ -1,42 +1,49 @@
-"""
-Alembic环境配置
-"""
+from __future__ import annotations
+
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
+from pathlib import Path
+
 from alembic import context
-import os
+from sqlalchemy import engine_from_config, pool
+from sqlalchemy.engine import make_url
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 import sys
 
-# 添加项目路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.core.config import settings
-from app.db.base import Base
-from app.models import *  # 导入所有模型
+from config import settings
+from models import Base
 
-# 配置
+
 config = context.config
 
-# 覆盖数据库URL
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
-
-# 日志配置
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# 目标元数据
+
+def _sync_database_url(database_url: str) -> str:
+    url = make_url(database_url)
+    if url.drivername == "sqlite+aiosqlite":
+        url = url.set(drivername="sqlite")
+    elif url.drivername == "postgresql+asyncpg":
+        url = url.set(drivername="postgresql+psycopg")
+    return url.render_as_string(hide_password=False)
+
+
+config.set_main_option("sqlalchemy.url", _sync_database_url(settings.database_url))
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """离线迁移"""
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        compare_type=True,
     )
 
     with context.begin_transaction():
@@ -44,7 +51,6 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """在线迁移"""
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -52,10 +58,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, 
-            target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
 
         with context.begin_transaction():
             context.run_migrations()

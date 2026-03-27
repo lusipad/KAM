@@ -3,7 +3,7 @@
 set -e
 
 echo "=================================="
-echo "  KAM Lite - 启动脚本"
+echo "  KAM V3 - Docker 启动脚本"
 echo "=================================="
 echo ""
 
@@ -21,7 +21,7 @@ else
     exit 1
 fi
 
-echo "正在启动 KAM Lite..."
+echo "正在启动 KAM V3..."
 echo ""
 
 "${COMPOSE_CMD[@]}" up -d --build
@@ -36,15 +36,12 @@ echo "服务状态:"
 
 echo ""
 echo "=================================="
-echo "  KAM Lite 已启动"
+echo "  KAM V3 已启动"
 echo "=================================="
 echo ""
 echo "访问地址:"
 echo "  应用界面: http://localhost:8000"
 echo "  API文档:  http://localhost:8000/docs"
-echo ""
-echo "数据库:"
-echo "  PostgreSQL: localhost:5432"
 echo ""
 echo "查看日志:"
 echo "  ${COMPOSE_CMD[*]} logs -f"
