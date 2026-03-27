@@ -111,6 +111,10 @@ Docker 版本会：
 - `POST /api/runs/{run_id}/retry`
 - `POST /api/runs/{run_id}/adopt`
 
+开发态还提供一条 demo 数据播种接口：
+
+- `POST /api/dev/seed-demo`
+
 ## 验证
 
 后端：
@@ -124,9 +128,17 @@ python -m unittest backend.tests.test_v3_api -v
 ```bash
 cd app
 npm run build
+npm run lint
 ```
 
-浏览器验收截图输出到 `output/playwright/`。
+浏览器 smoke：
+
+```bash
+cd app
+npm run test:smoke
+```
+
+`test:smoke` 会先调用 `/api/dev/seed-demo`，再验收 Home / Thread / Memory / Watchers 四个 V3 关键视图。运行时需要目标服务已经启动，默认地址是 `http://127.0.0.1:8000`，也可以通过 `PW_BASE_URL` 覆盖。
 
 ## 规范来源
 

@@ -128,6 +128,26 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(event_payload["event"]["eventType"], "ci_failed")
         self.assertEqual(event_payload["event"]["status"], "pending")
 
+    def test_dev_seed_demo_populates_v3_workspace_data(self):
+        payload = self.client.post("/api/dev/seed-demo", json={"reset": True}).json()
+        self.assertEqual(payload["projectId"], "demo-noise")
+        self.assertEqual(payload["threadId"], "demo-login")
+
+        threads = self.client.get("/api/threads").json()["threads"]
+        self.assertEqual(len(threads), 2)
+        self.assertEqual(threads[0]["project"]["title"], "Noise Probe")
+
+        feed = self.client.get("/api/home/feed").json()
+        self.assertEqual(len(feed["needsAttention"]), 3)
+        self.assertTrue(any(item["kind"] == "watcher_event" for item in feed["needsAttention"]))
+
+        detail = self.client.get("/api/threads/demo-login").json()
+        self.assertEqual(detail["title"], "Fix login timeout")
+        self.assertEqual(detail["runs"][0]["status"], "passed")
+
+        memories = self.client.get("/api/memory", params={"project_id": "demo-noise"}).json()["memories"]
+        self.assertEqual({item["category"] for item in memories}, {"preference", "decision", "learning"})
+
     def _wait_for_run(self, run_id: str, timeout: float = 5.0) -> dict:
         deadline = time.time() + timeout
         while time.time() < deadline:
