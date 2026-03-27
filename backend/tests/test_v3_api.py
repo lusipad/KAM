@@ -360,6 +360,17 @@ class V3ApiTests(unittest.TestCase):
         memories = self.client.get("/api/memory", params={"project_id": "demo-noise"}).json()["memories"]
         self.assertEqual({item["category"] for item in memories}, {"preference", "decision", "learning"})
 
+    def test_home_feed_prioritizes_failed_runs_before_watcher_alerts_and_adoptions(self):
+        self.client.post("/api/dev/seed-demo", json={"reset": True})
+
+        feed = self.client.get("/api/home/feed").json()
+
+        self.assertEqual(feed["needsAttention"][0]["kind"], "run")
+        self.assertEqual(feed["needsAttention"][0]["status"], "failed")
+        self.assertEqual(feed["needsAttention"][1]["kind"], "watcher_event")
+        self.assertEqual(feed["needsAttention"][2]["kind"], "run")
+        self.assertEqual(feed["needsAttention"][2]["status"], "passed")
+
     def _wait_for_run(self, run_id: str, timeout: float = 5.0) -> dict:
         deadline = time.time() + timeout
         while time.time() < deadline:

@@ -36,6 +36,20 @@ def _watcher_event_item(event: WatcherEvent) -> dict[str, Any]:
     return {"kind": "watcher_event", **event.to_dict()}
 
 
+def _attention_priority(item: dict[str, Any]) -> tuple[int, float]:
+    if item["kind"] == "run":
+        if item["status"] == "failed":
+            return (0, -datetime.fromisoformat(item["createdAt"]).timestamp())
+        if item["status"] == "passed":
+            return (2, -datetime.fromisoformat(item["createdAt"]).timestamp())
+        return (4, -datetime.fromisoformat(item["createdAt"]).timestamp())
+
+    event_type = str(item.get("eventType", "")).lower()
+    title = str(item.get("title", "")).lower()
+    urgent = any(token in event_type or token in title for token in ("fail", "error", "blocked", "review"))
+    return (1 if urgent else 2, -datetime.fromisoformat(item["createdAt"]).timestamp())
+
+
 @router.get("/feed")
 async def get_feed(db: AsyncSession = Depends(get_db)):
     attention_runs_result = await db.execute(
@@ -61,11 +75,13 @@ async def get_feed(db: AsyncSession = Depends(get_db)):
     running = list(running_result.scalars())
     recent = list(recent_result.scalars())
     pending_adoptions = sum(1 for item in attention_runs if item.status == "passed")
+    needs_attention = [_run_item(run) for run in attention_runs] + [_watcher_event_item(event) for event in attention_events]
+    needs_attention.sort(key=_attention_priority)
 
     return {
         "greeting": _greeting_for_now(),
         "summary": f"后台有 {len(running)} 个任务执行中，{len(attention_events)} 条监控提醒，{pending_adoptions} 个结果等待采纳。",
-        "needsAttention": [_run_item(run) for run in attention_runs] + [_watcher_event_item(event) for event in attention_events],
+        "needsAttention": needs_attention,
         "running": [_run_item(run) for run in running],
         "recent": [_run_item(run) for run in recent],
     }
