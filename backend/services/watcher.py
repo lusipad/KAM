@@ -71,6 +71,48 @@ class WatcherEngine:
         result = await db.execute(select(Watcher).order_by(desc(Watcher.created_at)))
         return list(result.scalars())
 
+    async def get_watcher(self, db: AsyncSession, watcher_id: str) -> Watcher | None:
+        return await db.get(Watcher, watcher_id)
+
+    async def update_watcher(
+        self,
+        db: AsyncSession,
+        watcher_id: str,
+        *,
+        name: str | None = None,
+        schedule_type: str | None = None,
+        schedule_value: str | None = None,
+        auto_action_level: int | None = None,
+    ) -> Watcher | None:
+        watcher = await db.get(Watcher, watcher_id)
+        if watcher is None:
+            return None
+
+        if name is not None:
+            watcher.name = name
+        if schedule_type is not None:
+            watcher.schedule_type = schedule_type
+        if schedule_value is not None:
+            watcher.schedule_value = schedule_value
+        if auto_action_level is not None:
+            watcher.auto_action_level = auto_action_level
+
+        await db.commit()
+        await db.refresh(watcher)
+        if watcher.status == "active":
+            self._schedule(watcher)
+        return watcher
+
+    async def list_events(self, db: AsyncSession, watcher_id: str, *, limit: int = 20) -> list[WatcherEvent]:
+        result = await db.execute(
+            select(WatcherEvent)
+            .where(WatcherEvent.watcher_id == watcher_id)
+            .options(selectinload(WatcherEvent.watcher))
+            .order_by(desc(WatcherEvent.created_at))
+            .limit(limit)
+        )
+        return list(result.scalars())
+
     async def pause(self, db: AsyncSession, watcher_id: str) -> Watcher | None:
         watcher = await db.get(Watcher, watcher_id)
         if watcher is None:

@@ -113,7 +113,7 @@ export function watcherTone(sourceType: string | null | undefined) {
   if (sourceType === 'ci_pipeline') {
     return 'red'
   }
-  if (sourceType === 'azure_devops') {
+  if (sourceType === 'azure_devops' || sourceType === 'github_pr') {
     return 'purple'
   }
   return 'gray'
@@ -126,7 +126,7 @@ export function watcherSourceLabel(sourceType: string | null | undefined) {
   if (sourceType === 'azure_devops') {
     return 'Azure DevOps'
   }
-  if (sourceType === 'github') {
+  if (sourceType === 'github' || sourceType === 'github_pr') {
     return 'GitHub'
   }
   return 'Watcher'
@@ -142,6 +142,7 @@ export function humanizeSchedule(watcher: WatcherRecord) {
 export function watcherDescription(watcher: WatcherRecord) {
   const repo = typeof watcher.config.repo === 'string' ? watcher.config.repo : null
   const board = typeof watcher.config.board === 'string' ? watcher.config.board : null
+  const watch = typeof watcher.config.watch === 'string' ? watcher.config.watch : null
 
   if (watcher.sourceType === 'ci_pipeline') {
     return `Watches ${repo ?? 'your main branch'} for build failures and pushes a ready-to-act summary into Home.`
@@ -149,10 +150,40 @@ export function watcherDescription(watcher: WatcherRecord) {
   if (watcher.sourceType === 'azure_devops') {
     return `Tracks ${board ?? 'your board'} for new work items, then opens a thread when something needs attention.`
   }
-  if (watcher.sourceType === 'github') {
+  if (watcher.sourceType === 'github' || watcher.sourceType === 'github_pr') {
+    if (watch === 'review_comments') {
+      return `Keeps watching ${repo ?? 'your repository'} for new review comments and routes the triage back into the right thread.`
+    }
     return `Keeps an eye on ${repo ?? 'your repository'} for new review activity and routes it into the right thread.`
   }
   return 'Monitors a background source and surfaces only the events that need a decision.'
+}
+
+export function watcherTargetSummary(watcher: WatcherRecord) {
+  const repo = typeof watcher.config.repo === 'string' ? watcher.config.repo : null
+  const board = typeof watcher.config.board === 'string' ? watcher.config.board : null
+  const number = typeof watcher.config.number === 'number' ? `#${watcher.config.number}` : null
+
+  if (watcher.sourceType === 'ci_pipeline') {
+    return repo ?? 'Main branch'
+  }
+  if (watcher.sourceType === 'azure_devops') {
+    return board ?? 'Assigned work items'
+  }
+  if (watcher.sourceType === 'github' || watcher.sourceType === 'github_pr') {
+    return [repo, number].filter(Boolean).join(' ') || 'Repository activity'
+  }
+  return 'Background source'
+}
+
+export function watcherAutomationLabel(level: number) {
+  if (level >= 3) {
+    return 'Auto-act'
+  }
+  if (level === 2) {
+    return 'Draft + act'
+  }
+  return 'Observe only'
 }
 
 export function lastLogLine(rawOutput: string) {

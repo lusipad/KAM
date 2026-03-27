@@ -21,10 +21,25 @@ class WatcherCreate(BaseModel):
     autoActionLevel: int = 1
 
 
+class WatcherUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    scheduleType: str | None = None
+    scheduleValue: str | None = None
+    autoActionLevel: int | None = Field(default=None, ge=1, le=3)
+
+
 @router.get("")
 async def list_watchers(db: AsyncSession = Depends(get_db)):
     watchers = await watcher_engine.list_watchers(db)
     return {"watchers": [watcher.to_dict() for watcher in watchers]}
+
+
+@router.get("/{watcher_id}")
+async def get_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
+    watcher = await watcher_engine.get_watcher(db, watcher_id)
+    if watcher is None:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+    return watcher.to_dict()
 
 
 @router.post("")
@@ -40,6 +55,30 @@ async def create_watcher(payload: WatcherCreate, db: AsyncSession = Depends(get_
         auto_action_level=payload.autoActionLevel,
     )
     return watcher.to_dict()
+
+
+@router.put("/{watcher_id}")
+async def update_watcher(watcher_id: str, payload: WatcherUpdate, db: AsyncSession = Depends(get_db)):
+    watcher = await watcher_engine.update_watcher(
+        db,
+        watcher_id,
+        name=payload.name.strip() if payload.name is not None else None,
+        schedule_type=payload.scheduleType,
+        schedule_value=payload.scheduleValue.strip() if payload.scheduleValue is not None else None,
+        auto_action_level=payload.autoActionLevel,
+    )
+    if watcher is None:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+    return watcher.to_dict()
+
+
+@router.get("/{watcher_id}/events")
+async def list_watcher_events(watcher_id: str, db: AsyncSession = Depends(get_db)):
+    watcher = await watcher_engine.get_watcher(db, watcher_id)
+    if watcher is None:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+    events = await watcher_engine.list_events(db, watcher_id)
+    return {"events": [event.to_dict() for event in events]}
 
 
 @router.post("/{watcher_id}/pause")

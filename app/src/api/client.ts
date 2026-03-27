@@ -7,6 +7,7 @@ import type {
   ThreadSummary,
   WatcherEventRecord,
   WatcherRecord,
+  WatcherUpdatePayload,
 } from '@/types/v3'
 
 const API_BASE = '/api'
@@ -65,6 +66,21 @@ export function getMemory(projectId?: string) {
 
 export function listWatchers() {
   return request<{ watchers: WatcherRecord[] }>('/watchers')
+}
+
+export function getWatcher(watcherId: string) {
+  return request<WatcherRecord>(`/watchers/${watcherId}`)
+}
+
+export function updateWatcher(watcherId: string, payload: WatcherUpdatePayload) {
+  return request<WatcherRecord>(`/watchers/${watcherId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getWatcherEvents(watcherId: string) {
+  return request<{ events: WatcherEventRecord[] }>(`/watchers/${watcherId}/events`)
 }
 
 export function adoptRun(runId: string) {

@@ -31,7 +31,18 @@ test('home, thread, memory, watchers are reachable in v3', async ({ page }) => {
   await expect(page.getByText('LEARNINGS')).toBeVisible()
 
   await page.getByRole('button', { name: 'Watchers' }).click()
+  const watcherCard = page.locator('.watcher-card').filter({ hasText: 'CI monitor' }).first()
   await expect(page.getByText('Watchers · 1 active')).toBeVisible()
-  await expect(page.getByText('CI monitor')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Run now' })).toBeVisible()
+  await expect(watcherCard).toBeVisible()
+  await expect(watcherCard.getByRole('button', { name: 'Run now' })).toBeVisible()
+  await expect(watcherCard.getByRole('button', { name: 'View history' })).toBeVisible()
+
+  await watcherCard.getByRole('button', { name: 'View history' }).click()
+  await expect(page.getByText('CI failed on main')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open thread' })).toBeVisible()
+
+  await watcherCard.getByRole('button', { name: 'Edit' }).click()
+  await page.getByLabel('Frequency').fill('30m')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(watcherCard.getByText('CI pipeline · Every 30m')).toBeVisible()
 })

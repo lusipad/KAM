@@ -80,6 +80,13 @@ export interface WatcherRecord {
   createdAt: string
 }
 
+export interface WatcherUpdatePayload {
+  name?: string
+  scheduleType?: string
+  scheduleValue?: string
+  autoActionLevel?: number
+}
+
 export interface WatcherEventRecord {
   id: string
   watcherId: string

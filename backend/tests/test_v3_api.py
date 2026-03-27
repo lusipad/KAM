@@ -129,6 +129,54 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(event_payload["event"]["eventType"], "ci_failed")
         self.assertEqual(event_payload["event"]["status"], "pending")
 
+    def test_watcher_detail_update_and_history(self):
+        project = self.client.post("/api/projects", json={"title": "Watcher Admin"}).json()
+
+        class FakeAdapter:
+            async def fetch(self, config):
+                return {"items": [{"id": 18, "title": "Review queue growing", "head_branch": "main"}]}
+
+            def diff(self, previous, current):
+                return {"created": current["items"], "updated": []}
+
+            def recommended_actions(self, watcher, changes):
+                return [{"label": "Inspect", "kind": "create_run", "params": {"agent": "codex", "task": "Inspect watcher event"}}]
+
+            async def perform(self, action):
+                return {"ok": True}
+
+        with patch.dict("services.watcher.ADAPTERS", {"ci_pipeline": lambda: FakeAdapter()}):
+            watcher = self.client.post(
+                "/api/watchers",
+                json={
+                    "projectId": project["id"],
+                    "name": "Build monitor",
+                    "sourceType": "ci_pipeline",
+                    "config": {"repo": "owner/repo", "provider": "github_actions"},
+                    "scheduleType": "interval",
+                    "scheduleValue": "15m",
+                    "autoActionLevel": 1,
+                },
+            ).json()
+            self.client.post(f"/api/watchers/{watcher['id']}/run-now")
+
+        detail = self.client.get(f"/api/watchers/{watcher['id']}").json()
+        self.assertEqual(detail["name"], "Build monitor")
+        self.assertEqual(detail["scheduleValue"], "15m")
+
+        updated = self.client.put(
+            f"/api/watchers/{watcher['id']}",
+            json={"name": "Build monitor v2", "scheduleValue": "30m", "autoActionLevel": 2},
+        ).json()
+        self.assertEqual(updated["name"], "Build monitor v2")
+        self.assertEqual(updated["scheduleValue"], "30m")
+        self.assertEqual(updated["autoActionLevel"], 2)
+
+        events = self.client.get(f"/api/watchers/{watcher['id']}/events").json()["events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["title"], "CI failed on main")
+        self.assertEqual(events[0]["watcher"]["name"], "Build monitor v2")
+
     def test_get_thread_appends_restore_summary_once_for_stale_thread(self):
         thread_id = asyncio.run(self._seed_stale_thread())
 

@@ -246,6 +246,7 @@ function App() {
               setView('empty')
               setEmptyPrompt('Monitor ')
             }}
+            onOpenThread={handleOpenThread}
             onRefresh={async () => {
               await refreshWatchers()
             }}
