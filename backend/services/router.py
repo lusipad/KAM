@@ -128,7 +128,7 @@ class ConversationRouter:
 
         watcher = self._watcher_payload(text, lower)
         run = self._run_payload(text, lower, context, skill_name, skill_args)
-        reply = self._assistant_reply(run=run, watcher=watcher, memories=memories, context=context)
+        reply = self._assistant_reply(run=run, watcher=watcher, memories=memories, context=context, lower=lower)
 
         return {"assistantReply": reply, "run": run, "watcher": watcher, "memories": memories}
 
@@ -310,6 +310,7 @@ class ConversationRouter:
         watcher: dict[str, Any] | None,
         memories: list[dict[str, str]],
         context: dict[str, Any],
+        lower: str,
     ) -> str:
         parts: list[str] = []
         if run:
@@ -321,9 +322,20 @@ class ConversationRouter:
             categories = "、".join(self._memory_label(item["category"]) for item in memories)
             parts.append(f"同时记住这条{categories}。")
         if parts:
+            memory_hint = self._memory_hint(context)
+            if memory_hint:
+                parts.append(f"我会继续沿用“{memory_hint}”。")
             return " ".join(parts)
 
+        if self._is_continue_request(lower):
+            continued = self._continue_reply(context)
+            if continued:
+                return continued
+
         if context.get("memory_block"):
+            memory_hint = self._memory_hint(context)
+            if memory_hint:
+                return f"收到。我会沿用“{memory_hint}”继续判断，你可以直接让我实现、修复、监控或记录新的决定。"
             return "收到。我会沿用当前项目记忆继续判断，你可以直接让我实现、修复、监控或记录新的决定。"
         if context.get("recent_context"):
             return "收到。我会接着这个线程最近的上下文继续，你可以直接给我要执行或监控的目标。"
@@ -344,6 +356,40 @@ class ConversationRouter:
             "fact": "事实",
         }
         return labels.get(category, "信息")
+
+    def _is_continue_request(self, lower: str) -> bool:
+        return any(token in lower for token in {"continue", "pick up", "继续", "接着", "昨天", "resume"})
+
+    def _continue_reply(self, context: dict[str, Any]) -> str | None:
+        thread = context.get("thread")
+        if thread is None:
+            return None
+
+        latest_run = thread.runs[-1] if thread.runs else None
+        latest_message = next(
+            (
+                message.content
+                for message in reversed(thread.messages)
+                if message.role in {"assistant", "system"} and (message.metadata_ or {}).get("kind") != "restore-summary"
+            ),
+            None,
+        )
+        if latest_run and latest_message:
+            summary = latest_run.result_summary or latest_run.task
+            return f"上次做到这里：{summary} 最近我还提到过“{latest_message[:80]}”。"
+        if latest_run:
+            summary = latest_run.result_summary or latest_run.task
+            return f"上次做到这里：{summary}"
+        if latest_message:
+            return f"上次的上下文里，最近一条关键进展是“{latest_message[:120]}”。"
+        return None
+
+    def _memory_hint(self, context: dict[str, Any]) -> str | None:
+        memory_block = context.get("memory_block") or ""
+        for line in memory_block.splitlines():
+            if line.startswith("- ["):
+                return line.split("] ", 1)[-1][:120]
+        return None
 
     def _stream_text(self, content: str) -> list[str]:
         if len(content) <= 32:

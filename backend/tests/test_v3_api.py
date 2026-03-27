@@ -38,6 +38,7 @@ class V3ApiTests(unittest.TestCase):
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
+        asyncio.run(engine.dispose())
 
     @classmethod
     def tearDownClass(cls):
@@ -195,6 +196,14 @@ class V3ApiTests(unittest.TestCase):
         self.assertIn("text_done", body)
         memories = self.client.get("/api/memory", params={"project_id": project["id"]}).json()["memories"]
         self.assertTrue(any(item["category"] == "decision" and "/api only" in item["content"] for item in memories))
+
+    def test_router_continue_request_surfaces_recent_progress(self):
+        thread_id = asyncio.run(self._seed_stale_thread())
+
+        body = self._stream_message(thread_id, "继续昨天的工作")
+
+        self.assertIn("text_done", body)
+        self.assertIn("Patched retry backoff", body)
 
     def test_watcher_detail_update_and_history(self):
         project = self.client.post("/api/projects", json={"title": "Watcher Admin"}).json()
