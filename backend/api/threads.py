@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from db import get_db
 from events import event_bus
 from models import Message, Thread, now
+from services.digest import DigestService
 from services.router import ConversationRouter
 
 
@@ -45,6 +46,10 @@ async def get_thread(thread_id: str, db: AsyncSession = Depends(get_db)):
     thread = result.scalars().first()
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
+    appended = await DigestService(db).append_restore_summary(thread)
+    if appended:
+        result = await db.execute(stmt.execution_options(populate_existing=True))
+        thread = result.scalars().first()
     return thread.to_detail_dict()
 
 

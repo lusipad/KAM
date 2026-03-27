@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from typing import Any
 
 from anthropic import AsyncAnthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from models import Message, Run, Thread, Watcher
+from models import Message, Run, Thread, Watcher, now
 
 
 class DigestService:
@@ -69,19 +70,69 @@ class DigestService:
             )
         return normalized or fallback
 
-    async def append_restore_summary(self, thread: Thread) -> None:
-        if not thread.runs:
-            return
-        latest = thread.runs[-1]
-        summary = latest.result_summary or self._fallback_run_summary(latest)
+    async def append_restore_summary(self, thread: Thread) -> bool:
+        if not self._should_append_restore_summary(thread):
+            return False
+
+        latest_run = thread.runs[-1]
+        summary = await self._restore_summary(thread, latest_run)
         message = Message(
             thread_id=thread.id,
             role="assistant",
-            content=f"上次做到这里：{summary}",
-            metadata_={"kind": "restore-summary", "runId": latest.id},
+            content=summary,
+            metadata_={
+                "kind": "restore-summary",
+                "runId": latest_run.id,
+                "summaryDate": now().date().isoformat(),
+            },
         )
         self.db.add(message)
         await self.db.commit()
+        return True
+
+    def _should_append_restore_summary(self, thread: Thread) -> bool:
+        if not thread.messages or not thread.runs:
+            return False
+
+        latest_message = thread.messages[-1]
+        latest_message_date = self._date_in_utc(latest_message.created_at)
+        return latest_message_date < now().date()
+
+    async def _restore_summary(self, thread: Thread, latest_run: Run) -> str:
+        fallback = self._fallback_restore_summary(thread, latest_run)
+        if self.client is None:
+            return fallback
+
+        history = "\n".join(
+            f"[{message.role}] {message.content[:240]}"
+            for message in thread.messages[-5:]
+            if (message.metadata_ or {}).get("kind") != "restore-summary"
+        )
+        prompt = (
+            "Write a concise Chinese restore summary for a developer returning to an old task thread. "
+            "Keep it to 1-3 sentences, concrete, and operator-friendly. Start with '上次做到这里：'.\n\n"
+            f"Thread title: {thread.title}\n"
+            f"Recent messages:\n{history or 'No recent messages.'}\n\n"
+            f"Latest run status: {latest_run.status}\n"
+            f"Latest run summary: {latest_run.result_summary or self._fallback_run_summary(latest_run)}\n"
+            f"Changed files: {json.dumps(latest_run.changed_files or [], ensure_ascii=False)}"
+        )
+        return await self._complete_text(prompt, fallback)
+
+    def _fallback_restore_summary(self, thread: Thread, latest_run: Run) -> str:
+        summary = latest_run.result_summary or self._fallback_run_summary(latest_run)
+        recent_user_message = next(
+            (message.content for message in reversed(thread.messages) if message.role == "user"),
+            None,
+        )
+        if recent_user_message:
+            return f"上次做到这里：{summary} 最近在处理“{recent_user_message[:80]}”。"
+        return f"上次做到这里：{summary}"
+
+    def _date_in_utc(self, value) -> Any:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).date()
 
     async def _complete_text(self, prompt: str, fallback: str) -> str:
         try:

@@ -7,6 +7,7 @@ import time
 import unittest
 import asyncio
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -26,7 +27,7 @@ os.environ["ANTHROPIC_API_KEY"] = ""
 
 from db import async_session, engine  # noqa: E402
 from main import app  # noqa: E402
-from models import Run  # noqa: E402
+from models import Message, Project, Run, Thread  # noqa: E402
 
 
 class V3ApiTests(unittest.TestCase):
@@ -128,6 +129,19 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(event_payload["event"]["eventType"], "ci_failed")
         self.assertEqual(event_payload["event"]["status"], "pending")
 
+    def test_get_thread_appends_restore_summary_once_for_stale_thread(self):
+        thread_id = asyncio.run(self._seed_stale_thread())
+
+        first_detail = self.client.get(f"/api/threads/{thread_id}").json()
+        restore_messages = [message for message in first_detail["messages"] if message["metadata"].get("kind") == "restore-summary"]
+        self.assertEqual(len(restore_messages), 1)
+        self.assertIn("上次做到这里：", restore_messages[0]["content"])
+        self.assertIn("Patched retry backoff", restore_messages[0]["content"])
+
+        second_detail = self.client.get(f"/api/threads/{thread_id}").json()
+        second_restore_messages = [message for message in second_detail["messages"] if message["metadata"].get("kind") == "restore-summary"]
+        self.assertEqual(len(second_restore_messages), 1)
+
     def test_dev_seed_demo_populates_v3_workspace_data(self):
         payload = self.client.post("/api/dev/seed-demo", json={"reset": True}).json()
         self.assertEqual(payload["projectId"], "demo-noise")
@@ -161,3 +175,50 @@ class V3ApiTests(unittest.TestCase):
         async with engine.begin() as conn:
             for table in ("watcher_events", "watchers", "memories", "runs", "messages", "threads", "projects"):
                 await conn.execute(text(f'DELETE FROM "{table}"'))
+
+    async def _seed_stale_thread(self) -> str:
+        base = datetime.now(UTC) - timedelta(days=3)
+        async with async_session() as session:
+            project = Project(title="Restore Lab")
+            session.add(project)
+            await session.flush()
+
+            thread = Thread(
+                project_id=project.id,
+                title="Resume payment fix",
+                created_at=base,
+                updated_at=base + timedelta(minutes=3),
+            )
+            session.add(thread)
+            await session.flush()
+
+            session.add_all(
+                [
+                    Message(
+                        thread_id=thread.id,
+                        role="user",
+                        content="Fix the payment retry flow before the weekend release.",
+                        created_at=base + timedelta(minutes=1),
+                    ),
+                    Message(
+                        thread_id=thread.id,
+                        role="assistant",
+                        content="I started a focused run against the billing path.",
+                        created_at=base + timedelta(minutes=2),
+                    ),
+                    Run(
+                        thread_id=thread.id,
+                        agent="codex",
+                        status="passed",
+                        task="Fix payment retry flow",
+                        result_summary="Patched retry backoff and added API coverage.",
+                        changed_files=["backend/payments.py", "backend/tests/test_payments.py"],
+                        check_passed=True,
+                        duration_ms=980,
+                        raw_output="2 tests passed",
+                        created_at=base + timedelta(minutes=3),
+                    ),
+                ]
+            )
+            await session.commit()
+            return thread.id
