@@ -136,9 +136,12 @@ npm run lint
 ```bash
 cd app
 npm run test:smoke
+npm run test:smoke:local
 ```
 
 `test:smoke` 会先调用 `/api/dev/seed-demo`，再验收 Home / Thread / Memory / Watchers 四个 V3 关键视图。运行时需要目标服务已经启动，默认地址是 `http://127.0.0.1:8000`，也可以通过 `PW_BASE_URL` 覆盖。
+
+`test:smoke:local` 会自动起一个临时后端实例，使用 `backend/storage/smoke-v3.db` 跑完整浏览器 smoke，结束后自动收尾。
 
 ## 规范来源
 
