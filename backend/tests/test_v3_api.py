@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+from sse_starlette.sse import AppStatus
 from sqlalchemy import text
 
 
@@ -28,10 +29,9 @@ os.environ["ANTHROPIC_API_KEY"] = ""
 from db import async_session, engine  # noqa: E402
 from main import app  # noqa: E402
 from models import Message, Project, Run, Thread  # noqa: E402
-
-
 class V3ApiTests(unittest.TestCase):
     def setUp(self):
+        AppStatus.should_exit_event = asyncio.Event()
         self.client = TestClient(app)
         self.client.__enter__()
         asyncio.run(self._truncate_tables())
@@ -57,13 +57,7 @@ class V3ApiTests(unittest.TestCase):
                 await session.commit()
 
         with patch("services.run_engine.RunEngine._execute_run", new=fake_execute):
-            with self.client.stream(
-                "POST",
-                f"/api/threads/{thread['id']}/messages",
-                json={"content": "Fix login timeout in the auth flow"},
-            ) as response:
-                self.assertEqual(response.status_code, 200)
-                body = "".join(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in response.iter_text())
+            body = self._stream_message(thread["id"], "Fix login timeout in the auth flow")
 
         self.assertIn("text_delta", body)
         self.assertIn("text_done", body)
@@ -128,6 +122,79 @@ class V3ApiTests(unittest.TestCase):
 
         self.assertEqual(event_payload["event"]["eventType"], "ci_failed")
         self.assertEqual(event_payload["event"]["status"], "pending")
+
+    def test_router_parses_github_review_watcher_from_natural_language(self):
+        project = self.client.post("/api/projects", json={"title": "Review Watch"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "Review monitor"}).json()
+
+        body = self._stream_message(
+            thread["id"],
+            "Monitor lusipad/KAM PR #4518 for review comments every 30m and auto-fix what you can.",
+        )
+
+        self.assertIn("text_done", body)
+        watcher = self.client.get("/api/watchers").json()["watchers"][0]
+        self.assertEqual(watcher["sourceType"], "github_pr")
+        self.assertEqual(watcher["scheduleValue"], "30m")
+        self.assertEqual(watcher["autoActionLevel"], 2)
+        self.assertEqual(watcher["config"]["repo"], "lusipad/KAM")
+        self.assertEqual(watcher["config"]["number"], 4518)
+        self.assertEqual(watcher["config"]["watch"], "review_comments")
+
+        detail = self.client.get(f"/api/threads/{thread['id']}").json()
+        self.assertTrue(any(message["metadata"].get("kind") == "watcher-config" for message in detail["messages"]))
+
+    def test_router_honors_skill_and_agent_hints_for_runs(self):
+        project = self.client.post("/api/projects", json={"title": "Skill Lab"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "Review triage"}).json()
+
+        async def fake_create_run(router_run_engine, *, thread_id: str, agent: str, task: str):
+            run = Run(thread_id=thread_id, agent=agent, task=task, status="pending")
+            router_run_engine.db.add(run)
+            await router_run_engine.db.commit()
+            await router_run_engine.db.refresh(run)
+            return run
+
+        with patch("services.router.RunEngine.create_run", new=fake_create_run):
+            body = self._stream_message(thread["id"], "/review-pr use claude-code on the latest feedback")
+
+        self.assertIn("text_done", body)
+        detail = self.client.get(f"/api/threads/{thread['id']}").json()
+        self.assertEqual(len(detail["runs"]), 1)
+        self.assertEqual(detail["runs"][0]["agent"], "claude-code")
+        self.assertIn("Review the latest PR comments", detail["runs"][0]["task"])
+        self.assertIn("latest feedback", detail["runs"][0]["task"])
+
+    def test_router_maps_commit_skill_to_run_task(self):
+        project = self.client.post("/api/projects", json={"title": "Commit Lab"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "Commit helper"}).json()
+
+        async def fake_create_run(router_run_engine, *, thread_id: str, agent: str, task: str):
+            run = Run(thread_id=thread_id, agent=agent, task=task, status="pending")
+            router_run_engine.db.add(run)
+            await router_run_engine.db.commit()
+            await router_run_engine.db.refresh(run)
+            return run
+
+        with patch("services.router.RunEngine.create_run", new=fake_create_run):
+            body = self._stream_message(thread["id"], "/commit make the message short and conventional")
+
+        self.assertIn("text_done", body)
+        detail = self.client.get(f"/api/threads/{thread['id']}").json()
+        self.assertEqual(len(detail["runs"]), 1)
+        self.assertEqual(detail["runs"][0]["agent"], "codex")
+        self.assertIn("create a clean commit", detail["runs"][0]["task"])
+        self.assertIn("message short and conventional", detail["runs"][0]["task"])
+
+    def test_router_records_decision_memory(self):
+        project = self.client.post("/api/projects", json={"title": "Memory Router"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "Architecture notes"}).json()
+
+        body = self._stream_message(thread["id"], "Decision: V3 uses /api only and drops /api/v2 compatibility.")
+
+        self.assertIn("text_done", body)
+        memories = self.client.get("/api/memory", params={"project_id": project["id"]}).json()["memories"]
+        self.assertTrue(any(item["category"] == "decision" and "/api only" in item["content"] for item in memories))
 
     def test_watcher_detail_update_and_history(self):
         project = self.client.post("/api/projects", json={"title": "Watcher Admin"}).json()
@@ -223,6 +290,15 @@ class V3ApiTests(unittest.TestCase):
         async with engine.begin() as conn:
             for table in ("watcher_events", "watchers", "memories", "runs", "messages", "threads", "projects"):
                 await conn.execute(text(f'DELETE FROM "{table}"'))
+
+    def _stream_message(self, thread_id: str, content: str) -> str:
+        with self.client.stream(
+            "POST",
+            f"/api/threads/{thread_id}/messages",
+            json={"content": content},
+        ) as response:
+            self.assertEqual(response.status_code, 200)
+            return "".join(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk for chunk in response.iter_text())
 
     async def _seed_stale_thread(self) -> str:
         base = datetime.now(UTC) - timedelta(days=3)
