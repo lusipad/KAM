@@ -374,12 +374,15 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(payload["threadId"], "demo-login")
 
         threads = self.client.get("/api/threads").json()["threads"]
-        self.assertEqual(len(threads), 2)
+        self.assertEqual(len(threads), 4)
         self.assertEqual(threads[0]["project"]["title"], "信号探针")
 
         feed = self.client.get("/api/home/feed").json()
         self.assertEqual(len(feed["needsAttention"]), 3)
+        self.assertEqual(len(feed["running"]), 1)
+        self.assertEqual(len(feed["recent"]), 1)
         self.assertTrue(any(item["kind"] == "watcher_event" for item in feed["needsAttention"]))
+        self.assertEqual(feed["recent"][0]["id"], "demo-run-adopted")
 
         detail = self.client.get("/api/threads/demo-login").json()
         self.assertEqual(detail["title"], "修复登录超时")
@@ -398,6 +401,16 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(feed["needsAttention"][1]["kind"], "watcher_event")
         self.assertEqual(feed["needsAttention"][2]["kind"], "run")
         self.assertEqual(feed["needsAttention"][2]["status"], "passed")
+
+    def test_home_feed_recent_only_shows_historical_runs(self):
+        self.client.post("/api/dev/seed-demo", json={"reset": True})
+
+        feed = self.client.get("/api/home/feed").json()
+        recent_ids = {item["id"] for item in feed["recent"]}
+        attention_ids = {item["id"] for item in feed["needsAttention"] if item["kind"] == "run"}
+
+        self.assertEqual(recent_ids, {"demo-run-adopted"})
+        self.assertTrue(recent_ids.isdisjoint(attention_ids))
 
     def _wait_for_run(self, run_id: str, timeout: float = 5.0) -> dict:
         deadline = time.time() + timeout

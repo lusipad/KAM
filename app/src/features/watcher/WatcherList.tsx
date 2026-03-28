@@ -38,6 +38,12 @@ export function WatcherList({ watchers, preferredWatcherId, onCreateByConversati
   }, [preferredWatcherId, watchers])
 
   useEffect(() => {
+    if (!selectedWatcherId && !preferredWatcherId && watchers.length) {
+      setSelectedWatcherId(watchers[0].id)
+    }
+  }, [preferredWatcherId, selectedWatcherId, watchers])
+
+  useEffect(() => {
     if (!effectiveSelectedWatcherId) {
       return
     }
@@ -99,7 +105,7 @@ export function WatcherList({ watchers, preferredWatcherId, onCreateByConversati
 
           {watchers.length ? (
             watchers.map((watcher) => (
-              <article key={watcher.id} className={`watcher-card ${selectedWatcherId === watcher.id ? 'is-selected' : ''}`}>
+              <article key={watcher.id} className={`watcher-card ${effectiveSelectedWatcherId === watcher.id ? 'is-selected' : ''}`}>
                 <button
                   type="button"
                   className="watcher-card-tap"

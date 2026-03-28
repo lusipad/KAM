@@ -15,6 +15,7 @@ export function RunCard({ run, onAdopt, onRetry }: RunCardProps) {
   const duration = formatDuration(run.durationMs)
   const statusLabel = run.status === 'passed' ? duration ?? '已通过' : runStatusLabel(run.status)
   const failureHint = run.status === 'failed' ? lastLogLine(run.rawOutput) : null
+  const taskCopy = run.task !== (run.resultSummary || run.task) ? `任务：${run.task}` : null
 
   return (
     <article className={`run-card is-${tone}`}>
@@ -37,10 +38,10 @@ export function RunCard({ run, onAdopt, onRetry }: RunCardProps) {
         ) : null}
 
         {run.status === 'pending' ? <div className="run-summary">任务：{run.task}</div> : null}
-        {run.status === 'passed' ? <div className="run-summary">{run.resultSummary || run.task}</div> : null}
+        {run.status === 'passed' && taskCopy ? <div className="run-summary">{taskCopy}</div> : null}
         {run.status === 'failed' ? (
           <>
-            <div className="run-summary is-error">{run.resultSummary || '执行失败。'}</div>
+            {taskCopy ? <div className="run-summary is-error">{taskCopy}</div> : null}
             <div className="run-hint">可能原因：{failureHint || '请查看日志详情。'}</div>
           </>
         ) : null}

@@ -80,7 +80,7 @@ export function threadDotTone(thread: ThreadSummary) {
   if (thread.hasActiveRun) {
     return 'amber'
   }
-  if (thread.latestRunStatus === 'passed') {
+  if (thread.latestRunStatus === 'passed' && !thread.latestRunAdoptedAt) {
     return 'green'
   }
   if (thread.latestRunStatus === 'failed') {
@@ -93,8 +93,11 @@ export function threadMeta(thread: ThreadSummary) {
   if (thread.hasActiveRun) {
     return '正在执行...'
   }
-  if (thread.latestRunStatus === 'passed') {
+  if (thread.latestRunStatus === 'passed' && !thread.latestRunAdoptedAt) {
     return '已通过，等待采纳'
+  }
+  if (thread.latestRunStatus === 'passed' && thread.latestRunAdoptedAt) {
+    return '已采纳'
   }
   if (thread.latestRunStatus === 'failed') {
     return '失败，需要处理'

@@ -83,6 +83,7 @@ class Thread(Base):
             "hasActiveRun": has_active_run,
             "latestRunStatus": latest_run.status if latest_run else None,
             "latestRunSummary": latest_run.result_summary if latest_run else None,
+            "latestRunAdoptedAt": serialize_datetime(latest_run.adopted_at) if latest_run else None,
         }
 
     def to_detail_dict(self) -> dict[str, Any]:

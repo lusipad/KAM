@@ -17,12 +17,14 @@ test('home, thread, memory, watchers are reachable in v3', async ({ page }) => {
   await expect(page.getByText('后台进行中')).toBeVisible()
   await expect(page.getByText('最近更新')).toBeVisible()
   await expect(page.getByRole('button', { name: '监控', exact: true })).toBeVisible()
+  await expect(page.locator('.feed-section').filter({ hasText: '后台进行中' })).toContainText('补全 watcher 启动与恢复链路')
+  await expect(page.locator('.feed-section').filter({ hasText: '最近更新' })).toContainText('已整理发布说明并同步验证步骤。')
+  await expect(page.locator('.feed-section').filter({ hasText: '最近更新' })).not.toContainText('auth.test.ts:42 失败')
 
   await page.getByRole('button', { name: /修复登录超时/i }).click()
   await expect(page.locator('.message-row.is-user .message-bubble')).toContainText('登录 30 秒后超时，修一下。')
-  await expect(page.locator('.run-card .run-summary')).toContainText(
-    '已更新 token 刷新路径，移除重复超时分支，检查通过。',
-  )
+  await expect(page.locator('.run-card .run-card-title')).toContainText('已更新 token 刷新路径，移除重复超时分支，检查通过。')
+  await expect(page.locator('.run-card .run-summary')).toContainText('任务：修复鉴权流程中的登录超时')
 
   await page.getByRole('banner').getByRole('button', { name: '记忆' }).click()
   await expect(page.getByText('AI 记忆')).toBeVisible()
@@ -34,6 +36,7 @@ test('home, thread, memory, watchers are reachable in v3', async ({ page }) => {
   const watcherCard = page.locator('.watcher-card').filter({ hasText: 'CI 监控' }).first()
   await expect(page.getByText('监控 · 1 个运行中')).toBeVisible()
   await expect(watcherCard).toBeVisible()
+  await expect(watcherCard).toHaveClass(/is-selected/)
   await expect(watcherCard.getByRole('button', { name: '立即执行' })).toBeVisible()
   await expect(watcherCard.getByRole('button', { name: '查看历史' })).toBeVisible()
 

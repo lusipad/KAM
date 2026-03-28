@@ -73,10 +73,11 @@ function FeedCard({
     )
   }
 
-  const projectTitle = thread?.project?.title ?? 'Unknown project'
+  const projectTitle = thread?.project?.title ?? '未归属项目'
   const statusLabel = runStatusLabel(item.status)
   const summary = item.resultSummary || item.task
   const hint = item.status === 'failed' ? lastLogLine(item.rawOutput) : null
+  const detailCopy = item.task !== summary ? `任务：${item.task}` : null
 
   if (compact) {
     return (
@@ -102,7 +103,7 @@ function FeedCard({
         </div>
         <span className="feed-card-badge">{statusLabel}</span>
       </div>
-      {item.status !== 'running' ? <div className="feed-card-copy">{summary}</div> : null}
+      {item.status !== 'running' && detailCopy ? <div className="feed-card-copy">{detailCopy}</div> : null}
       {item.status === 'running' ? (
         <>
           <div className="feed-card-copy">{item.rawOutput || item.task}</div>

@@ -59,8 +59,22 @@ async def seed_demo(payload: SeedDemoRequest, db: AsyncSession = Depends(get_db)
         created_at=base + timedelta(minutes=2),
         updated_at=base + timedelta(minutes=12),
     )
+    running_thread = Thread(
+        id="demo-running",
+        project_id=project.id,
+        title="补全 watcher 启动流程",
+        created_at=base + timedelta(minutes=2, seconds=30),
+        updated_at=base + timedelta(minutes=15),
+    )
+    shipped_thread = Thread(
+        id="demo-shipped",
+        project_id=project.id,
+        title="整理发布说明",
+        created_at=base + timedelta(minutes=1, seconds=30),
+        updated_at=base + timedelta(minutes=8),
+    )
 
-    db.add_all([project, login_thread, review_thread])
+    db.add_all([project, login_thread, review_thread, running_thread, shipped_thread])
 
     db.add_all(
         [
@@ -115,6 +129,33 @@ async def seed_demo(payload: SeedDemoRequest, db: AsyncSession = Depends(get_db)
                 duration_ms=4200,
                 raw_output="auth.test.ts:42 预期 200，实际 204",
                 created_at=base + timedelta(minutes=10),
+            ),
+            Run(
+                id="demo-run-running",
+                thread_id=running_thread.id,
+                agent="codex",
+                status="running",
+                task="补全 watcher 启动与恢复链路",
+                result_summary=None,
+                changed_files=["app/src/features/thread/ThreadView.tsx", "backend/api/watchers.py"],
+                check_passed=None,
+                duration_ms=None,
+                raw_output="正在串起启用、暂停、恢复流程，并补 smoke 验证。",
+                created_at=base + timedelta(minutes=15),
+            ),
+            Run(
+                id="demo-run-adopted",
+                thread_id=shipped_thread.id,
+                agent="codex",
+                status="passed",
+                task="整理发布说明并同步本地验证步骤",
+                result_summary="已整理发布说明并同步验证步骤。",
+                changed_files=["README.md", "docs/README.md"],
+                check_passed=True,
+                duration_ms=1800,
+                adopted_at=base + timedelta(minutes=8),
+                raw_output="文档已更新。\n本地验证步骤已同步。",
+                created_at=base + timedelta(minutes=7),
             ),
         ]
     )

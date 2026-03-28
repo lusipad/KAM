@@ -18,6 +18,7 @@ export interface ThreadSummary {
   hasActiveRun: boolean
   latestRunStatus: RunStatus | null
   latestRunSummary: string | null
+  latestRunAdoptedAt: string | null
 }
 
 export interface MessageRecord {

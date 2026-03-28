@@ -52,12 +52,13 @@ def _attention_priority(item: dict[str, Any]) -> tuple[int, float]:
 
 @router.get("/feed")
 async def get_feed(db: AsyncSession = Depends(get_db)):
-    attention_runs_result = await db.execute(
+    attention_runs_stmt = (
         select(Run)
         .where(or_(and_(Run.status == "passed", Run.adopted_at.is_(None)), Run.status == "failed"))
         .order_by(Run.created_at.desc())
         .limit(10)
     )
+    attention_runs_result = await db.execute(attention_runs_stmt)
     attention_events_result = await db.execute(
         select(WatcherEvent)
         .options(selectinload(WatcherEvent.watcher))
@@ -67,7 +68,10 @@ async def get_feed(db: AsyncSession = Depends(get_db)):
     )
     running_result = await db.execute(select(Run).where(Run.status == "running").order_by(Run.created_at.desc()))
     recent_result = await db.execute(
-        select(Run).where(Run.status.in_(["passed", "failed"])).order_by(Run.created_at.desc()).limit(5)
+        select(Run)
+        .where(or_(and_(Run.status == "passed", Run.adopted_at.is_not(None)), Run.status == "cancelled"))
+        .order_by(Run.created_at.desc())
+        .limit(5)
     )
 
     attention_runs = list(attention_runs_result.scalars())
