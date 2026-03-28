@@ -49,3 +49,14 @@ test('home, thread, memory, watchers are reachable in v3', async ({ page }) => {
   await page.getByRole('button', { name: '保存修改' }).click()
   await expect(watcherCard.getByText('CI 流水线 · 每 30 分钟')).toBeVisible()
 })
+
+test('mobile rail keeps watcher navigation reachable', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+
+  const mobileWatcherButton = page.getByRole('button', { name: '监控', exact: true })
+  await expect(mobileWatcherButton).toBeVisible()
+  await mobileWatcherButton.click()
+
+  await expect(page.getByText('监控 · 1 个运行中')).toBeVisible()
+  await expect(page.locator('.watcher-card').first()).toHaveClass(/is-selected/)
+})

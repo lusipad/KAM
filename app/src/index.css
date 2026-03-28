@@ -1217,9 +1217,12 @@ button {
 
   .brand-name,
   .brand-subtle,
-  .active-rail span,
   .thread-copy,
-  .footer-tab {
+  .group-label {
+    display: none;
+  }
+
+  .active-rail {
     display: none;
   }
 
@@ -1227,8 +1230,15 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .footer-tab {
+    display: block;
+    min-height: 34px;
+    padding: 0;
+    font-size: 11px;
+  }
+
   .thread-row,
-  .active-rail {
+  .footer-tab {
     justify-content: center;
   }
 
