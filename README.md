@@ -184,4 +184,4 @@ npm run test:smoke:local
 - [`docs/product/ai_work_assistant_prd.md`](docs/product/ai_work_assistant_prd.md)
 - [`docs/design/v3_architecture_design.md`](docs/design/v3_architecture_design.md)
 - [`docs/design/v3_ui_spec.md`](docs/design/v3_ui_spec.md)
-- [`docs/roadmap/v2_implementation_roadmap.md`](docs/roadmap/v2_implementation_roadmap.md)
+- [`docs/roadmap/v3_delivery_status.md`](docs/roadmap/v3_delivery_status.md)
