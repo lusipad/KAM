@@ -177,7 +177,7 @@ class V3ApiTests(unittest.TestCase):
         detail = self.client.get(f"/api/threads/{thread['id']}").json()
         self.assertTrue(any(message["metadata"].get("kind") == "watcher-config" for message in detail["messages"]))
 
-    def test_activate_draft_watcher_enables_it(self):
+    def test_z_activate_draft_watcher_enables_it(self):
         project = self.client.post("/api/projects", json={"title": "草稿监控"}).json()
         thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "配置 watcher"}).json()
 
@@ -189,7 +189,8 @@ class V3ApiTests(unittest.TestCase):
         watcher = self.client.get("/api/watchers").json()["watchers"][0]
         self.assertEqual(watcher["status"], "draft")
 
-        activated = self.client.post(f"/api/watchers/{watcher['id']}/activate").json()
+        with patch("services.watcher.WatcherEngine._schedule", new=lambda *_args, **_kwargs: None):
+            activated = self.client.post(f"/api/watchers/{watcher['id']}/activate").json()
         self.assertEqual(activated["status"], "active")
 
     def test_router_honors_skill_and_agent_hints_for_runs(self):
