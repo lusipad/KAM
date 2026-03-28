@@ -1,18 +1,19 @@
 import { useEffect, useState } from 'react'
 
-import { getWatcher, getWatcherEvents, pauseWatcher, resumeWatcher, runWatcherNow, updateWatcher } from '@/api/client'
+import { activateWatcher, getWatcher, getWatcherEvents, pauseWatcher, resumeWatcher, runWatcherNow, updateWatcher } from '@/api/client'
 import { WatcherInspector } from '@/features/watcher/WatcherInspector'
 import { formatRelativeTime, humanizeSchedule, watcherDescription, watcherGlyph, watcherSourceLabel, watcherStatusLabel, watcherTone } from '@/lib/v3-ui'
 import type { WatcherEventRecord, WatcherRecord } from '@/types/v3'
 
 type WatcherListProps = {
   watchers: WatcherRecord[]
+  preferredWatcherId: string | null
   onCreateByConversation: () => void
   onRefresh: () => Promise<void>
   onOpenThread: (threadId: string) => void
 }
 
-export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpenThread }: WatcherListProps) {
+export function WatcherList({ watchers, preferredWatcherId, onCreateByConversation, onRefresh, onOpenThread }: WatcherListProps) {
   const [selectedWatcherId, setSelectedWatcherId] = useState<string | null>(watchers[0]?.id ?? null)
   const [inspectorMode, setInspectorMode] = useState<'history' | 'edit'>('history')
   const [inspectorWatcher, setInspectorWatcher] = useState<WatcherRecord | null>(null)
@@ -24,6 +25,17 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
     : watchers.find((watcher) => watcher.id === effectiveSelectedWatcherId) ?? null
   const activeEvents = inspectorWatcher?.id === effectiveSelectedWatcherId ? inspectorEvents : []
   const loadingInspector = loadingOverride || (effectiveSelectedWatcherId !== null && inspectorWatcher?.id !== effectiveSelectedWatcherId)
+
+  useEffect(() => {
+    if (!preferredWatcherId) {
+      return
+    }
+    if (watchers.some((watcher) => watcher.id === preferredWatcherId)) {
+      setSelectedWatcherId(preferredWatcherId)
+      setInspectorMode('history')
+      setLoadingOverride(true)
+    }
+  }, [preferredWatcherId, watchers])
 
   useEffect(() => {
     if (!effectiveSelectedWatcherId) {
@@ -135,14 +147,18 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                   </button>
                   <button
                     type="button"
-                    className="button-secondary"
+                    className={watcher.status === 'draft' ? 'button-primary' : 'button-secondary'}
                     onClick={() => {
+                      if (watcher.status === 'draft') {
+                        void activateWatcher(watcher.id).then(() => refreshSelection(watcher.id))
+                        return
+                      }
                       setSelectedWatcherId(watcher.id)
                       setInspectorMode('history')
                       void runWatcherNow(watcher.id).then(() => refreshSelection(watcher.id))
                     }}
                   >
-                    立即执行
+                    {watcher.status === 'draft' ? '启用监控' : '立即执行'}
                   </button>
                   {watcher.status === 'active' ? (
                     <button
@@ -154,7 +170,7 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                     >
                       暂停
                     </button>
-                  ) : (
+                  ) : watcher.status === 'paused' ? (
                     <button
                       type="button"
                       className="button-secondary"
@@ -164,7 +180,7 @@ export function WatcherList({ watchers, onCreateByConversation, onRefresh, onOpe
                     >
                       恢复
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </article>
             ))

@@ -9,8 +9,8 @@
 
 ## 执行与过渡资料
 
-- [`roadmap/v2_implementation_roadmap.md`](roadmap/v2_implementation_roadmap.md): v2 实现路线图，保留执行拆解和阶段任务参考。
-- [`design/v2_ui_improvement_guide.md`](design/v2_ui_improvement_guide.md): v2 UI 改进清单，保留界面问题拆解和取舍依据。
+- [`roadmap/v2_implementation_roadmap.md`](roadmap/v2_implementation_roadmap.md): 历史执行路线图，保留阶段拆解参考，但接口路径与当前 V3 实现可能不一致。
+- [`design/v2_ui_improvement_guide.md`](design/v2_ui_improvement_guide.md): 历史 UI 改进清单，保留问题拆解和取舍依据。
 - [`migration/`](migration): 迁移过程相关 runbook 和映射文档。
 
 ## 历史归档

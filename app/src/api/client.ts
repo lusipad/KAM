@@ -40,6 +40,13 @@ export function createProject(payload: { title: string; repoPath?: string | null
   })
 }
 
+export function bootstrapConversation(payload: { prompt: string; repoPath?: string | null }) {
+  return request<{ project: ProjectSummary; thread: ThreadSummary }>('/projects/bootstrap', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function createThread(projectId: string, payload: { title?: string; externalRef?: Record<string, unknown> | null }) {
   return request<ThreadSummary>(`/projects/${projectId}/threads`, {
     method: 'POST',
@@ -97,6 +104,12 @@ export function retryRun(runId: string) {
 
 export function pauseWatcher(watcherId: string) {
   return request<WatcherRecord>(`/watchers/${watcherId}/pause`, {
+    method: 'POST',
+  })
+}
+
+export function activateWatcher(watcherId: string) {
+  return request<WatcherRecord>(`/watchers/${watcherId}/activate`, {
     method: 'POST',
   })
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
+  bootstrapConversation,
   createProject,
   createThread,
   getHomeFeed,
@@ -18,7 +19,6 @@ import { useSSE } from '@/hooks/useSSE'
 import { AppShell } from '@/layout/AppShell'
 import { Sidebar } from '@/layout/Sidebar'
 import type { ToastItem } from '@/layout/Toast'
-import { inferProjectTitle, inferThreadTitle } from '@/lib/v3-ui'
 import type { HomeFeedPayload, MemoryItem, ThreadDetail, ThreadSummary, WatcherRecord } from '@/types/v3'
 
 type ViewMode = 'empty' | 'home' | 'thread' | 'watchers'
@@ -59,6 +59,7 @@ function App() {
   const [watchers, setWatchers] = useState<WatcherRecord[]>([])
   const [memories, setMemories] = useState<MemoryItem[]>([])
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
+  const [selectedWatcherId, setSelectedWatcherId] = useState<string | null>(null)
   const [thread, setThread] = useState<ThreadDetail | null>(null)
   const [threadLoading, setThreadLoading] = useState(false)
   const [memoryOpen, setMemoryOpen] = useState(false)
@@ -133,6 +134,11 @@ function App() {
     setView('thread')
   }, [])
 
+  const handleOpenWatcher = useCallback((watcherId: string) => {
+    setSelectedWatcherId(watcherId)
+    setView('watchers')
+  }, [])
+
   const handleNewConversation = useCallback(async () => {
     if (!emptyPrompt.trim() || creatingThread) {
       return
@@ -140,12 +146,24 @@ function App() {
 
     setCreatingThread(true)
     try {
-      const project = await createProject({
-        title: inferProjectTitle(emptyPrompt),
+      const repoPath = emptyPrompt.includes(':\\') || emptyPrompt.startsWith('/') ? emptyPrompt : null
+      const bootstrapped = await bootstrapConversation({
+        prompt: emptyPrompt,
+        repoPath,
+      })
+      const createdThread = bootstrapped.thread
+      await Promise.all([refreshThreads(), refreshFeed(), refreshWatchers()])
+      setSelectedThreadId(createdThread.id)
+      setPendingPrompt(emptyPrompt)
+      setEmptyPrompt('')
+      setView('thread')
+    } catch {
+      const fallbackProject = await createProject({
+        title: emptyPrompt.slice(0, 36) || '新项目',
         repoPath: emptyPrompt.includes(':\\') || emptyPrompt.startsWith('/') ? emptyPrompt : null,
       })
-      const createdThread = await createThread(project.id, {
-        title: inferThreadTitle(emptyPrompt),
+      const createdThread = await createThread(fallbackProject.id, {
+        title: emptyPrompt.slice(0, 48) || '新对话',
       })
       await Promise.all([refreshThreads(), refreshFeed(), refreshWatchers()])
       setSelectedThreadId(createdThread.id)
@@ -215,6 +233,7 @@ function App() {
   const selectedProject = thread?.project ?? null
   const latestRun = thread?.runs.at(-1) ?? null
   const threadLookup = useMemo(() => Object.fromEntries(threads.map((item) => [item.id, item])), [threads])
+  const watcherLookup = useMemo(() => Object.fromEntries(watchers.map((item) => [item.id, item])), [watchers])
 
   return (
     <AppShell
@@ -242,6 +261,7 @@ function App() {
         ) : view === 'watchers' ? (
           <WatcherList
             watchers={watchers}
+            preferredWatcherId={selectedWatcherId}
             onCreateByConversation={() => {
               setView('empty')
               setEmptyPrompt('监控 ')
@@ -254,12 +274,14 @@ function App() {
         ) : view === 'thread' ? (
           <ThreadView
             thread={thread}
+            watchers={watcherLookup}
             loading={threadLoading}
             pendingPrompt={pendingPrompt}
             onPendingPromptConsumed={() => setPendingPrompt(null)}
+            onOpenWatcher={handleOpenWatcher}
             onRefresh={async () => {
               if (selectedThreadId) {
-                await Promise.all([refreshThread(selectedThreadId), refreshThreads(), refreshFeed()])
+                await Promise.all([refreshThread(selectedThreadId), refreshThreads(), refreshFeed(), refreshWatchers()])
               }
             }}
           />

@@ -73,7 +73,7 @@ export interface WatcherRecord {
   config: Record<string, unknown>
   scheduleType: string
   scheduleValue: string
-  status: 'active' | 'paused'
+  status: 'active' | 'paused' | 'draft'
   autoActionLevel: number
   lastRunAt: string | null
   lastState: Record<string, unknown>

@@ -51,6 +51,7 @@ class WatcherEngine:
         schedule_type: str,
         schedule_value: str,
         auto_action_level: int = 1,
+        status: str = "active",
     ) -> Watcher:
         watcher = Watcher(
             project_id=project_id,
@@ -59,12 +60,14 @@ class WatcherEngine:
             config=config,
             schedule_type=schedule_type,
             schedule_value=schedule_value,
+            status=status,
             auto_action_level=auto_action_level,
         )
         db.add(watcher)
         await db.commit()
         await db.refresh(watcher)
-        self._schedule(watcher)
+        if watcher.status == "active":
+            self._schedule(watcher)
         return watcher
 
     async def list_watchers(self, db: AsyncSession) -> list[Watcher]:
@@ -121,6 +124,16 @@ class WatcherEngine:
         await db.commit()
         if _scheduler is not None:
             _scheduler.pause_job(f"watcher:{watcher_id}")
+        return watcher
+
+    async def activate(self, db: AsyncSession, watcher_id: str) -> Watcher | None:
+        watcher = await db.get(Watcher, watcher_id)
+        if watcher is None:
+            return None
+        watcher.status = "active"
+        await db.commit()
+        await db.refresh(watcher)
+        self._schedule(watcher)
         return watcher
 
     async def resume(self, db: AsyncSession, watcher_id: str) -> Watcher | None:

@@ -97,6 +97,17 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(len(search["memories"]), 1)
         self.assertIn("后端测试", search["memories"][0]["content"])
 
+    def test_bootstrap_conversation_creates_project_and_thread_server_side(self):
+        payload = self.client.post(
+            "/api/projects/bootstrap",
+            json={"prompt": "修复登录超时，并检查 token 刷新路径。", "repoPath": "D:/Repos/KAM"},
+        ).json()
+
+        self.assertEqual(payload["project"]["repoPath"], "D:/Repos/KAM")
+        self.assertTrue(payload["project"]["title"])
+        self.assertTrue(payload["thread"]["title"])
+        self.assertNotEqual(payload["thread"]["title"], "新对话")
+
     def test_digest_failure_summary_suggests_next_step(self):
         run = Run(
             thread_id="thread123",
@@ -158,12 +169,28 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(watcher["sourceType"], "github_pr")
         self.assertEqual(watcher["scheduleValue"], "30m")
         self.assertEqual(watcher["autoActionLevel"], 2)
+        self.assertEqual(watcher["status"], "draft")
         self.assertEqual(watcher["config"]["repo"], "lusipad/KAM")
         self.assertEqual(watcher["config"]["number"], 4518)
         self.assertEqual(watcher["config"]["watch"], "review_comments")
 
         detail = self.client.get(f"/api/threads/{thread['id']}").json()
         self.assertTrue(any(message["metadata"].get("kind") == "watcher-config" for message in detail["messages"]))
+
+    def test_activate_draft_watcher_enables_it(self):
+        project = self.client.post("/api/projects", json={"title": "草稿监控"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "配置 watcher"}).json()
+
+        self._stream_message(
+            thread["id"],
+            "监控 lusipad/KAM 的 PR #4518 review 评论，每 30 分钟检查一次。",
+        )
+
+        watcher = self.client.get("/api/watchers").json()["watchers"][0]
+        self.assertEqual(watcher["status"], "draft")
+
+        activated = self.client.post(f"/api/watchers/{watcher['id']}/activate").json()
+        self.assertEqual(activated["status"], "active")
 
     def test_router_honors_skill_and_agent_hints_for_runs(self):
         project = self.client.post("/api/projects", json={"title": "技能实验室"}).json()

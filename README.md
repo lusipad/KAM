@@ -10,9 +10,10 @@ KAM V3 是一个三栏 AI 工作台：左侧是按项目分组的线程导航，
   - Memory：按偏好 / 决策 / learnings / project context 展示
 - V3 后端
   - `Project / Thread / Message / Run / Memory / Watcher / WatcherEvent`
+  - 首条输入通过服务端 bootstrap 自动创建 Project / Thread，并生成标题
   - SSE 事件推送
   - Run adopt / retry
-  - Watcher run-now / pause / resume / action / dismiss
+  - Watcher draft / activate / run-now / pause / resume / action / dismiss
 - 运行方式
   - 后端直接服务前端构建产物
   - 默认数据库：`sqlite+aiosqlite:///./storage/kam-v3.db`
@@ -115,6 +116,7 @@ Docker 版本会：
 主接口位于 `/api`：
 
 - `GET/POST /api/projects`
+- `POST /api/projects/bootstrap`
 - `POST /api/projects/{project_id}/threads`
 - `GET /api/threads`
 - `GET /api/threads/{thread_id}`
@@ -126,6 +128,7 @@ Docker 版本会：
 - `GET /api/watchers`
 - `POST /api/watchers`
 - `POST /api/watchers/{watcher_id}/pause`
+- `POST /api/watchers/{watcher_id}/activate`
 - `POST /api/watchers/{watcher_id}/resume`
 - `POST /api/watchers/{watcher_id}/run-now`
 - `POST /api/watchers/events/{event_id}/actions/{action_index}`
@@ -166,6 +169,12 @@ npm run test:smoke:local
 `test:smoke:local` 会自动起一个临时后端实例，使用 `backend/storage/smoke-v3.db` 跑完整浏览器 smoke，结束后自动收尾。
 
 `verify-local.ps1` 会依次执行后端单测、前端 build、lint 和本地 smoke。
+
+## 当前交互约定
+
+- 新对话不再在前端本地裁剪标题，而是调用服务端 `bootstrap` 生成项目和线程标题。
+- 对话里创建的 watcher 会先以 `draft` 草稿卡片出现，用户可直接在当前线程里编辑细节并启用。
+- Home feed 的“需要你处理”按统一优先级混排：失败 run、watcher 提醒、等待采纳结果。
 
 ## 规范来源
 

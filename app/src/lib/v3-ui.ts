@@ -139,6 +139,9 @@ export function watcherStatusLabel(status: WatcherRecord['status']) {
   if (status === 'active') {
     return '运行中'
   }
+  if (status === 'draft') {
+    return '待启用'
+  }
   return '已暂停'
 }
 
@@ -176,20 +179,21 @@ export function watcherDescription(watcher: WatcherRecord) {
   const repo = typeof watcher.config.repo === 'string' ? watcher.config.repo : null
   const board = typeof watcher.config.board === 'string' ? watcher.config.board : null
   const watch = typeof watcher.config.watch === 'string' ? watcher.config.watch : null
+  const prefix = watcher.status === 'draft' ? '这是一份待确认的监控草稿。' : ''
 
   if (watcher.sourceType === 'ci_pipeline') {
-    return `持续检查 ${repo ?? '主分支'} 的构建失败，并把可直接处理的摘要推送到首页。`
+    return `${prefix}持续检查 ${repo ?? '主分支'} 的构建失败，并把可直接处理的摘要推送到首页。`.trim()
   }
   if (watcher.sourceType === 'azure_devops') {
-    return `持续跟踪 ${board ?? '你的看板'} 上的新工作项，一旦需要处理就自动开线程。`
+    return `${prefix}持续跟踪 ${board ?? '你的看板'} 上的新工作项，一旦需要处理就自动开线程。`.trim()
   }
   if (watcher.sourceType === 'github' || watcher.sourceType === 'github_pr') {
     if (watch === 'review_comments') {
-      return `持续盯住 ${repo ?? '你的仓库'} 的新评审评论，并把分流结果送回对应线程。`
+      return `${prefix}持续盯住 ${repo ?? '你的仓库'} 的新评审评论，并把分流结果送回对应线程。`.trim()
     }
-    return `持续关注 ${repo ?? '你的仓库'} 的评审动态，并把事件路由到正确线程。`
+    return `${prefix}持续关注 ${repo ?? '你的仓库'} 的评审动态，并把事件路由到正确线程。`.trim()
   }
-  return '在后台持续监控来源，只把真正需要决策的事件推到你面前。'
+  return `${prefix}在后台持续监控来源，只把真正需要决策的事件推到你面前。`.trim()
 }
 
 export function watcherTargetSummary(watcher: WatcherRecord) {

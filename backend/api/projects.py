@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from db import get_db
 from models import Project, Thread
+from services.title_generation import TitleGenerationService
 
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -28,6 +29,11 @@ class ThreadCreate(BaseModel):
     externalRef: dict | None = None
 
 
+class BootstrapConversation(BaseModel):
+    prompt: str = Field(min_length=1, max_length=2000)
+    repoPath: str | None = Field(default=None, max_length=500)
+
+
 @router.get("")
 async def list_projects(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Project).order_by(Project.created_at.desc()))
@@ -41,6 +47,23 @@ async def create_project(payload: ProjectCreate, db: AsyncSession = Depends(get_
     await db.commit()
     await db.refresh(project)
     return project.to_dict()
+
+
+@router.post("/bootstrap")
+async def bootstrap_conversation(payload: BootstrapConversation, db: AsyncSession = Depends(get_db)):
+    project_title, thread_title = await TitleGenerationService().generate(
+        payload.prompt,
+        repo_path=payload.repoPath.strip() if payload.repoPath else None,
+    )
+    project = Project(title=project_title, repo_path=payload.repoPath.strip() if payload.repoPath else None)
+    db.add(project)
+    await db.flush()
+    thread = Thread(project_id=project.id, title=thread_title)
+    db.add(thread)
+    await db.commit()
+    await db.refresh(project)
+    await db.refresh(thread)
+    return {"project": project.to_dict(), "thread": thread.to_summary_dict()}
 
 
 @router.get("/{project_id}")

@@ -132,12 +132,13 @@ class ConversationRouter:
                 schedule_type=action.input["scheduleType"],
                 schedule_value=action.input["scheduleValue"],
                 auto_action_level=action.input.get("autoActionLevel", 1),
+                status="draft",
             )
             self.db.add(
                 Message(
                     thread_id=thread_id,
                     role="system",
-                    content=f"已配置监控 {watcher.name}。",
+                    content=f"已草拟监控 {watcher.name}，确认后启用。",
                     metadata_={"kind": "watcher-config", "watcher": watcher.to_dict()},
                 )
             )
@@ -535,7 +536,7 @@ class ConversationRouter:
             parts.append(f"我已经安排 {agent_label} 开始处理，结果会直接折回当前线程。")
         if watcher:
             schedule_label = self._humanize_schedule_value(watcher["scheduleValue"])
-            parts.append(f"也已配置一个 {self._watcher_label(watcher['sourceType'])} 监控，按 {schedule_label} 持续把需要决策的事件推到首页。")
+            parts.append(f"我先草拟了一个 {self._watcher_label(watcher['sourceType'])} 监控，频率是 {schedule_label}；你确认后我再启用。")
         if memories:
             categories = "、".join(self._memory_label(item["category"]) for item in memories)
             parts.append(f"同时记住这条{categories}。")

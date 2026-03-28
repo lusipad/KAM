@@ -89,6 +89,14 @@ async def pause_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
     return watcher.to_dict()
 
 
+@router.post("/{watcher_id}/activate")
+async def activate_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
+    watcher = await watcher_engine.activate(db, watcher_id)
+    if watcher is None:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+    return watcher.to_dict()
+
+
 @router.post("/{watcher_id}/resume")
 async def resume_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
     watcher = await watcher_engine.resume(db, watcher_id)
