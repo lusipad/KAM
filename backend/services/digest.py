@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import json
 from datetime import UTC
 from typing import Any
@@ -46,7 +47,10 @@ class DigestService:
             return [self._fallback_comment_triage(comment) for comment in comments]
         prompt = (
             "Classify each PR review comment as needs_input or ai_can_fix. "
-            "Return JSON array with classification, draftReply, and fixPlan.\n\n"
+            "Return JSON array with classification, draftReply, and fixPlan. "
+            "draftReply and fixPlan must be newly written operator-facing text. "
+            "Do not repeat, quote, or paraphrase the original comment body as a full block. "
+            "Only keep the reply or plan itself.\n\n"
             f"Memory:\n{memory_block}\n\nComments:\n{json.dumps(comments, ensure_ascii=False)}"
         )
         fallback = [self._fallback_comment_triage(comment) for comment in comments]
@@ -56,17 +60,27 @@ class DigestService:
         except json.JSONDecodeError:
             return fallback
         normalized = []
-        for base, item in zip(comments, payload, strict=False):
+        for base, item, fallback_item in zip(comments, payload, fallback, strict=False):
+            body = str(base.get("body", "")).strip()
+            classification = item.get("classification", "needs_input")
             normalized.append(
                 {
                     "commentId": base.get("id"),
                     "reviewer": base.get("user", "reviewer"),
                     "path": base.get("path"),
                     "line": base.get("line"),
-                    "body": base.get("body", ""),
-                    "classification": item.get("classification", "needs_input"),
-                    "draftReply": item.get("draftReply", ""),
-                    "fixPlan": item.get("fixPlan", ""),
+                    "body": body,
+                    "classification": classification,
+                    "draftReply": self._normalize_comment_generation(
+                        original=body,
+                        generated=item.get("draftReply", ""),
+                        fallback=fallback_item["draftReply"],
+                    ),
+                    "fixPlan": self._normalize_comment_generation(
+                        original=body,
+                        generated=item.get("fixPlan", ""),
+                        fallback=fallback_item["fixPlan"] if classification == "ai_can_fix" else "",
+                    ),
                 }
             )
         return normalized or fallback
@@ -190,3 +204,40 @@ class DigestService:
             "draftReply": draft_reply,
             "fixPlan": fix_plan,
         }
+
+    def _normalize_comment_generation(self, *, original: str, generated: Any, fallback: str) -> str:
+        candidate = self._compact_comment_text(generated)
+        original_text = self._compact_comment_text(original)
+        fallback_text = self._compact_comment_text(fallback)
+
+        if not candidate:
+            return fallback_text
+        if not original_text:
+            return candidate
+
+        stripped = self._strip_original_prefix(candidate, original_text)
+        if stripped:
+            return stripped
+
+        similarity = difflib.SequenceMatcher(a=original_text, b=candidate).ratio()
+        if candidate == original_text or similarity >= 0.82:
+            return fallback_text
+        return candidate
+
+    def _strip_original_prefix(self, candidate: str, original: str) -> str:
+        variants = [
+            candidate,
+            candidate.lstrip("“\"'"),
+            candidate.replace("原文：", "", 1).strip(),
+            candidate.replace("原评论：", "", 1).strip(),
+            candidate.replace("评论：", "", 1).strip(),
+        ]
+        for variant in variants:
+            if variant.startswith(original):
+                rest = variant[len(original) :].lstrip("：:，,。；;？?）)]】>\n\r\t ")
+                if rest:
+                    return rest
+        return ""
+
+    def _compact_comment_text(self, value: Any) -> str:
+        return " ".join(str(value or "").replace("\r", " ").replace("\n", " ").split()).strip("“”\"' ")

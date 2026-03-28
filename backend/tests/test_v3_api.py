@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -121,6 +122,35 @@ class V3ApiTests(unittest.TestCase):
 
         self.assertIn("执行失败：", summary)
         self.assertIn("建议先查看最后一条报错并在修正后重试", summary)
+
+    def test_digest_triage_strips_original_text_from_ai_draft(self):
+        comment = {
+            "id": "comment-1",
+            "user": "reviewer",
+            "path": "app/src/auth.ts",
+            "line": 18,
+            "body": "这里为什么不直接复用已有的 refresh 逻辑？",
+        }
+        payload = json.dumps(
+            [
+                {
+                    "classification": "needs_input",
+                    "draftReply": "这里为什么不直接复用已有的 refresh 逻辑？因为当前分支需要保留独立重试窗口。",
+                    "fixPlan": "",
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+        service = DigestService(None)
+        service.client = object()
+        with patch.object(DigestService, "_complete_text", new=AsyncMock(return_value=payload)):
+            cards = asyncio.run(service.triage_pr_comments([comment], ""))
+
+        self.assertEqual(len(cards), 1)
+        self.assertNotEqual(cards[0]["draftReply"], comment["body"])
+        self.assertNotIn(comment["body"], cards[0]["draftReply"])
+        self.assertIn("当前分支需要保留独立重试窗口", cards[0]["draftReply"])
 
     def test_watcher_run_now_creates_event(self):
         project = self.client.post("/api/projects", json={"title": "监控实验室"}).json()
