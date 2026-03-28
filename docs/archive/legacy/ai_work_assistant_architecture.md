@@ -7,7 +7,7 @@
 
 ## 修订说明
 - 本文档保留为 v1.0 架构基线参考，便于追溯早期模块设计思路。
-- 自 2026-03-24 起，产品定位、交付策略和目标架构以 `AI工作助手产品需求文档(PRD).md` 与 `system_architecture.md` 的 v1.2 Lite 修订内容为准。
+- 自 2026-03-24 起，产品定位、交付策略和目标架构以 `docs/product/ai_work_assistant_prd.md` 与 `docs/archive/legacy/system_architecture_v2.md` 的 v1.2 Lite 修订内容为准。
 - 若本文与 v1.2 Lite 文档存在冲突，应优先采用“外置大脑 + Agent 指挥台、轻量上下文、并发 Agent 管理、最小复杂度优先”的最新设计口径。
 
 ---

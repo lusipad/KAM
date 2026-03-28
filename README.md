@@ -43,10 +43,12 @@ backend/
 
 docs/
   README.md            文档索引
+  product/             产品需求与定位
   design/              设计稿、架构稿、UI 规范
   roadmap/             路线图与执行计划
   migration/           迁移文档
   archive/legacy/      历史方案归档
+  archive/notes/       历史探针与临时记录
 ```
 
 ## 本地开发
@@ -179,6 +181,7 @@ npm run test:smoke:local
 ## 规范来源
 
 - [`docs/README.md`](docs/README.md)
+- [`docs/product/ai_work_assistant_prd.md`](docs/product/ai_work_assistant_prd.md)
 - [`docs/design/v3_architecture_design.md`](docs/design/v3_architecture_design.md)
 - [`docs/design/v3_ui_spec.md`](docs/design/v3_ui_spec.md)
 - [`docs/roadmap/v2_implementation_roadmap.md`](docs/roadmap/v2_implementation_roadmap.md)
