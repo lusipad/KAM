@@ -75,6 +75,14 @@ function App() {
     }, 10000)
   }, [])
 
+  const showErrorToast = useCallback((message: string) => {
+    pushToast({
+      id: `error-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      message,
+      tone: 'red',
+    })
+  }, [pushToast])
+
   const refreshThreads = useCallback(async () => {
     const data = await listThreads()
     setThreads(data.threads)
@@ -262,6 +270,7 @@ function App() {
           <WatcherList
             watchers={watchers}
             preferredWatcherId={selectedWatcherId}
+            onError={showErrorToast}
             onCreateByConversation={() => {
               setView('empty')
               setEmptyPrompt('监控 ')
@@ -279,6 +288,7 @@ function App() {
             pendingPrompt={pendingPrompt}
             onPendingPromptConsumed={() => setPendingPrompt(null)}
             onOpenWatcher={handleOpenWatcher}
+            onError={showErrorToast}
             onRefresh={async () => {
               if (selectedThreadId) {
                 await Promise.all([refreshThread(selectedThreadId), refreshThreads(), refreshFeed(), refreshWatchers()])
@@ -290,6 +300,7 @@ function App() {
             feed={feed}
             threads={threadLookup}
             onOpenThread={handleOpenThread}
+            onError={showErrorToast}
             onRefresh={async () => {
               await Promise.all([refreshFeed(), refreshThreads(), refreshWatchers()])
             }}

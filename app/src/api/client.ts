@@ -12,6 +12,34 @@ import type {
 
 const API_BASE = '/api'
 
+export async function extractErrorMessage(response: Response) {
+  const text = await response.text()
+  if (!text) {
+    return `${response.status} ${response.statusText}`.trim()
+  }
+
+  try {
+    const payload = JSON.parse(text) as { detail?: unknown; message?: unknown }
+    if (typeof payload.detail === 'string' && payload.detail.trim()) {
+      return payload.detail.trim()
+    }
+    if (typeof payload.message === 'string' && payload.message.trim()) {
+      return payload.message.trim()
+    }
+  } catch {
+    // Ignore non-JSON responses and fall back to raw text.
+  }
+
+  return text
+}
+
+export function getErrorMessage(error: unknown, fallback = '操作失败，请稍后重试。') {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim()
+  }
+  return fallback
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
@@ -22,8 +50,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
 
   if (!response.ok) {
-    const text = await response.text()
-    throw new Error(text || `${response.status} ${response.statusText}`)
+    throw new Error(await extractErrorMessage(response))
   }
 
   return response.json() as Promise<T>

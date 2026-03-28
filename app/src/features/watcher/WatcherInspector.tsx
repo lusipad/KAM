@@ -20,7 +20,7 @@ type WatcherInspectorProps = {
   mode: 'history' | 'edit'
   loading: boolean
   onModeChange: (mode: 'history' | 'edit') => void
-  onSave: (payload: WatcherUpdatePayload) => Promise<void>
+  onSave: (payload: WatcherUpdatePayload) => Promise<boolean>
   onOpenThread: (threadId: string) => void
 }
 
@@ -136,8 +136,10 @@ export function WatcherInspector({ watcher, events, mode, loading, onModeChange,
               name: draftName.trim(),
               scheduleValue: draftScheduleValue.trim(),
               autoActionLevel: draftAutoActionLevel,
-            }).then(() => {
-              onModeChange('history')
+            }).then((saved) => {
+              if (saved) {
+                onModeChange('history')
+              }
             }).finally(() => {
               setSaving(false)
             })

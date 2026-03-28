@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { activateWatcher, getWatcher, getWatcherEvents, pauseWatcher, resumeWatcher, runWatcherNow, updateWatcher } from '@/api/client'
+import { activateWatcher, getErrorMessage, getWatcher, getWatcherEvents, pauseWatcher, resumeWatcher, runWatcherNow, updateWatcher } from '@/api/client'
 import { WatcherInspector } from '@/features/watcher/WatcherInspector'
 import { formatRelativeTime, humanizeSchedule, watcherDescription, watcherGlyph, watcherSourceLabel, watcherStatusLabel, watcherTone } from '@/lib/v3-ui'
 import type { WatcherEventRecord, WatcherRecord } from '@/types/v3'
@@ -11,9 +11,10 @@ type WatcherListProps = {
   onCreateByConversation: () => void
   onRefresh: () => Promise<void>
   onOpenThread: (threadId: string) => void
+  onError: (message: string) => void
 }
 
-export function WatcherList({ watchers, preferredWatcherId, onCreateByConversation, onRefresh, onOpenThread }: WatcherListProps) {
+export function WatcherList({ watchers, preferredWatcherId, onCreateByConversation, onRefresh, onOpenThread, onError }: WatcherListProps) {
   const [selectedWatcherId, setSelectedWatcherId] = useState<string | null>(watchers[0]?.id ?? null)
   const [inspectorMode, setInspectorMode] = useState<'history' | 'edit'>('history')
   const [inspectorWatcher, setInspectorWatcher] = useState<WatcherRecord | null>(null)
@@ -58,6 +59,11 @@ export function WatcherList({ watchers, preferredWatcherId, onCreateByConversati
         setInspectorWatcher(watcher)
         setInspectorEvents(history.events)
       })
+      .catch((error) => {
+        if (!cancelled) {
+          onError(getErrorMessage(error, '加载监控详情失败。'))
+        }
+      })
       .finally(() => {
         if (!cancelled) {
           setLoadingOverride(false)
@@ -67,7 +73,7 @@ export function WatcherList({ watchers, preferredWatcherId, onCreateByConversati
     return () => {
       cancelled = true
     }
-  }, [effectiveSelectedWatcherId])
+  }, [effectiveSelectedWatcherId, onError])
 
   async function refreshSelection(nextWatcherId = effectiveSelectedWatcherId) {
     setLoadingOverride(true)
@@ -76,11 +82,15 @@ export function WatcherList({ watchers, preferredWatcherId, onCreateByConversati
       if (!nextWatcherId) {
         setInspectorWatcher(null)
         setInspectorEvents([])
-        return
+        return true
       }
       const [watcher, history] = await Promise.all([getWatcher(nextWatcherId), getWatcherEvents(nextWatcherId)])
       setInspectorWatcher(watcher)
       setInspectorEvents(history.events)
+      return true
+    } catch (error) {
+      onError(getErrorMessage(error, '刷新监控状态失败。'))
+      return false
     } finally {
       setLoadingOverride(false)
     }
@@ -155,13 +165,21 @@ export function WatcherList({ watchers, preferredWatcherId, onCreateByConversati
                     type="button"
                     className={watcher.status === 'draft' ? 'button-primary' : 'button-secondary'}
                     onClick={() => {
-                      if (watcher.status === 'draft') {
-                        void activateWatcher(watcher.id).then(() => refreshSelection(watcher.id))
-                        return
-                      }
-                      setSelectedWatcherId(watcher.id)
-                      setInspectorMode('history')
-                      void runWatcherNow(watcher.id).then(() => refreshSelection(watcher.id))
+                      void (async () => {
+                        try {
+                          if (watcher.status === 'draft') {
+                            await activateWatcher(watcher.id)
+                            await refreshSelection(watcher.id)
+                            return
+                          }
+                          setSelectedWatcherId(watcher.id)
+                          setInspectorMode('history')
+                          await runWatcherNow(watcher.id)
+                          await refreshSelection(watcher.id)
+                        } catch (error) {
+                          onError(getErrorMessage(error, watcher.status === 'draft' ? '启用监控失败。' : '立即执行失败。'))
+                        }
+                      })()
                     }}
                   >
                     {watcher.status === 'draft' ? '启用监控' : '立即执行'}
@@ -171,7 +189,14 @@ export function WatcherList({ watchers, preferredWatcherId, onCreateByConversati
                       type="button"
                       className="button-secondary"
                       onClick={() => {
-                        void pauseWatcher(watcher.id).then(() => refreshSelection(watcher.id))
+                        void (async () => {
+                          try {
+                            await pauseWatcher(watcher.id)
+                            await refreshSelection(watcher.id)
+                          } catch (error) {
+                            onError(getErrorMessage(error, '暂停监控失败。'))
+                          }
+                        })()
                       }}
                     >
                       暂停
@@ -181,7 +206,14 @@ export function WatcherList({ watchers, preferredWatcherId, onCreateByConversati
                       type="button"
                       className="button-secondary"
                       onClick={() => {
-                        void resumeWatcher(watcher.id).then(() => refreshSelection(watcher.id))
+                        void (async () => {
+                          try {
+                            await resumeWatcher(watcher.id)
+                            await refreshSelection(watcher.id)
+                          } catch (error) {
+                            onError(getErrorMessage(error, '恢复监控失败。'))
+                          }
+                        })()
                       }}
                     >
                       恢复
@@ -208,10 +240,15 @@ export function WatcherList({ watchers, preferredWatcherId, onCreateByConversati
           onModeChange={setInspectorMode}
           onSave={async (payload) => {
             if (!effectiveSelectedWatcherId) {
-              return
+              return false
             }
-            await updateWatcher(effectiveSelectedWatcherId, payload)
-            await refreshSelection(effectiveSelectedWatcherId)
+            try {
+              await updateWatcher(effectiveSelectedWatcherId, payload)
+              return await refreshSelection(effectiveSelectedWatcherId)
+            } catch (error) {
+              onError(getErrorMessage(error, '保存监控失败。'))
+              return false
+            }
           }}
           onOpenThread={onOpenThread}
         />

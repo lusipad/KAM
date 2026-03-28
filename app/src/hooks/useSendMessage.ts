@@ -1,9 +1,12 @@
 import { useState } from 'react'
 
+import { extractErrorMessage, getErrorMessage } from '@/api/client'
+
 type SendHandlers = {
   onDelta: (delta: string) => void
   onToolResult?: () => void
   onDone?: () => void
+  onError?: (message: string) => void
 }
 
 function parseEventBlock(block: string) {
@@ -46,7 +49,7 @@ export function useSendMessage(threadId: string | null, handlers: SendHandlers) 
       })
 
       if (!response.ok || !response.body) {
-        throw new Error(await response.text())
+        throw new Error(await extractErrorMessage(response))
       }
 
       const reader = response.body.getReader()
@@ -98,6 +101,8 @@ export function useSendMessage(threadId: string | null, handlers: SendHandlers) 
       }
 
       notifyDone()
+    } catch (error) {
+      handlers.onError?.(getErrorMessage(error, '发送消息失败，请稍后重试。'))
     } finally {
       setIsSending(false)
     }

@@ -1,4 +1,4 @@
-import { adoptRun, dismissWatcherEvent, executeWatcherAction } from '@/api/client'
+import { adoptRun, dismissWatcherEvent, executeWatcherAction, getErrorMessage } from '@/api/client'
 import { formatRelativeTime, lastLogLine, runStatusLabel, watcherSourceLabel, watcherTone } from '@/lib/v3-ui'
 import type { FeedItem, HomeFeedPayload, ThreadSummary } from '@/types/v3'
 
@@ -7,6 +7,7 @@ type HomeFeedProps = {
   threads: Record<string, ThreadSummary>
   onOpenThread: (threadId: string) => void
   onRefresh: () => Promise<void>
+  onError: (message: string) => void
 }
 
 function FeedCard({
@@ -15,12 +16,14 @@ function FeedCard({
   compact = false,
   onOpenThread,
   onRefresh,
+  onError,
 }: {
   item: FeedItem
   thread?: ThreadSummary
   compact?: boolean
   onOpenThread: (threadId: string) => void
   onRefresh: () => Promise<void>
+  onError: (message: string) => void
 }) {
   if (item.kind === 'watcher_event') {
     const tone = watcherTone(item.watcher?.sourceType)
@@ -48,7 +51,14 @@ function FeedCard({
               key={`${item.id}-${action.label}`}
               className={index === item.actions.length - 1 ? 'button-primary' : 'button-secondary'}
               onClick={() => {
-                void executeWatcherAction(item.id, index).then(() => onRefresh())
+                void (async () => {
+                  try {
+                    await executeWatcherAction(item.id, index)
+                    await onRefresh()
+                  } catch (error) {
+                    onError(getErrorMessage(error, '执行监控动作失败。'))
+                  }
+                })()
               }}
             >
               {action.label}
@@ -58,7 +68,14 @@ function FeedCard({
             type="button"
             className="button-secondary"
             onClick={() => {
-              void dismissWatcherEvent(item.id).then(() => onRefresh())
+              void (async () => {
+                try {
+                  await dismissWatcherEvent(item.id)
+                  await onRefresh()
+                } catch (error) {
+                  onError(getErrorMessage(error, '忽略监控提醒失败。'))
+                }
+              })()
             }}
           >
             忽略
@@ -119,7 +136,14 @@ function FeedCard({
             type="button"
             className="button-primary"
             onClick={() => {
-              void adoptRun(item.id).then(() => onRefresh())
+              void (async () => {
+                try {
+                  await adoptRun(item.id)
+                  await onRefresh()
+                } catch (error) {
+                  onError(getErrorMessage(error, '采纳改动失败。'))
+                }
+              })()
             }}
           >
             采纳改动
@@ -135,7 +159,7 @@ function FeedCard({
   )
 }
 
-export function HomeFeed({ feed, threads, onOpenThread, onRefresh }: HomeFeedProps) {
+export function HomeFeed({ feed, threads, onOpenThread, onRefresh, onError }: HomeFeedProps) {
   if (!feed) {
     return <div className="empty-panel">正在加载首页…</div>
   }
@@ -166,6 +190,7 @@ export function HomeFeed({ feed, threads, onOpenThread, onRefresh }: HomeFeedPro
                   compact={section.compact}
                   onOpenThread={onOpenThread}
                   onRefresh={onRefresh}
+                  onError={onError}
                 />
               ))
             ) : (

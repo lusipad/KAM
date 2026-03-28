@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import { activateWatcher, adoptRun, pauseWatcher, resumeWatcher, retryRun, updateWatcher } from '@/api/client'
+import { activateWatcher, adoptRun, getErrorMessage, pauseWatcher, resumeWatcher, retryRun, updateWatcher } from '@/api/client'
 import { ReviewCommentCard, type ReviewCard } from '@/features/review/ReviewCommentCard'
 import { MessageBubble } from '@/features/thread/MessageBubble'
 import { MessageInput } from '@/features/thread/MessageInput'
@@ -24,6 +24,7 @@ type ThreadViewProps = {
   onPendingPromptConsumed: () => void
   onOpenWatcher: (watcherId: string) => void
   onRefresh: () => Promise<void>
+  onError: (message: string) => void
 }
 
 type TimelineItem =
@@ -82,11 +83,13 @@ function WatcherConfigCard({
   watcher,
   onRefresh,
   onOpenWatcher,
+  onError,
 }: {
   snapshot: WatcherSnapshot | undefined
   watcher: WatcherRecord | null
   onRefresh: () => Promise<void>
   onOpenWatcher: (watcherId: string) => void
+  onError: (message: string) => void
 }) {
   const current = resolveWatcher(snapshot, watcher)
   const [editing, setEditing] = useState(false)
@@ -121,6 +124,8 @@ function WatcherConfigCard({
       })
       setEditing(false)
       await onRefresh()
+    } catch (error) {
+      onError(getErrorMessage(error, '保存监控失败。'))
     } finally {
       setSaving(false)
     }
@@ -134,6 +139,8 @@ function WatcherConfigCard({
     try {
       await action()
       await onRefresh()
+    } catch (error) {
+      onError(getErrorMessage(error, '更新监控状态失败。'))
     } finally {
       setSaving(false)
     }
@@ -309,7 +316,7 @@ function composerMeta(thread: ThreadDetail, isSending: boolean) {
   }
 }
 
-export function ThreadView({ thread, watchers, loading, pendingPrompt, onPendingPromptConsumed, onOpenWatcher, onRefresh }: ThreadViewProps) {
+export function ThreadView({ thread, watchers, loading, pendingPrompt, onPendingPromptConsumed, onOpenWatcher, onRefresh, onError }: ThreadViewProps) {
   const [draft, setDraft] = useState('')
   const [streaming, setStreaming] = useState('')
   const timeline = useMemo(() => (thread ? mergeTimeline(thread) : []), [thread])
@@ -326,6 +333,7 @@ export function ThreadView({ thread, watchers, loading, pendingPrompt, onPending
       setDraft('')
       void onRefresh()
     },
+    onError,
   })
 
   useEffect(() => {
@@ -358,10 +366,24 @@ export function ThreadView({ thread, watchers, loading, pendingPrompt, onPending
                   key={item.run.id}
                   run={item.run}
                   onAdopt={(runId) => {
-                    void adoptRun(runId).then(() => onRefresh())
+                    void (async () => {
+                      try {
+                        await adoptRun(runId)
+                        await onRefresh()
+                      } catch (error) {
+                        onError(getErrorMessage(error, '采纳改动失败。'))
+                      }
+                    })()
                   }}
                   onRetry={(runId) => {
-                    void retryRun(runId).then(() => onRefresh())
+                    void (async () => {
+                      try {
+                        await retryRun(runId)
+                        await onRefresh()
+                      } catch (error) {
+                        onError(getErrorMessage(error, '重试执行失败。'))
+                      }
+                    })()
                   }}
                 />
               )
@@ -377,6 +399,7 @@ export function ThreadView({ thread, watchers, loading, pendingPrompt, onPending
                   watcher={liveWatcher}
                   onRefresh={onRefresh}
                   onOpenWatcher={onOpenWatcher}
+                  onError={onError}
                 />
               )
             }
