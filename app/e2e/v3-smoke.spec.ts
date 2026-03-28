@@ -59,4 +59,7 @@ test('mobile rail keeps watcher navigation reachable', async ({ page }) => {
 
   await expect(page.getByText('监控 · 1 个运行中')).toBeVisible()
   await expect(page.locator('.watcher-card').first()).toHaveClass(/is-selected/)
+  await expect(page.locator('.watcher-inspector-head')).toBeHidden()
+  await expect(page.locator('.watcher-inspector-copy')).toBeHidden()
+  await expect(page.locator('.watcher-inspector-grid')).toBeHidden()
 })

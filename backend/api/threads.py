@@ -45,7 +45,7 @@ async def get_thread(thread_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(stmt)
     thread = result.scalars().first()
     if thread is None:
-        raise HTTPException(status_code=404, detail="Thread not found")
+        raise HTTPException(status_code=404, detail="线程不存在")
     appended = await DigestService(db).append_restore_summary(thread)
     if appended:
         result = await db.execute(stmt.execution_options(populate_existing=True))
@@ -59,7 +59,7 @@ async def send_message(thread_id: str, payload: MessageCreate, request: Request,
     result = await db.execute(stmt)
     thread = result.scalars().first()
     if thread is None:
-        raise HTTPException(status_code=404, detail="Thread not found")
+        raise HTTPException(status_code=404, detail="线程不存在")
 
     user_message = Message(thread_id=thread.id, role="user", content=payload.content.strip())
     db.add(user_message)

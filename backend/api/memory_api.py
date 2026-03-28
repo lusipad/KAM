@@ -47,7 +47,7 @@ async def create_memory(payload: MemoryCreate, db: AsyncSession = Depends(get_db
 async def update_memory(memory_id: str, payload: MemoryUpdate, db: AsyncSession = Depends(get_db)):
     memory = await MemoryService(db).update(memory_id, payload.model_dump(exclude_unset=True))
     if memory is None:
-        raise HTTPException(status_code=404, detail="Memory not found")
+        raise HTTPException(status_code=404, detail="记忆不存在")
     return memory.to_dict()
 
 

@@ -21,7 +21,7 @@ class SeedDemoRequest(BaseModel):
 
 def _require_non_production() -> None:
     if settings.app_env == "production":
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="未找到页面")
 
 
 @router.post("/seed-demo")

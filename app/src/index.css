@@ -1255,6 +1255,16 @@ button {
 
   .watcher-inspector {
     position: static;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    gap: 12px;
+  }
+
+  .watcher-inspector-head,
+  .watcher-inspector-copy,
+  .watcher-inspector-grid {
+    display: none;
   }
 
   .watcher-inspector-grid {

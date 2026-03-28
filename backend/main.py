@@ -79,10 +79,9 @@ if FRONTEND_INDEX_FILE.exists():
     @app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     async def serve_frontend(full_path: str):
         if _is_backend_path(full_path):
-            raise HTTPException(status_code=404, detail="Not Found")
+            raise HTTPException(status_code=404, detail="未找到页面")
 
         asset = _resolve_frontend_asset(full_path)
         if asset is not None:
             return FileResponse(asset)
         return FileResponse(FRONTEND_INDEX_FILE)
-

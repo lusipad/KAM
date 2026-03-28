@@ -412,6 +412,18 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(recent_ids, {"demo-run-adopted"})
         self.assertTrue(recent_ids.isdisjoint(attention_ids))
 
+    def test_missing_resources_return_chinese_404_details(self):
+        thread_response = self.client.get("/api/threads/missing-thread")
+        watcher_response = self.client.get("/api/watchers/missing-watcher")
+        memory_response = self.client.put("/api/memory/missing-memory", json={"content": "补一条"})
+
+        self.assertEqual(thread_response.status_code, 404)
+        self.assertEqual(thread_response.json()["detail"], "线程不存在")
+        self.assertEqual(watcher_response.status_code, 404)
+        self.assertEqual(watcher_response.json()["detail"], "监控不存在")
+        self.assertEqual(memory_response.status_code, 404)
+        self.assertEqual(memory_response.json()["detail"], "记忆不存在")
+
     def _wait_for_run(self, run_id: str, timeout: float = 5.0) -> dict:
         deadline = time.time() + timeout
         while time.time() < deadline:

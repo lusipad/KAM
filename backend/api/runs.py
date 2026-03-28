@@ -15,7 +15,7 @@ router = APIRouter(prefix="/runs", tags=["runs"])
 async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
     run = await db.get(Run, run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+        raise HTTPException(status_code=404, detail="执行记录不存在")
     return run.to_dict()
 
 
@@ -28,5 +28,5 @@ async def adopt_run(run_id: str, db: AsyncSession = Depends(get_db)):
 async def retry_run(run_id: str, db: AsyncSession = Depends(get_db)):
     run = await RunEngine(db).retry_run(run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+        raise HTTPException(status_code=404, detail="执行记录不存在")
     return run.to_dict()

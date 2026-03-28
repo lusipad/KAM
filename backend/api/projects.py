@@ -72,7 +72,7 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(stmt)
     project = result.scalars().first()
     if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
     return {**project.to_dict(), "threads": [thread.to_summary_dict() for thread in project.threads]}
 
 
@@ -80,7 +80,7 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
 async def update_project(project_id: str, payload: ProjectUpdate, db: AsyncSession = Depends(get_db)):
     project = await db.get(Project, project_id)
     if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
     if payload.title is not None:
         project.title = payload.title.strip()
     if payload.repoPath is not None:
@@ -94,7 +94,7 @@ async def update_project(project_id: str, payload: ProjectUpdate, db: AsyncSessi
 async def create_thread(project_id: str, payload: ThreadCreate, db: AsyncSession = Depends(get_db)):
     project = await db.get(Project, project_id)
     if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail="项目不存在")
     thread = Thread(
         project_id=project_id,
         title=(payload.title or "新对话").strip(),

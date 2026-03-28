@@ -38,7 +38,7 @@ async def list_watchers(db: AsyncSession = Depends(get_db)):
 async def get_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
     watcher = await watcher_engine.get_watcher(db, watcher_id)
     if watcher is None:
-        raise HTTPException(status_code=404, detail="Watcher not found")
+        raise HTTPException(status_code=404, detail="监控不存在")
     return watcher.to_dict()
 
 
@@ -68,7 +68,7 @@ async def update_watcher(watcher_id: str, payload: WatcherUpdate, db: AsyncSessi
         auto_action_level=payload.autoActionLevel,
     )
     if watcher is None:
-        raise HTTPException(status_code=404, detail="Watcher not found")
+        raise HTTPException(status_code=404, detail="监控不存在")
     return watcher.to_dict()
 
 
@@ -76,7 +76,7 @@ async def update_watcher(watcher_id: str, payload: WatcherUpdate, db: AsyncSessi
 async def list_watcher_events(watcher_id: str, db: AsyncSession = Depends(get_db)):
     watcher = await watcher_engine.get_watcher(db, watcher_id)
     if watcher is None:
-        raise HTTPException(status_code=404, detail="Watcher not found")
+        raise HTTPException(status_code=404, detail="监控不存在")
     events = await watcher_engine.list_events(db, watcher_id)
     return {"events": [event.to_dict() for event in events]}
 
@@ -85,7 +85,7 @@ async def list_watcher_events(watcher_id: str, db: AsyncSession = Depends(get_db
 async def pause_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
     watcher = await watcher_engine.pause(db, watcher_id)
     if watcher is None:
-        raise HTTPException(status_code=404, detail="Watcher not found")
+        raise HTTPException(status_code=404, detail="监控不存在")
     return watcher.to_dict()
 
 
@@ -93,7 +93,7 @@ async def pause_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
 async def activate_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
     watcher = await watcher_engine.activate(db, watcher_id)
     if watcher is None:
-        raise HTTPException(status_code=404, detail="Watcher not found")
+        raise HTTPException(status_code=404, detail="监控不存在")
     return watcher.to_dict()
 
 
@@ -101,7 +101,7 @@ async def activate_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
 async def resume_watcher(watcher_id: str, db: AsyncSession = Depends(get_db)):
     watcher = await watcher_engine.resume(db, watcher_id)
     if watcher is None:
-        raise HTTPException(status_code=404, detail="Watcher not found")
+        raise HTTPException(status_code=404, detail="监控不存在")
     return watcher.to_dict()
 
 
@@ -120,5 +120,5 @@ async def execute_event_action(event_id: str, action_index: int, db: AsyncSessio
 async def dismiss_event(event_id: str, db: AsyncSession = Depends(get_db)):
     event = await watcher_engine.dismiss_event(db, event_id)
     if event is None:
-        raise HTTPException(status_code=404, detail="Watcher event not found")
+        raise HTTPException(status_code=404, detail="监控事件不存在")
     return event.to_dict()
