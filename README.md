@@ -53,6 +53,34 @@ docs/
 
 ## 本地开发
 
+### 首次准备
+
+建议先准备好：
+
+- Python 3.11+，并在仓库根目录创建 `.venv`
+- Node.js 20+
+- 可选：`codex` / `claude-code` CLI，如果你要跑真实 agent 执行
+
+首次安装依赖：
+
+```bash
+python -m venv .venv
+.venv/Scripts/pip install -r backend/requirements.txt
+cd app && npm install
+```
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install -r .\backend\requirements.txt
+Set-Location .\app
+npm install
+Set-Location ..
+```
+
+环境变量默认可直接用仓库内置值；如果要覆盖，再把 [`.env.example`](.env.example) 复制为根目录 `.env` 后修改。
+
 ### 一键本地预览
 
 ```bash
@@ -67,12 +95,14 @@ pwsh -File .\verify-local.ps1
 pwsh -File .\seed-demo.ps1
 ```
 
-这个脚本会先构建前端，再启动：
+`start-local` 会先构建前端，再启动：
 
 ```bash
 cd backend
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+启动后默认打开 `http://127.0.0.1:8000`。如果你要快速看完整界面，建议再执行一次 `seed-demo.ps1` 注入演示数据。
 
 ### 分开运行
 
