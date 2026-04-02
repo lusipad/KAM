@@ -24,7 +24,7 @@ RESERVED_BACKEND_PREFIXES = ("api", "docs", "redoc", "openapi.json", "health")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    if settings.is_test_env:
+    if settings.is_test_env or not settings.enable_legacy_v3:
         yield
         return
 
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="KAM V3 - 个人 AI 控制台。",
+    description="KAM Harness - local-first software engineering agent harness.",
     lifespan=lifespan,
 )
 

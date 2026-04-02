@@ -25,6 +25,7 @@ from services.digest import DigestService
 class _RunState:
     semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(settings.max_concurrent_runs))
     tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    initial_artifacts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 _STATE = _RunState()
@@ -34,7 +35,14 @@ class RunEngine:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def create_run(self, *, thread_id: str, agent: str, task: str) -> Run:
+    async def create_run(
+        self,
+        *,
+        thread_id: str,
+        agent: str,
+        task: str,
+        initial_artifacts: list[dict[str, Any]] | None = None,
+    ) -> Run:
         run = Run(thread_id=thread_id, agent=agent, task=task, status="pending")
         self.db.add(run)
         thread = await self.db.get(Thread, thread_id)
@@ -43,6 +51,8 @@ class RunEngine:
         await self.db.commit()
         await self.db.refresh(run)
         await self._publish(run, "run_queued", {"progress": "已排队"})
+        if initial_artifacts:
+            _STATE.initial_artifacts[run.id] = [dict(artifact) for artifact in initial_artifacts]
         if settings.is_test_env:
             await self._execute_run(run.id)
             await self.db.refresh(run)
@@ -159,6 +169,7 @@ class RunEngine:
                         )
             finally:
                 _STATE.tasks.pop(run_id, None)
+                _STATE.initial_artifacts.pop(run_id, None)
 
     async def _prepare_execution(self, run: Run, project: Project | None) -> tuple[Path | None, list[str]]:
         repo_path = Path(project.repo_path).resolve() if project and project.repo_path else None
@@ -302,6 +313,7 @@ class RunEngine:
             {"type": "stdout", "content": run.raw_output or "", "metadata": {"status": run.status}},
             {"type": "summary", "content": run.result_summary or "", "metadata": {"status": run.status}},
         ]
+        artifacts = [*(_STATE.initial_artifacts.pop(run.id, [])), *artifacts]
         if run.changed_files:
             artifacts.append({"type": "changed_files", "content": json.dumps(run.changed_files, ensure_ascii=False)})
         if patch_output:

@@ -53,13 +53,18 @@ function Invoke-CheckedProcess {
 }
 
 Write-Host "==================================" -ForegroundColor Cyan
-Write-Host "  KAM V3 - 本地验证脚本" -ForegroundColor Cyan
+Write-Host "  KAM Harness - 本地验证脚本" -ForegroundColor Cyan
 Write-Host "==================================" -ForegroundColor Cyan
 Write-Host ""
 
 Push-Location $RootDir
 try {
-    Invoke-CheckedProcess "后端单测" $Pwsh @(
+    Invoke-CheckedProcess "Harness 后端单测" $Pwsh @(
+        "-NoProfile",
+        "-Command",
+        "& '$Python' -m unittest backend.tests.test_harness_api -v"
+    ) $RootDir
+    Invoke-CheckedProcess "Legacy V3 后端回归" $Pwsh @(
         "-NoProfile",
         "-Command",
         "& '$Python' -m unittest backend.tests.test_v3_api -v"

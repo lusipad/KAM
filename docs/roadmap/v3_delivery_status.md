@@ -1,54 +1,60 @@
-# KAM V3 本地交付状态
+# KAM Harness Cutover Status
 
-> 当前默认目标是“本地优先工作台”，不是“零改造云原生 SaaS”。
-> 本文档只描述当前主线状态和剩余缺口，不重复历史 phase 计划。
-
----
+> 这份文档不再把 V3 workspace 当目标态。
+> 当前目标是：把 KAM 切到一个 `task-first`, `local-first`, `dogfood-first` 的软件工程 harness。
 
 ## 当前判断
 
-- 产品主线完成度：约 90% - 95%
-- 本地交付完成度：约 95%
-- 云部署完成度：约 60% - 75%
+- dogfood 验证基线：已稳定
+- 最小 harness backend：已接上
+- 默认前端入口：已切到 task-first workbench
+- 旧 V3 workspace：仍在仓库中，但已退居过渡层
 
-当前仓库已经完成 V3 的核心产品闭环，重点剩余项主要集中在部署形态与工程化收口，而不是主功能缺失。
+## 已完成
 
-## 已完成主线
-
-- 三栏工作台：Sidebar / Main / Memory panel
-- Home feed：需要关注、运行中、最近历史三层优先级
-- Thread 对话流：消息、Run 卡片、草稿监控卡片、失败态与采纳闭环
-- Memory：偏好、决策、经验、项目上下文查看
-- Watchers：创建草稿、启用、暂停、恢复、立即执行、事件处理
-- 后端主线：`/api/*`、bootstrap、SSE、SQLite、Alembic baseline
-- 本地脚本：`start-local.*`、`verify-local.ps1`、`seed-demo.ps1`
-- 本地验证：后端单测、前端 lint/build、浏览器 smoke
+- 修复 `verify-local.ps1` 中的 SQLite lock，不再出现 `database is locked`
+- 新增 Task 主链路：
+  - `Task`
+  - `TaskRef`
+  - `ContextSnapshot`
+  - `RunArtifact`
+  - `ReviewCompare`
+- 新增最小 harness API：
+  - `/api/tasks`
+  - `/api/tasks/{task_id}/refs`
+  - `/api/tasks/{task_id}/context/resolve`
+  - `/api/context/snapshots/{snapshot_id}`
+  - `/api/tasks/{task_id}/runs`
+  - `/api/runs/{run_id}/artifacts`
+  - `/api/reviews/{task_id}/compare`
+- 默认前端主入口改为 task-first workbench
+- 新增 harness smoke
+- 新增 `POST /api/dev/seed-harness`
 
 ## 当前仍有缺口
 
-### 本地形态内的收尾项
+### 需要继续推进
 
-- 文档口径继续统一，减少 v2 / v3 混用痕迹
-- 异常恢复说明、CLI 缺失时的诊断说明继续打磨
-- 针对中文文案、移动端断点、异常状态再做少量走查
+- 彻底下掉旧 `projects / threads / home / watchers / memory` 主入口
+- 把 bridge thread/project 方案继续收口为真正 task-native runtime
+- 把文档、脚本、命名进一步从 `v3 workspace` 语境切干净
+- 补更完整的 task-first 前端交互：多任务切换、引用编辑、compare 细化
 
-### 云部署相关缺口
+### 明确不优先做
 
-- 当前运行引擎依赖本地 `codex` / `claude-code` CLI
-- Run 依赖本地 `git worktree`、子进程执行和自动 commit
-- Watcher 依赖常驻 scheduler
-- 持久化默认基于本地 SQLite 与本地文件目录
-
-这意味着当前 V3 适合本地机器、常驻开发机或完整 Linux 主机，不适合直接当作无状态 Web 应用部署到展示型免费平台。
+- 云化 / SaaS 化
+- 多租户 / 账号体系
+- 重型 watcher 主线
+- 长期 memory 产品化
 
 ## 当前建议
 
-- 如果目标是“先把产品做成可用工具”，继续坚持本地优先
-- 如果下一步要上线，优先选择 Linux VPS / 云主机，再考虑 PaaS
-- 如果只是做公开演示，再补一个 demo mode，而不是直接迁完整后端
+- 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
+- 下一步优先做旧入口退场和 runtime 去桥接化
+- 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档
 
-- 架构设计：[../design/v3_architecture_design.md](../design/v3_architecture_design.md)
-- UI 规范：[../design/v3_ui_spec.md](../design/v3_ui_spec.md)
-- 历史 phase 路线图：[./v2_implementation_roadmap.md](./v2_implementation_roadmap.md)
+- 产品目标：[../product/ai_work_assistant_prd.md](../product/ai_work_assistant_prd.md)
+- 当前 PRD：[../../.omx/plans/prd-harness-dogfood-cutover.md](../../.omx/plans/prd-harness-dogfood-cutover.md)
+- 当前 Test Spec：[../../.omx/plans/test-spec-harness-dogfood-cutover.md](../../.omx/plans/test-spec-harness-dogfood-cutover.md)

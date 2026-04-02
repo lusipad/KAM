@@ -27,6 +27,7 @@ os.environ["STORAGE_PATH"] = str(TMP_ROOT)
 os.environ["RUN_ROOT"] = str(TMP_ROOT / "runs")
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["APP_ENV"] = "test"
+os.environ.setdefault("ENABLE_LEGACY_V3", "true")
 
 from db import async_session, engine  # noqa: E402
 from main import app  # noqa: E402
@@ -498,7 +499,7 @@ class V3ApiTests(unittest.TestCase):
 
         artifacts = self.client.get(f"/api/runs/{run_one['id']}/artifacts").json()["artifacts"]
         artifact_types = {artifact["type"] for artifact in artifacts}
-        self.assertTrue({"task", "stdout", "summary"}.issubset(artifact_types))
+        self.assertTrue({"task_snapshot", "context_snapshot", "task", "stdout", "summary"}.issubset(artifact_types))
 
         compare = self.client.post(
             f"/api/reviews/{task['id']}/compare",

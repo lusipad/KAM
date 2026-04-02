@@ -77,7 +77,7 @@ $Python = Resolve-Python -ExplicitPath $PythonBin
 $Npm = Resolve-Npm
 
 Write-Host "==================================" -ForegroundColor Cyan
-Write-Host "  KAM V3 - 本地启动脚本" -ForegroundColor Cyan
+Write-Host "  KAM Harness - 本地启动脚本" -ForegroundColor Cyan
 Write-Host "==================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -92,7 +92,7 @@ if (-not $SkipBuild) {
 }
 
 Write-Host "启动地址: http://127.0.0.1:$Port" -ForegroundColor Green
-Write-Host "如需演示数据，可另开一个终端执行: pwsh -File .\\seed-demo.ps1" -ForegroundColor DarkGray
+Write-Host "如需 task-first 演示数据，可另开一个终端执行: pwsh -File .\\seed-harness.ps1" -ForegroundColor DarkGray
 Write-Host ""
 
 Push-Location (Join-Path $RootDir "backend")

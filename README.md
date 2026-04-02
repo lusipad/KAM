@@ -1,75 +1,60 @@
-# KAM V3
+# KAM
 
-KAM V3 是一个三栏 AI 工作台：左侧是按项目分组的线程导航，中间是 Home feed / Thread 对话，右侧是随时可展开的 Memory panel。主线 API 已切到 `/api/*`，本地默认运行新的 `backend/main.py`。
+KAM 现在的主目标不是继续做 V3 对话工作台，而是切到一个 `local-first` 的软件工程 agent harness，用 KAM 自己持续开发 KAM。
 
-## 当前主线
+当前主链路：
 
-- 三栏工作台
-  - Sidebar：活跃任务摘要、项目分组线程、Home / Watchers / Memory 入口
-  - Main：Empty state、Home feed、Thread conversation、Watcher 管理
-  - Memory：按偏好 / 决策 / learnings / project context 展示
-- V3 后端
-  - `Project / Thread / Message / Run / Memory / Watcher / WatcherEvent`
-  - 首条输入通过服务端 bootstrap 自动创建 Project / Thread，并生成标题
-  - SSE 事件推送
-  - Run adopt / retry
-  - Watcher draft / activate / run-now / pause / resume / action / dismiss
-- 运行方式
-  - 后端直接服务前端构建产物
-  - 默认数据库：`sqlite+aiosqlite:///./storage/kam-v3.db`
-  - Alembic 迁移链已重置为 V3 baseline
+`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare`
+
+V3 workspace 相关代码仍在仓库里，但已经退到过渡层，不再代表新的产品中心。
+
+## 当前状态
+
+- 验证基线已稳定：`verify-local.ps1` 可通过
+- 最小 harness backend 已接上：
+  - `GET/POST /api/tasks`
+  - `POST/DELETE /api/tasks/{task_id}/refs`
+  - `POST /api/tasks/{task_id}/context/resolve`
+  - `GET /api/context/snapshots/{snapshot_id}`
+  - `POST /api/tasks/{task_id}/runs`
+  - `GET /api/runs/{run_id}/artifacts`
+  - `POST /api/reviews/{task_id}/compare`
+- 默认前端入口已切成 task-first workbench
+- 开发态提供 harness demo 播种接口：`POST /api/dev/seed-harness`
 
 ## 目录
 
 ```text
 app/
   src/
-    layout/            三栏壳层
-    features/home/     Home feed
-    features/thread/   对话流、Run 卡片、输入框
-    features/review/   PR review 卡片
-    features/memory/   右侧记忆面板
-    features/watcher/  Watcher 管理
+    features/tasks/      task-first workbench
+    features/thread/     可复用的 Run 卡片等过渡组件
+    layout/              壳层组件
 
 backend/
-  main.py              FastAPI 入口
-  config.py            V3 settings
-  db.py                async engine / session / init_db
-  models.py            V3 SQLAlchemy 模型
-  api/                 /api 路由
-  services/            router / run / digest / watcher / memory
-  adapters/            GitHub / Azure / CI 适配器
-  alembic/             V3 baseline migration
+  api/
+    tasks.py
+    context_snapshots.py
+    reviews.py
+    runs.py
+  services/
+    run_engine.py
+    task_context.py
+    artifact_store.py
+    review_compare.py
+  models.py
+  main.py
+  db.py
 
 docs/
-  README.md            文档索引
-  product/             产品需求与定位
-  design/              设计稿、架构稿、UI 规范
-  roadmap/             路线图与执行计划
-  migration/           迁移文档
-  archive/legacy/      历史方案归档
-  archive/notes/       历史探针与临时记录
+  product/              目标 PRD
+  roadmap/              当前交付状态
+  archive/legacy/       历史设计
 ```
 
 ## 本地开发
 
-### 首次准备
-
-建议先准备好：
-
-- Python 3.11+，并在仓库根目录创建 `.venv`
-- Node.js 20+
-- 可选：`codex` / `claude-code` CLI，如果你要跑真实 agent 执行
-
-首次安装依赖：
-
-```bash
-python -m venv .venv
-.venv/Scripts/pip install -r backend/requirements.txt
-cd app && npm install
-```
-
-Windows PowerShell:
+首次准备：
 
 ```powershell
 python -m venv .venv
@@ -79,139 +64,54 @@ npm install
 Set-Location ..
 ```
 
-环境变量默认可直接用仓库内置值；如果要覆盖，再把 [`.env.example`](.env.example) 复制为根目录 `.env` 后修改。
-
-### 一键本地预览
-
-```bash
-./start-local.sh
-```
-
-Windows PowerShell:
+启动：
 
 ```powershell
 pwsh -File .\start-local.ps1
-pwsh -File .\verify-local.ps1
-pwsh -File .\seed-demo.ps1
 ```
 
-`start-local` 会先构建前端，再启动：
-
-```bash
-cd backend
-python -m uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-启动后默认打开 `http://127.0.0.1:8000`。如果你要快速看完整界面，建议再执行一次 `seed-demo.ps1` 注入演示数据。
-
-### 分开运行
-
-前端构建：
-
-```bash
-cd app
-npm install
-npm run build
-```
-
-后端启动：
-
-```bash
-cd backend
-pip install -r requirements.txt
-python -m uvicorn main:app --reload --port 8000
-```
-
-打开 `http://localhost:8000`。
-
-## Docker
-
-```bash
-./start.sh
-```
-
-Windows PowerShell:
+验证：
 
 ```powershell
-pwsh -File .\start.ps1
-pwsh -File .\start.ps1 -Port 8012
+pwsh -File .\verify-local.ps1
 ```
 
-Docker 版本会：
+如果你要直接看 task-first 界面：
 
-- 构建 `app/dist`
-- 在单个容器内运行 `backend/main.py`
-- 使用挂载卷持久化 `backend/storage`
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body (@{ reset = $true } | ConvertTo-Json) -ContentType 'application/json'
+```
 
-## API
+## 关键命令
 
-主接口位于 `/api`：
+后端单测：
 
-- `GET/POST /api/projects`
-- `POST /api/projects/bootstrap`
-- `POST /api/projects/{project_id}/threads`
-- `GET /api/threads`
-- `GET /api/threads/{thread_id}`
-- `POST /api/threads/{thread_id}/messages`
-- `GET /api/threads/{thread_id}/events`
-- `GET /api/home/feed`
-- `GET /api/home/events`
-- `GET/POST /api/memory`
-- `GET /api/watchers`
-- `POST /api/watchers`
-- `POST /api/watchers/{watcher_id}/pause`
-- `POST /api/watchers/{watcher_id}/activate`
-- `POST /api/watchers/{watcher_id}/resume`
-- `POST /api/watchers/{watcher_id}/run-now`
-- `POST /api/watchers/events/{event_id}/actions/{action_index}`
-- `POST /api/watchers/events/{event_id}/dismiss`
-- `POST /api/runs/{run_id}/retry`
-- `POST /api/runs/{run_id}/adopt`
-
-开发态还提供一条 demo 数据播种接口：
-
-- `POST /api/dev/seed-demo`
-
-## 验证
-
-后端：
-
-```bash
-python -m unittest backend.tests.test_v3_api -v
+```powershell
+.\.venv\Scripts\python.exe -m unittest backend.tests.test_harness_api -v
+.\.venv\Scripts\python.exe -m unittest backend.tests.test_v3_api -v
 ```
 
 前端：
 
-```bash
-cd app
+```powershell
+Set-Location app
 npm run build
 npm run lint
-```
-
-浏览器 smoke：
-
-```bash
-cd app
-npm run test:smoke
 npm run test:smoke:local
 ```
 
-`test:smoke` 会先调用 `/api/dev/seed-demo`，再验收 Home / Thread / Memory / Watchers 四个 V3 关键视图。运行时需要目标服务已经启动，默认地址是 `http://127.0.0.1:8000`，也可以通过 `PW_BASE_URL` 覆盖。
+## 当前原则
 
-`test:smoke:local` 会自动起一个临时后端实例，使用 `backend/storage/smoke-v3.db` 跑完整浏览器 smoke，结束后自动收尾。
+- dogfood-first：先让 KAM 能稳定开发 KAM
+- local-first：先把单机链路做硬，不先追云化
+- task-first：不再以 thread/home/watcher/memory 作为产品中心
+- prefer deletion：不为历史长期保留双主线
+- legacy safety net：默认关闭 V3 主入口，但保留 `ENABLE_LEGACY_V3=true` 下的回归能力
 
-`verify-local.ps1` 会依次执行后端单测、前端 build、lint 和本地 smoke。
+## 参考文档
 
-## 当前交互约定
-
-- 新对话不再在前端本地裁剪标题，而是调用服务端 `bootstrap` 生成项目和线程标题。
-- 对话里创建的 watcher 会先以 `draft` 草稿卡片出现，用户可直接在当前线程里编辑细节并启用。
-- Home feed 的“需要你处理”按统一优先级混排：失败 run、watcher 提醒、等待采纳结果。
-
-## 规范来源
-
-- [`docs/README.md`](docs/README.md)
-- [`docs/product/ai_work_assistant_prd.md`](docs/product/ai_work_assistant_prd.md)
-- [`docs/design/v3_architecture_design.md`](docs/design/v3_architecture_design.md)
-- [`docs/design/v3_ui_spec.md`](docs/design/v3_ui_spec.md)
-- [`docs/roadmap/v3_delivery_status.md`](docs/roadmap/v3_delivery_status.md)
+- [docs/README.md](./docs/README.md)
+- [docs/product/ai_work_assistant_prd.md](./docs/product/ai_work_assistant_prd.md)
+- [docs/roadmap/v3_delivery_status.md](./docs/roadmap/v3_delivery_status.md)
+- [.omx/plans/prd-harness-dogfood-cutover.md](./.omx/plans/prd-harness-dogfood-cutover.md)
+- [.omx/plans/test-spec-harness-dogfood-cutover.md](./.omx/plans/test-spec-harness-dogfood-cutover.md)

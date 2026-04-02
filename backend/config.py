@@ -9,10 +9,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore", case_sensitive=False)
 
-    app_name: str = "KAM V3"
+    app_name: str = "KAM Harness"
     app_version: str = "3.0.0"
     app_env: str = "development"
     app_debug: bool = False
+    enable_legacy_v3: bool = False
     app_cors_origins: str = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:5173,http://127.0.0.1:5173"
 
     database_url: str = "sqlite+aiosqlite:///./storage/kam-v3.db"

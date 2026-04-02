@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
 
 
 test('task-first harness workbench is reachable', async ({ page }) => {
-  await expect(page).toHaveTitle('KAM V3')
+  await expect(page).toHaveTitle('KAM Harness')
   await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
   await expect(page.getByRole('main').getByText('Refs', { exact: true })).toBeVisible()
   await expect(page.getByRole('main').getByText('Context Snapshot', { exact: true })).toBeVisible()
