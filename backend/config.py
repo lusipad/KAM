@@ -53,5 +53,10 @@ class Settings(BaseSettings):
     def run_dir(self) -> Path:
         return Path(self.run_root).resolve()
 
+    @computed_field
+    @property
+    def is_test_env(self) -> bool:
+        return self.app_env.lower() == "test"
+
 
 settings = Settings()

@@ -1,0 +1,72 @@
+import { formatRelativeTime } from '@/lib/v3-ui'
+import type { TaskRecord } from '@/types/v3'
+
+type TaskSidebarProps = {
+  tasks: TaskRecord[]
+  activeTaskId: string | null
+  onSelectTask: (taskId: string) => void
+  onCreateTask: () => void
+}
+
+function taskTone(task: TaskRecord) {
+  if (task.status === 'running' || task.status === 'in_progress') {
+    return 'amber'
+  }
+  if (task.status === 'done' || task.status === 'verified') {
+    return 'green'
+  }
+  if (task.status === 'blocked' || task.status === 'failed') {
+    return 'red'
+  }
+  return 'gray'
+}
+
+function taskMeta(task: TaskRecord) {
+  const label = task.labels.slice(0, 2).join(' · ')
+  return label || formatRelativeTime(task.updatedAt)
+}
+
+export function TaskSidebar({ tasks, activeTaskId, onSelectTask, onCreateTask }: TaskSidebarProps) {
+  return (
+    <aside className="kam-sidebar">
+      <div className="sidebar-brand">
+        <div className="brand-mark">K</div>
+        <div>
+          <div className="brand-name">KAM</div>
+          <div className="brand-subtle">Harness</div>
+        </div>
+      </div>
+
+      <button type="button" className="active-rail" onClick={onCreateTask}>
+        <span className="status-dot is-amber" />
+        <span>{tasks.length ? `当前 ${tasks.length} 个任务` : '创建第一个任务'}</span>
+      </button>
+
+      <div className="sidebar-scroll">
+        <section className="thread-group">
+          <div className="group-label">Tasks</div>
+          {tasks.map((task) => (
+            <button
+              type="button"
+              key={task.id}
+              className={`thread-row ${task.id === activeTaskId ? 'is-active' : ''}`}
+              onClick={() => onSelectTask(task.id)}
+            >
+              <span className={`status-dot is-${taskTone(task)}`} />
+              <span className="thread-copy">
+                <span className="thread-title">{task.title}</span>
+                <span className="thread-meta">{taskMeta(task)}</span>
+              </span>
+            </button>
+          ))}
+        </section>
+      </div>
+
+      <div className="sidebar-footer">
+        <button type="button" className="footer-tab is-wide is-active" onClick={onCreateTask}>
+          新建任务
+        </button>
+      </div>
+    </aside>
+  )
+}

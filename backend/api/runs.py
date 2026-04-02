@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import get_db
 from models import Run
+from services.artifact_store import ArtifactStore
 from services.run_engine import RunEngine
 
 
@@ -17,6 +18,15 @@ async def get_run(run_id: str, db: AsyncSession = Depends(get_db)):
     if run is None:
         raise HTTPException(status_code=404, detail="执行记录不存在")
     return run.to_dict()
+
+
+@router.get("/{run_id}/artifacts")
+async def get_run_artifacts(run_id: str, db: AsyncSession = Depends(get_db)):
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    artifacts = await ArtifactStore(db).list_for_run(run_id)
+    return {"artifacts": [artifact.to_dict() for artifact in artifacts]}
 
 
 @router.post("/{run_id}/adopt")

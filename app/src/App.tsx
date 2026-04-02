@@ -1,29 +1,39 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
-  bootstrapConversation,
-  createProject,
-  createThread,
-  getHomeFeed,
-  getMemory,
-  getThread,
-  listThreads,
-  listWatchers,
+  addTaskRef,
+  adoptRun,
+  archiveTask,
+  createTask,
+  createTaskCompare,
+  createTaskRun,
+  deleteTaskRef,
+  getErrorMessage,
+  getRunArtifacts,
+  getTask,
+  listTasks,
+  resolveTaskContext,
+  retryRun,
 } from '@/api/client'
-import { HomeFeed } from '@/features/home/HomeFeed'
-import { MemoryPanel } from '@/features/memory/MemoryPanel'
-import { MessageInput } from '@/features/thread/MessageInput'
-import { ThreadView } from '@/features/thread/ThreadView'
-import { WatcherList } from '@/features/watcher/WatcherList'
-import { useSSE } from '@/hooks/useSSE'
+import { TaskPanel } from '@/features/tasks/TaskPanel'
+import { TaskSidebar } from '@/features/tasks/TaskSidebar'
+import { TaskWorkbench } from '@/features/tasks/TaskWorkbench'
 import { AppShell } from '@/layout/AppShell'
-import { Sidebar } from '@/layout/Sidebar'
 import type { ToastItem } from '@/layout/Toast'
-import type { HomeFeedPayload, MemoryItem, ThreadDetail, ThreadSummary, WatcherRecord } from '@/types/v3'
+import type { RunArtifactRecord, TaskDetail, TaskRecord } from '@/types/v3'
 
-type ViewMode = 'empty' | 'home' | 'thread' | 'watchers'
+function inferTaskPayload(prompt: string) {
+  const compact = prompt.trim().replace(/\s+/g, ' ')
+  const repoPath = compact.includes(':\\') || compact.startsWith('/') ? compact : null
+  return {
+    title: compact.slice(0, 60) || '新任务',
+    description: compact || null,
+    repoPath,
+    labels: ['dogfood'],
+  }
+}
 
-function EmptyState({
+function EmptyTaskState({
   value,
   onChange,
   onSubmit,
@@ -36,36 +46,42 @@ function EmptyState({
 }) {
   return (
     <div className="empty-state">
-      <div className="empty-icon">+</div>
-      <div className="empty-title">你现在要处理什么？</div>
-      <div className="empty-copy">描述任务，或者直接贴仓库路径，剩下的交给 KAM。</div>
+      <div className="empty-icon">T</div>
+      <div className="empty-title">Task-First Harness</div>
+      <div className="empty-copy">描述一个真实要推进的任务。KAM 会围绕 task、refs、snapshot、runs 和 artifacts 工作。</div>
       <div className="empty-composer">
-        <MessageInput
+        <textarea
+          className="task-empty-textarea"
+          placeholder="例如：把当前默认前端主入口切成 task-first workbench"
           value={value}
-          placeholder="说下你要我做什么..."
-          isSending={isBusy}
-          onChange={onChange}
-          onSubmit={onSubmit}
+          onChange={(event) => onChange(event.target.value)}
         />
+        <button type="button" className="button-primary task-empty-button" disabled={isBusy || !value.trim()} onClick={onSubmit}>
+          创建任务
+        </button>
       </div>
     </div>
   )
 }
 
 function App() {
-  const [view, setView] = useState<ViewMode>('empty')
-  const [threads, setThreads] = useState<ThreadSummary[]>([])
-  const [feed, setFeed] = useState<HomeFeedPayload | null>(null)
-  const [watchers, setWatchers] = useState<WatcherRecord[]>([])
-  const [memories, setMemories] = useState<MemoryItem[]>([])
-  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null)
-  const [selectedWatcherId, setSelectedWatcherId] = useState<string | null>(null)
-  const [thread, setThread] = useState<ThreadDetail | null>(null)
-  const [threadLoading, setThreadLoading] = useState(false)
-  const [memoryOpen, setMemoryOpen] = useState(false)
-  const [emptyPrompt, setEmptyPrompt] = useState('')
-  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null)
-  const [creatingThread, setCreatingThread] = useState(false)
+  const [tasks, setTasks] = useState<TaskRecord[]>([])
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const [task, setTask] = useState<TaskDetail | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [panelOpen, setPanelOpen] = useState(true)
+  const [artifacts, setArtifacts] = useState<RunArtifactRecord[]>([])
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [taskPrompt, setTaskPrompt] = useState('')
+  const [runPrompt, setRunPrompt] = useState('')
+  const [runAgent, setRunAgent] = useState<'codex' | 'claude-code'>('codex')
+  const [creatingTask, setCreatingTask] = useState(false)
+  const [creatingRun, setCreatingRun] = useState(false)
+  const [addingRef, setAddingRef] = useState(false)
+  const [creatingSnapshot, setCreatingSnapshot] = useState(false)
+  const [creatingCompare, setCreatingCompare] = useState(false)
+  const [snapshotFocus, setSnapshotFocus] = useState('')
+  const [refDraft, setRefDraft] = useState({ kind: 'file', label: '', value: '' })
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const pushToast = useCallback((toast: ToastItem) => {
@@ -75,236 +91,273 @@ function App() {
     }, 10000)
   }, [])
 
-  const showErrorToast = useCallback((message: string) => {
+  const onError = useCallback((error: unknown, fallback: string) => {
     pushToast({
-      id: `error-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      message,
+      id: `error-${Date.now()}`,
+      message: getErrorMessage(error, fallback),
       tone: 'red',
     })
   }, [pushToast])
 
-  const refreshThreads = useCallback(async () => {
-    const data = await listThreads()
-    setThreads(data.threads)
-    return data.threads
+  const refreshTasks = useCallback(async () => {
+    const data = await listTasks()
+    setTasks(data.tasks)
+    setSelectedTaskId((current) => {
+      if (current && data.tasks.some((item) => item.id === current)) {
+        return current
+      }
+      return data.tasks[0]?.id ?? null
+    })
+    return data.tasks
   }, [])
 
-  const refreshFeed = useCallback(async () => {
-    const data = await getHomeFeed()
-    setFeed(data)
-    return data
-  }, [])
-
-  const refreshWatchers = useCallback(async () => {
-    const data = await listWatchers()
-    setWatchers(data.watchers)
-    return data.watchers
-  }, [])
-
-  const refreshThread = useCallback(async (threadId: string) => {
-    setThreadLoading(true)
+  const refreshTask = useCallback(async (taskId: string) => {
+    setLoading(true)
     try {
-      const data = await getThread(threadId)
-      setThread(data)
-      const memoryData = await getMemory(data.projectId)
-      setMemories(memoryData.memories)
-      return data
+      const detail = await getTask(taskId)
+      setTask(detail)
+      setSelectedRunId((current) => {
+        if (current && detail.runs.some((run) => run.id === current)) {
+          return current
+        }
+        return detail.runs.at(-1)?.id ?? null
+      })
+      return detail
     } finally {
-      setThreadLoading(false)
+      setLoading(false)
     }
   }, [])
 
-  const refreshAll = useCallback(async () => {
-    const [loadedThreads] = await Promise.all([refreshThreads(), refreshFeed(), refreshWatchers()])
-    if (!loadedThreads.length) {
-      setView('empty')
-      return
+  const refreshArtifacts = useCallback(async (runId: string | null) => {
+    if (!runId) {
+      setArtifacts([])
+      return []
     }
-
-    setView((current) => (current === 'empty' ? 'home' : current))
-  }, [refreshFeed, refreshThreads, refreshWatchers])
+    const data = await getRunArtifacts(runId)
+    setArtifacts(data.artifacts)
+    return data.artifacts
+  }, [])
 
   useEffect(() => {
-    void refreshAll()
-  }, [refreshAll])
+    void refreshTasks()
+  }, [refreshTasks])
 
   useEffect(() => {
-    if (!selectedThreadId) {
-      setThread(null)
-      setMemories([])
+    if (!selectedTaskId) {
+      setTask(null)
+      setArtifacts([])
       return
     }
-    void refreshThread(selectedThreadId)
-  }, [refreshThread, selectedThreadId])
+    void refreshTask(selectedTaskId)
+  }, [refreshTask, selectedTaskId])
 
-  const handleOpenThread = useCallback((threadId: string) => {
-    setSelectedThreadId(threadId)
-    setView('thread')
-  }, [])
+  useEffect(() => {
+    void refreshArtifacts(selectedRunId)
+  }, [refreshArtifacts, selectedRunId])
 
-  const handleOpenWatcher = useCallback((watcherId: string) => {
-    setSelectedWatcherId(watcherId)
-    setView('watchers')
-  }, [])
-
-  const handleNewConversation = useCallback(async () => {
-    if (!emptyPrompt.trim() || creatingThread) {
+  useEffect(() => {
+    if (!selectedTaskId || !task?.runs.some((run) => run.status === 'pending' || run.status === 'running')) {
       return
     }
+    const timer = window.setInterval(() => {
+      void refreshTask(selectedTaskId)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [refreshTask, selectedTaskId, task?.runs])
 
-    setCreatingThread(true)
+  const handleCreateTask = useCallback(async () => {
+    if (!taskPrompt.trim() || creatingTask) {
+      return
+    }
+    setCreatingTask(true)
     try {
-      const repoPath = emptyPrompt.includes(':\\') || emptyPrompt.startsWith('/') ? emptyPrompt : null
-      const bootstrapped = await bootstrapConversation({
-        prompt: emptyPrompt,
-        repoPath,
-      })
-      const createdThread = bootstrapped.thread
-      await Promise.all([refreshThreads(), refreshFeed(), refreshWatchers()])
-      setSelectedThreadId(createdThread.id)
-      setPendingPrompt(emptyPrompt)
-      setEmptyPrompt('')
-      setView('thread')
-    } catch {
-      const fallbackProject = await createProject({
-        title: emptyPrompt.slice(0, 36) || '新项目',
-        repoPath: emptyPrompt.includes(':\\') || emptyPrompt.startsWith('/') ? emptyPrompt : null,
-      })
-      const createdThread = await createThread(fallbackProject.id, {
-        title: emptyPrompt.slice(0, 48) || '新对话',
-      })
-      await Promise.all([refreshThreads(), refreshFeed(), refreshWatchers()])
-      setSelectedThreadId(createdThread.id)
-      setPendingPrompt(emptyPrompt)
-      setEmptyPrompt('')
-      setView('thread')
+      const created = await createTask(inferTaskPayload(taskPrompt))
+      await refreshTasks()
+      setSelectedTaskId(created.id)
+      setTaskPrompt('')
+      pushToast({ id: `task-${created.id}`, message: '任务已创建。', tone: 'green' })
+    } catch (error) {
+      onError(error, '创建任务失败。')
     } finally {
-      setCreatingThread(false)
+      setCreatingTask(false)
     }
-  }, [creatingThread, emptyPrompt, refreshFeed, refreshThreads, refreshWatchers])
+  }, [creatingTask, onError, pushToast, refreshTasks, taskPrompt])
 
-  const homeEventsUrl = '/api/home/events'
-  useSSE(
-    homeEventsUrl,
-    useCallback(
-      (event) => {
-        void refreshFeed()
-        void refreshThreads()
-        if (event.type === 'run_finished' && view !== 'home') {
-          try {
-            const payload = JSON.parse(event.data) as { runId: string; threadId: string; summary?: string; status?: string }
-            pushToast({
-              id: `${payload.runId}-${Date.now()}`,
-              message: payload.summary || '一个后台任务刚刚完成。',
-              tone: payload.status === 'failed' ? 'red' : 'green',
-              action: {
-                label: '查看',
-                onClick: () => handleOpenThread(payload.threadId),
-              },
-            })
-          } catch {
-            // Ignore malformed payloads.
-          }
-        }
-      },
-      [handleOpenThread, pushToast, refreshFeed, refreshThreads, view],
-    ),
-  )
-
-  useSSE(
-    selectedThreadId ? `/api/threads/${selectedThreadId}/events` : null,
-    useCallback(
-      () => {
-        if (selectedThreadId) {
-          void refreshThread(selectedThreadId)
-        }
-        void refreshThreads()
-        void refreshFeed()
-      },
-      [refreshFeed, refreshThread, refreshThreads, selectedThreadId],
-    ),
-  )
-
-  const breadcrumb = useMemo(() => {
-    if (view === 'thread' && thread) {
-      return `${thread.project?.title ?? '项目'} / ${thread.title}`
+  const handleAddRef = useCallback(async () => {
+    if (!task || addingRef || !refDraft.kind.trim() || !refDraft.label.trim() || !refDraft.value.trim()) {
+      return
     }
-    if (view === 'watchers') {
-      return '监控'
+    setAddingRef(true)
+    try {
+      await addTaskRef(task.id, refDraft)
+      await Promise.all([refreshTask(task.id), refreshTasks()])
+      setRefDraft({ kind: 'file', label: '', value: '' })
+    } catch (error) {
+      onError(error, '添加引用失败。')
+    } finally {
+      setAddingRef(false)
     }
-    if (view === 'home') {
-      return '首页'
-    }
-    return '新对话'
-  }, [thread, view])
+  }, [addingRef, onError, refDraft, refreshTask, refreshTasks, task])
 
-  const selectedProject = thread?.project ?? null
-  const latestRun = thread?.runs.at(-1) ?? null
-  const threadLookup = useMemo(() => Object.fromEntries(threads.map((item) => [item.id, item])), [threads])
-  const watcherLookup = useMemo(() => Object.fromEntries(watchers.map((item) => [item.id, item])), [watchers])
+  const handleDeleteRef = useCallback(async (refId: string) => {
+    if (!task) {
+      return
+    }
+    try {
+      await deleteTaskRef(task.id, refId)
+      await Promise.all([refreshTask(task.id), refreshTasks()])
+    } catch (error) {
+      onError(error, '删除引用失败。')
+    }
+  }, [onError, refreshTask, refreshTasks, task])
+
+  const handleCreateSnapshot = useCallback(async () => {
+    if (!task || creatingSnapshot) {
+      return
+    }
+    setCreatingSnapshot(true)
+    try {
+      await resolveTaskContext(task.id, { focus: snapshotFocus || null })
+      await Promise.all([refreshTask(task.id), refreshTasks()])
+      setSnapshotFocus('')
+    } catch (error) {
+      onError(error, '生成快照失败。')
+    } finally {
+      setCreatingSnapshot(false)
+    }
+  }, [creatingSnapshot, onError, refreshTask, refreshTasks, snapshotFocus, task])
+
+  const handleCreateRun = useCallback(async () => {
+    if (!task || creatingRun || !runPrompt.trim()) {
+      return
+    }
+    setCreatingRun(true)
+    try {
+      const created = await createTaskRun(task.id, { agent: runAgent, task: runPrompt.trim() })
+      await Promise.all([refreshTask(task.id), refreshTasks()])
+      setSelectedRunId(created.id)
+      setRunPrompt('')
+      setPanelOpen(true)
+    } catch (error) {
+      onError(error, '创建 run 失败。')
+    } finally {
+      setCreatingRun(false)
+    }
+  }, [creatingRun, onError, refreshTask, refreshTasks, runAgent, runPrompt, task])
+
+  const handleCreateCompare = useCallback(async () => {
+    if (!task || task.runs.length < 2 || creatingCompare) {
+      return
+    }
+    setCreatingCompare(true)
+    try {
+      const latestTwo = task.runs.slice(-2).map((run) => run.id)
+      await createTaskCompare(task.id, { runIds: latestTwo, title: `${task.title} · compare` })
+      await refreshTask(task.id)
+      setPanelOpen(true)
+    } catch (error) {
+      onError(error, '创建 compare 失败。')
+    } finally {
+      setCreatingCompare(false)
+    }
+  }, [creatingCompare, onError, refreshTask, task])
+
+  const handleAdoptRun = useCallback(async (runId: string) => {
+    try {
+      await adoptRun(runId)
+      if (task) {
+        await refreshTask(task.id)
+      }
+    } catch (error) {
+      onError(error, '采纳改动失败。')
+    }
+  }, [onError, refreshTask, task])
+
+  const handleRetryRun = useCallback(async (runId: string) => {
+    try {
+      const retried = await retryRun(runId)
+      if (task) {
+        await refreshTask(task.id)
+      }
+      setSelectedRunId(retried.id)
+    } catch (error) {
+      onError(error, '重试执行失败。')
+    }
+  }, [onError, refreshTask, task])
+
+  const handleArchiveTask = useCallback(async () => {
+    if (!task) {
+      return
+    }
+    try {
+      await archiveTask(task.id)
+      await refreshTasks()
+      setTask(null)
+      setArtifacts([])
+    } catch (error) {
+      onError(error, '归档任务失败。')
+    }
+  }, [onError, refreshTasks, task])
+
+  const breadcrumb = useMemo(() => (task ? `Tasks / ${task.title}` : 'Tasks'), [task])
+  const selectedRunLabel = useMemo(() => {
+    const run = task?.runs.find((item) => item.id === selectedRunId) ?? task?.runs.at(-1) ?? null
+    return run ? `${run.agent} · ${run.status}` : ''
+  }, [selectedRunId, task])
 
   return (
     <AppShell
-      sidebar={
-        <Sidebar
-          threads={threads}
-          activeThreadId={selectedThreadId}
-          activeView={view}
-          memoryOpen={memoryOpen}
-          summary={feed?.summary ?? '当前没有待处理项'}
-          onSelectHome={() => setView('home')}
-          onSelectThread={handleOpenThread}
-          onSelectWatchers={() => setView('watchers')}
-          onToggleMemory={() => setMemoryOpen((current) => !current)}
-        />
-      }
+      sidebar={<TaskSidebar tasks={tasks} activeTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} onCreateTask={() => setSelectedTaskId(null)} />}
       breadcrumb={breadcrumb}
-      memoryOpen={memoryOpen}
-      onToggleMemory={() => setMemoryOpen((current) => !current)}
+      memoryOpen={panelOpen}
+      onToggleMemory={() => setPanelOpen((current) => !current)}
+      panelToggleLabel="详情"
       toasts={toasts}
-      panel={<MemoryPanel project={selectedProject} latestRun={latestRun} memories={memories} />}
+      panel={<TaskPanel artifacts={artifacts} snapshots={task?.snapshots ?? []} reviews={task?.reviews ?? []} selectedRunLabel={selectedRunLabel} />}
       main={
-        view === 'empty' ? (
-          <EmptyState value={emptyPrompt} onChange={setEmptyPrompt} onSubmit={handleNewConversation} isBusy={creatingThread} />
-        ) : view === 'watchers' ? (
-          <WatcherList
-            watchers={watchers}
-            preferredWatcherId={selectedWatcherId}
-            onError={showErrorToast}
-            onCreateByConversation={() => {
-              setView('empty')
-              setEmptyPrompt('监控 ')
-            }}
-            onOpenThread={handleOpenThread}
-            onRefresh={async () => {
-              await refreshWatchers()
-            }}
-          />
-        ) : view === 'thread' ? (
-          <ThreadView
-            thread={thread}
-            watchers={watcherLookup}
-            loading={threadLoading}
-            pendingPrompt={pendingPrompt}
-            onPendingPromptConsumed={() => setPendingPrompt(null)}
-            onOpenWatcher={handleOpenWatcher}
-            onError={showErrorToast}
-            onRefresh={async () => {
-              if (selectedThreadId) {
-                await Promise.all([refreshThread(selectedThreadId), refreshThreads(), refreshFeed(), refreshWatchers()])
-              }
-            }}
-          />
+        selectedTaskId ? (
+          <div className="task-main-shell">
+            <div className="task-main-actions">
+              <button type="button" className="button-secondary" onClick={() => setSelectedTaskId(null)}>
+                新建任务
+              </button>
+              {task ? (
+                <button type="button" className="button-secondary" onClick={handleArchiveTask}>
+                  归档任务
+                </button>
+              ) : null}
+            </div>
+            <TaskWorkbench
+              task={task}
+              loading={loading}
+              runPrompt={runPrompt}
+              runAgent={runAgent}
+              refDraft={refDraft}
+              snapshotFocus={snapshotFocus}
+              selectedRunId={selectedRunId}
+              creatingRun={creatingRun}
+              addingRef={addingRef}
+              creatingSnapshot={creatingSnapshot}
+              creatingCompare={creatingCompare}
+              onRunPromptChange={setRunPrompt}
+              onRunAgentChange={setRunAgent}
+              onCreateRun={handleCreateRun}
+              onRefDraftChange={setRefDraft}
+              onAddRef={handleAddRef}
+              onDeleteRef={handleDeleteRef}
+              onSnapshotFocusChange={setSnapshotFocus}
+              onCreateSnapshot={handleCreateSnapshot}
+              onCreateCompare={handleCreateCompare}
+              onSelectRun={(runId) => {
+                setSelectedRunId(runId)
+                setPanelOpen(true)
+              }}
+              onAdoptRun={handleAdoptRun}
+              onRetryRun={handleRetryRun}
+            />
+          </div>
         ) : (
-          <HomeFeed
-            feed={feed}
-            threads={threadLookup}
-            onOpenThread={handleOpenThread}
-            onError={showErrorToast}
-            onRefresh={async () => {
-              await Promise.all([refreshFeed(), refreshThreads(), refreshWatchers()])
-            }}
-          />
+          <EmptyTaskState value={taskPrompt} onChange={setTaskPrompt} onSubmit={handleCreateTask} isBusy={creatingTask} />
         )
       }
     />

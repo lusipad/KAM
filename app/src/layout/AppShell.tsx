@@ -10,10 +10,20 @@ type AppShellProps = {
   memoryOpen: boolean
   breadcrumb: string
   onToggleMemory: () => void
+  panelToggleLabel?: string
   toasts: ToastItem[]
 }
 
-export function AppShell({ sidebar, main, panel, memoryOpen, breadcrumb, onToggleMemory, toasts }: AppShellProps) {
+export function AppShell({
+  sidebar,
+  main,
+  panel,
+  memoryOpen,
+  breadcrumb,
+  onToggleMemory,
+  panelToggleLabel = '详情',
+  toasts,
+}: AppShellProps) {
   return (
     <div className={`kam-shell ${memoryOpen ? 'memory-open' : ''}`}>
       {sidebar}
@@ -22,7 +32,7 @@ export function AppShell({ sidebar, main, panel, memoryOpen, breadcrumb, onToggl
         <header className="topbar">
           <div className="breadcrumb">{breadcrumb}</div>
           <button type="button" className={`memory-toggle ${memoryOpen ? 'is-active' : ''}`} onClick={onToggleMemory}>
-            记忆
+            {panelToggleLabel}
           </button>
         </header>
 

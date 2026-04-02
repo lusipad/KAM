@@ -24,6 +24,10 @@ RESERVED_BACKEND_PREFIXES = ("api", "docs", "redoc", "openapi.json", "health")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    if settings.is_test_env:
+        yield
+        return
+
     scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
     scheduler.start()
     set_scheduler(scheduler)

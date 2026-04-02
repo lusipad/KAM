@@ -17,6 +17,7 @@ from config import settings
 from db import async_session
 from events import event_bus
 from models import Project, Run, Thread, now
+from services.artifact_store import ArtifactStore
 from services.digest import DigestService
 
 
@@ -42,6 +43,10 @@ class RunEngine:
         await self.db.commit()
         await self.db.refresh(run)
         await self._publish(run, "run_queued", {"progress": "已排队"})
+        if settings.is_test_env:
+            await self._execute_run(run.id)
+            await self.db.refresh(run)
+            return run
         task_handle = asyncio.create_task(self._execute_run(run.id))
         _STATE.tasks[run.id] = task_handle
         return run
@@ -100,6 +105,7 @@ class RunEngine:
 
                     started_at = asyncio.get_event_loop().time()
                     worktree_path, command = await self._prepare_execution(run, project)
+                    patch_output = ""
                     if worktree_path is not None:
                         run.worktree_path = str(worktree_path)
                         await session.commit()
@@ -113,12 +119,17 @@ class RunEngine:
                         run.status = "passed"
                         run.changed_files = changed_files
                         run.check_passed = True
+                        patch_output = self._capture_patch(worktree_path)
                     else:
                         run.status = "failed"
                         run.check_passed = False
                         run.changed_files = []
 
                     run.result_summary = await DigestService(session).summarize_run(run)
+                    await ArtifactStore(session).replace_for_run(
+                        run.id,
+                        self._build_artifacts(run, patch_output),
+                    )
                     if thread is not None:
                         thread.updated_at = now()
                     await session.commit()
@@ -239,10 +250,24 @@ class RunEngine:
         return f"kam-run-{run_id}"
 
     def _git(self, cwd: Path, *args: str) -> None:
-        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
 
     def _git_output(self, cwd: Path, *args: str) -> str:
-        completed = subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True)
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         return completed.stdout
 
     def _extract_output_text(self, line: str) -> str:
@@ -262,3 +287,36 @@ class RunEngine:
         elif isinstance(value, list):
             for item in value:
                 yield from self._flatten_strings(item)
+
+    def _capture_patch(self, worktree_path: Path | None) -> str:
+        if worktree_path is None or not worktree_path.exists():
+            return ""
+        try:
+            return self._git_output(worktree_path, "show", "--stat", "--patch", "HEAD")
+        except subprocess.CalledProcessError:
+            return ""
+
+    def _build_artifacts(self, run: Run, patch_output: str) -> list[dict[str, Any]]:
+        artifacts: list[dict[str, Any]] = [
+            {"type": "task", "content": run.task, "metadata": {"agent": run.agent}},
+            {"type": "stdout", "content": run.raw_output or "", "metadata": {"status": run.status}},
+            {"type": "summary", "content": run.result_summary or "", "metadata": {"status": run.status}},
+        ]
+        if run.changed_files:
+            artifacts.append({"type": "changed_files", "content": json.dumps(run.changed_files, ensure_ascii=False)})
+        if patch_output:
+            artifacts.append({"type": "patch", "content": patch_output})
+        return artifacts
+
+
+async def wait_for_background_runs(timeout: float = 5.0) -> None:
+    pending = list(_STATE.tasks.values())
+    if not pending:
+        return
+    done, still_pending = await asyncio.wait(pending, timeout=timeout)
+    for task in still_pending:
+        task.cancel()
+    if still_pending:
+        await asyncio.gather(*still_pending, return_exceptions=True)
+    if done:
+        await asyncio.gather(*done, return_exceptions=True)

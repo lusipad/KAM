@@ -26,6 +26,7 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{(TMP_ROOT / 'kam-v3.db').as_
 os.environ["STORAGE_PATH"] = str(TMP_ROOT)
 os.environ["RUN_ROOT"] = str(TMP_ROOT / "runs")
 os.environ["ANTHROPIC_API_KEY"] = ""
+os.environ["APP_ENV"] = "test"
 
 from db import async_session, engine  # noqa: E402
 from main import app  # noqa: E402
@@ -34,6 +35,7 @@ from services.context import ContextAssembler  # noqa: E402
 from services.digest import DigestService  # noqa: E402
 from services.memory import MemoryService  # noqa: E402
 from services.router import ConversationRouter  # noqa: E402
+from services.run_engine import wait_for_background_runs  # noqa: E402
 
 
 class V3ApiTests(unittest.TestCase):
@@ -44,6 +46,7 @@ class V3ApiTests(unittest.TestCase):
         asyncio.run(self._truncate_tables())
 
     def tearDown(self):
+        asyncio.run(wait_for_background_runs())
         self.client.__exit__(None, None, None)
         asyncio.run(engine.dispose())
 
@@ -441,6 +444,71 @@ class V3ApiTests(unittest.TestCase):
 
         self.assertEqual(recent_ids, {"demo-run-adopted"})
         self.assertTrue(recent_ids.isdisjoint(attention_ids))
+
+    def test_task_ref_snapshot_run_artifacts_and_compare_flow(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "切换到 harness 主线",
+                "description": "把当前 V3 工作台切到 task-first harness。",
+                "repoPath": "D:/Repos/KAM",
+                "labels": ["harness", "dogfood"],
+            },
+        ).json()
+
+        ref = self.client.post(
+            f"/api/tasks/{task['id']}/refs",
+            json={"kind": "file", "label": "PRD", "value": "docs/product/ai_work_assistant_prd.md"},
+        ).json()
+        self.assertEqual(ref["kind"], "file")
+
+        snapshot = self.client.post(
+            f"/api/tasks/{task['id']}/context/resolve",
+            json={"focus": "先按 task-first harness 拆骨架。"},
+        ).json()
+        self.assertIn("## Task", snapshot["content"])
+        self.assertIn("## Refs", snapshot["content"])
+
+        async def fake_run_command(_engine, run, _command, _cwd):
+            return 0, f"执行完成：{run.task}"
+
+        async def fake_prepare_execution(_engine, _run, _project):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_execution", new=fake_prepare_execution),
+        ):
+            run_one = self.client.post(
+                f"/api/tasks/{task['id']}/runs",
+                json={"agent": "codex", "task": "先建立 Task 和 Snapshot API"},
+            ).json()
+            run_two = self.client.post(
+                f"/api/tasks/{task['id']}/runs",
+                json={"agent": "claude-code", "task": "补 Compare 和 Artifacts API"},
+            ).json()
+
+        self.assertEqual(run_one["status"], "passed")
+        self.assertEqual(run_two["status"], "passed")
+
+        detail = self.client.get(f"/api/tasks/{task['id']}").json()
+        self.assertEqual(len(detail["refs"]), 1)
+        self.assertEqual(len(detail["snapshots"]), 1)
+        self.assertEqual(len(detail["runs"]), 2)
+
+        artifacts = self.client.get(f"/api/runs/{run_one['id']}/artifacts").json()["artifacts"]
+        artifact_types = {artifact["type"] for artifact in artifacts}
+        self.assertTrue({"task", "stdout", "summary"}.issubset(artifact_types))
+
+        compare = self.client.post(
+            f"/api/reviews/{task['id']}/compare",
+            json={"runIds": [run_one["id"], run_two["id"]], "title": "harness compare"},
+        ).json()
+        self.assertEqual(compare["title"], "harness compare")
+        self.assertIn("对比 2 个 run", compare["summary"])
+
+        detail_after_compare = self.client.get(f"/api/tasks/{task['id']}").json()
+        self.assertEqual(len(detail_after_compare["reviews"]), 1)
 
     def test_missing_resources_return_chinese_404_details(self):
         thread_response = self.client.get("/api/threads/missing-thread")

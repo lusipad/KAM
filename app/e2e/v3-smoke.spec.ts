@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 
 
 test.beforeEach(async ({ page }) => {
-  const response = await page.request.post('/api/dev/seed-demo', {
+  const response = await page.request.post('/api/dev/seed-harness', {
     data: { reset: true },
   })
   expect(response.ok()).toBeTruthy()
@@ -11,55 +11,30 @@ test.beforeEach(async ({ page }) => {
 })
 
 
-test('home, thread, memory, watchers are reachable in v3', async ({ page }) => {
+test('task-first harness workbench is reachable', async ({ page }) => {
   await expect(page).toHaveTitle('KAM V3')
-  await expect(page.getByText('需要你处理')).toBeVisible()
-  await expect(page.getByText('后台进行中')).toBeVisible()
-  await expect(page.getByText('最近更新')).toBeVisible()
-  await expect(page.getByRole('button', { name: '监控', exact: true })).toBeVisible()
-  await expect(page.locator('.feed-section').filter({ hasText: '后台进行中' })).toContainText('补全 watcher 启动与恢复链路')
-  await expect(page.locator('.feed-section').filter({ hasText: '最近更新' })).toContainText('已整理发布说明并同步验证步骤。')
-  await expect(page.locator('.feed-section').filter({ hasText: '最近更新' })).not.toContainText('auth.test.ts:42 失败')
+  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+  await expect(page.getByRole('main').getByText('Refs', { exact: true })).toBeVisible()
+  await expect(page.getByRole('main').getByText('Context Snapshot', { exact: true })).toBeVisible()
+  await expect(page.getByRole('main').getByText('Runs', { exact: true })).toBeVisible()
+  await expect(page.getByRole('main').getByText('Compare', { exact: true })).toBeVisible()
+  await expect(page.getByRole('main').getByText('[file] PRD')).toBeVisible()
 
-  await page.getByRole('button', { name: /修复登录超时/i }).click()
-  await expect(page.locator('.message-row.is-user .message-bubble')).toContainText('登录 30 秒后超时，修一下。')
-  await expect(page.locator('.run-card .run-card-title')).toContainText('已更新 token 刷新路径，移除重复超时分支，检查通过。')
-  await expect(page.locator('.run-card .run-summary')).toContainText('任务：修复鉴权流程中的登录超时')
+  await expect(page.locator('.run-card').first()).toContainText('Task')
+  await expect(page.locator('.run-card').filter({ hasText: '默认入口已切到 task-first workbench' }).first()).toBeVisible()
 
-  await page.getByRole('banner').getByRole('button', { name: '记忆' }).click()
-  await expect(page.getByText('AI 记忆')).toBeVisible()
-  await expect(page.getByText('偏好', { exact: true })).toBeVisible()
-  await expect(page.getByText('决策', { exact: true })).toBeVisible()
-  await expect(page.getByText('经验', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '对比最近两个 Run' }).click()
+  await expect(page.locator('.task-list-row').filter({ hasText: '对比 2 个 run' }).first()).toBeVisible()
 
-  await page.getByRole('button', { name: '监控', exact: true }).click()
-  const watcherCard = page.locator('.watcher-card').filter({ hasText: 'CI 监控' }).first()
-  await expect(page.getByText('监控 · 1 个运行中')).toBeVisible()
-  await expect(watcherCard).toBeVisible()
-  await expect(watcherCard).toHaveClass(/is-selected/)
-  await expect(watcherCard.getByRole('button', { name: '立即执行' })).toBeVisible()
-  await expect(watcherCard.getByRole('button', { name: '查看历史' })).toBeVisible()
-
-  await watcherCard.getByRole('button', { name: '查看历史' }).click()
-  await expect(page.getByText('main 分支 CI 失败')).toBeVisible()
-  await expect(page.getByRole('button', { name: '打开线程' })).toBeVisible()
-
-  await watcherCard.getByRole('button', { name: '编辑' }).click()
-  await page.getByLabel('频率').fill('30m')
-  await page.getByRole('button', { name: '保存修改' }).click()
-  await expect(watcherCard.getByText('CI 流水线 · 每 30 分钟')).toBeVisible()
+  await expect(page.locator('.memory-title').filter({ hasText: 'Artifacts' })).toBeVisible()
+  await expect(page.locator('.task-artifact-card').filter({ hasText: 'stdout' }).first()).toBeVisible()
+  await expect(page.locator('.task-artifact-content').filter({ hasText: '前端主入口已切换。' }).first()).toBeVisible()
 })
 
-test('mobile rail keeps watcher navigation reachable', async ({ page }) => {
+test('mobile keeps task detail and artifact panel reachable', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
 
-  const mobileWatcherButton = page.getByRole('button', { name: '监控', exact: true })
-  await expect(mobileWatcherButton).toBeVisible()
-  await mobileWatcherButton.click()
-
-  await expect(page.getByText('监控 · 1 个运行中')).toBeVisible()
-  await expect(page.locator('.watcher-card').first()).toHaveClass(/is-selected/)
-  await expect(page.locator('.watcher-inspector-head')).toBeHidden()
-  await expect(page.locator('.watcher-inspector-copy')).toBeHidden()
-  await expect(page.locator('.watcher-inspector-grid')).toBeHidden()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+  await expect(page.locator('.memory-title').filter({ hasText: 'Artifacts' })).toBeVisible()
+  await expect(page.locator('.memory-subtle').filter({ hasText: 'claude-code · passed' })).toBeVisible()
 })

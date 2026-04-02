@@ -2,7 +2,12 @@ import type {
   HomeFeedPayload,
   MemoryItem,
   ProjectSummary,
+  ReviewCompareRecord,
   RunRecord,
+  RunArtifactRecord,
+  TaskDetail,
+  TaskRecord,
+  TaskRefRecord,
   ThreadDetail,
   ThreadSummary,
   WatcherEventRecord,
@@ -58,6 +63,92 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function listProjects() {
   return request<{ projects: ProjectSummary[] }>('/projects')
+}
+
+export function listTasks() {
+  return request<{ tasks: TaskRecord[] }>('/tasks')
+}
+
+export function getTask(taskId: string) {
+  return request<TaskDetail>(`/tasks/${taskId}`)
+}
+
+export function createTask(payload: {
+  title: string
+  description?: string | null
+  repoPath?: string | null
+  status?: string
+  priority?: string
+  labels?: string[]
+}) {
+  return request<TaskRecord>('/tasks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateTask(
+  taskId: string,
+  payload: {
+    title?: string
+    description?: string | null
+    repoPath?: string | null
+    status?: string
+    priority?: string
+    labels?: string[]
+  },
+) {
+  return request<TaskRecord>(`/tasks/${taskId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function archiveTask(taskId: string) {
+  return request<TaskRecord>(`/tasks/${taskId}/archive`, {
+    method: 'POST',
+  })
+}
+
+export function addTaskRef(taskId: string, payload: { kind: string; label: string; value: string; metadata?: Record<string, unknown> | null }) {
+  return request<TaskRefRecord>(`/tasks/${taskId}/refs`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteTaskRef(taskId: string, refId: string) {
+  return request<{ ok: boolean }>(`/tasks/${taskId}/refs/${refId}`, {
+    method: 'DELETE',
+  })
+}
+
+export function resolveTaskContext(taskId: string, payload: { focus?: string | null }) {
+  return request<{ id: string; taskId: string; summary: string; content: string; focus: string | null; createdAt: string }>(
+    `/tasks/${taskId}/context/resolve`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function createTaskRun(taskId: string, payload: { agent: 'codex' | 'claude-code' | 'custom'; task: string }) {
+  return request<RunRecord>(`/tasks/${taskId}/runs`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getRunArtifacts(runId: string) {
+  return request<{ artifacts: RunArtifactRecord[] }>(`/runs/${runId}/artifacts`)
+}
+
+export function createTaskCompare(taskId: string, payload: { runIds: string[]; title?: string | null }) {
+  return request<ReviewCompareRecord>(`/reviews/${taskId}/compare`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function createProject(payload: { title: string; repoPath?: string | null }) {
