@@ -113,7 +113,7 @@ async def seed_harness(payload: SeedHarnessRequest, db: AsyncSession = Depends(g
             TaskRun(
                 id="task-run-2",
                 task_id=task.id,
-                agent="claude-code",
+                agent="codex",
                 status="passed",
                 task="把前端默认入口切到 task-first harness",
                 result_summary="默认入口已切到 task-first workbench，旧 V3 workspace 退出主路径。",

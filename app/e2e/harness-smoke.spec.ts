@@ -36,7 +36,7 @@ test('mobile keeps task detail and artifact panel reachable', async ({ page }) =
 
   await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
   await expect(page.locator('.memory-title').filter({ hasText: 'Artifacts' })).toBeVisible()
-  await expect(page.locator('.memory-subtle').filter({ hasText: 'claude-code · passed' })).toBeVisible()
+  await expect(page.locator('.memory-subtle').filter({ hasText: 'codex · passed' })).toBeVisible()
 })
 
 test('can create a task, add refs, generate a snapshot, launch runs, and compare them', async ({ page }) => {
