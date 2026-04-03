@@ -38,3 +38,26 @@ test('mobile keeps task detail and artifact panel reachable', async ({ page }) =
   await expect(page.locator('.memory-title').filter({ hasText: 'Artifacts' })).toBeVisible()
   await expect(page.locator('.memory-subtle').filter({ hasText: 'claude-code · passed' })).toBeVisible()
 })
+
+test('can create a task, add a ref, and generate a snapshot from the workbench', async ({ page }) => {
+  await page.getByRole('button', { name: '新建任务' }).first().click()
+
+  await page.getByPlaceholder('例如：把当前默认前端主入口切成 task-first workbench').fill('把 run runtime 切成 task-native')
+  await page.getByRole('button', { name: '创建任务' }).click()
+
+  await expect(page.locator('.feed-card-title').filter({ hasText: '把 run runtime 切成 task-native' }).first()).toBeVisible()
+
+  const inputs = page.locator('.task-inline-form .watcher-input')
+  await inputs.nth(0).fill('file')
+  await inputs.nth(1).fill('Run Engine')
+  await inputs.nth(2).fill('backend/services/run_engine.py')
+  await page.getByRole('button', { name: '添加引用' }).click()
+
+  await expect(page.locator('.task-list-row').filter({ hasText: '[file] Run Engine' }).first()).toBeVisible()
+
+  await page.getByPlaceholder('可选 focus，例如：先切前端主入口').fill('先把 task run 挂到 task 下')
+  await page.getByRole('button', { name: '生成快照' }).click()
+
+  await expect(page.locator('.task-list-row').filter({ hasText: '把 run runtime 切成 task-native · 1 refs' }).first()).toBeVisible()
+  await expect(page.locator('.memory-chip').filter({ hasText: '先把 task run 挂到 task 下' }).first()).toBeVisible()
+})

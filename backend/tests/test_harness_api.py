@@ -73,12 +73,12 @@ class HarnessApiTests(unittest.TestCase):
         async def fake_run_command(_engine, run, _command, _cwd):
             return 0, f"执行完成：{run.task}"
 
-        async def fake_prepare_execution(_engine, _run, _project):
+        async def fake_prepare_task_execution(_engine, _run, _task):
             return None, ["fake-agent"]
 
         with (
             patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
-            patch("services.run_engine.RunEngine._prepare_execution", new=fake_prepare_execution),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
         ):
             run_one = self.client.post(
                 f"/api/tasks/{task['id']}/runs",
@@ -91,11 +91,14 @@ class HarnessApiTests(unittest.TestCase):
 
         self.assertEqual(run_one["status"], "passed")
         self.assertEqual(run_two["status"], "passed")
+        self.assertEqual(run_one["taskId"], task["id"])
+        self.assertIsNone(run_one["threadId"])
 
         detail = self.client.get(f"/api/tasks/{task['id']}").json()
         self.assertEqual(len(detail["refs"]), 1)
         self.assertEqual(len(detail["snapshots"]), 1)
         self.assertEqual(len(detail["runs"]), 2)
+        self.assertTrue(all(item["threadId"] is None for item in detail["runs"]))
 
         artifacts = self.client.get(f"/api/runs/{run_one['id']}/artifacts").json()["artifacts"]
         artifact_types = {artifact["type"] for artifact in artifacts}
@@ -124,6 +127,7 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(len(detail["snapshots"]), 1)
         self.assertEqual(len(detail["runs"]), 2)
         self.assertEqual(len(detail["reviews"]), 1)
+        self.assertEqual(detail["metadata"], {})
 
         artifacts = self.client.get("/api/runs/task-run-2/artifacts").json()["artifacts"]
         self.assertTrue(any(item["type"] == "stdout" for item in artifacts))
@@ -164,6 +168,8 @@ class HarnessApiTests(unittest.TestCase):
         async with engine.begin() as conn:
             for table in (
                 "review_compares",
+                "task_run_artifacts",
+                "task_runs",
                 "run_artifacts",
                 "context_snapshots",
                 "task_refs",

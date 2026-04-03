@@ -19,6 +19,8 @@ from models import (
     RunArtifact,
     Task,
     TaskRef,
+    TaskRun,
+    TaskRunArtifact,
     Thread,
     Watcher,
     WatcherEvent,
@@ -34,6 +36,8 @@ class SeedDemoRequest(BaseModel):
 
 RESET_MODELS = (
     ReviewCompare,
+    TaskRunArtifact,
+    TaskRun,
     RunArtifact,
     ContextSnapshot,
     TaskRef,
@@ -286,24 +290,10 @@ async def seed_harness(payload: SeedDemoRequest, db: AsyncSession = Depends(get_
         status="in_progress",
         priority="high",
         labels=["dogfood", "harness"],
-        metadata_={"bridgeProjectId": "task-bridge-project", "bridgeThreadId": "task-bridge-thread"},
         created_at=base,
         updated_at=base + timedelta(minutes=9),
     )
-    project = Project(
-        id="task-bridge-project",
-        title="__task__ 切到 task-first harness",
-        repo_path="D:/Repos/KAM",
-        created_at=base,
-    )
-    thread = Thread(
-        id="task-bridge-thread",
-        project_id=project.id,
-        title=task.title,
-        created_at=base,
-        updated_at=base + timedelta(minutes=9),
-    )
-    db.add_all([task, project, thread])
+    db.add(task)
 
     db.add_all(
         [
@@ -336,9 +326,9 @@ async def seed_harness(payload: SeedDemoRequest, db: AsyncSession = Depends(get_
 
     db.add_all(
         [
-            Run(
+            TaskRun(
                 id="task-run-1",
-                thread_id=thread.id,
+                task_id=task.id,
                 agent="codex",
                 status="passed",
                 task="先建立 Task 和 Snapshot API",
@@ -349,9 +339,9 @@ async def seed_harness(payload: SeedDemoRequest, db: AsyncSession = Depends(get_
                 raw_output="Task API 已接通。\nSnapshot 可生成。",
                 created_at=base + timedelta(minutes=4),
             ),
-            Run(
+            TaskRun(
                 id="task-run-2",
-                thread_id=thread.id,
+                task_id=task.id,
                 agent="claude-code",
                 status="passed",
                 task="把前端默认入口切到 task-first harness",
@@ -367,30 +357,30 @@ async def seed_harness(payload: SeedDemoRequest, db: AsyncSession = Depends(get_
 
     db.add_all(
         [
-            RunArtifact(
+            TaskRunArtifact(
                 id="artifact-1",
-                run_id="task-run-1",
+                task_run_id="task-run-1",
                 type="summary",
                 content="已接上 Task、Ref、Snapshot 基础接口。",
                 created_at=base + timedelta(minutes=4),
             ),
-            RunArtifact(
+            TaskRunArtifact(
                 id="artifact-2",
-                run_id="task-run-1",
+                task_run_id="task-run-1",
                 type="changed_files",
                 content='["backend/api/tasks.py","backend/services/task_context.py"]',
                 created_at=base + timedelta(minutes=4),
             ),
-            RunArtifact(
+            TaskRunArtifact(
                 id="artifact-3",
-                run_id="task-run-2",
+                task_run_id="task-run-2",
                 type="summary",
                 content="默认入口已切到 task-first workbench，旧 V3 workspace 退出主路径。",
                 created_at=base + timedelta(minutes=8),
             ),
-            RunArtifact(
+            TaskRunArtifact(
                 id="artifact-4",
-                run_id="task-run-2",
+                task_run_id="task-run-2",
                 type="stdout",
                 content="前端主入口已切换。\nSmoke 已更新。",
                 created_at=base + timedelta(minutes=8),

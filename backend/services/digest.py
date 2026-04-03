@@ -9,7 +9,7 @@ from anthropic import AsyncAnthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from models import Message, Run, Thread, Watcher, now
+from models import Message, Run, TaskRun, Thread, Watcher, now
 
 
 class DigestService:
@@ -17,7 +17,7 @@ class DigestService:
         self.db = db
         self.client = AsyncAnthropic(api_key=settings.anthropic_api_key) if settings.anthropic_api_key else None
 
-    async def summarize_run(self, run: Run) -> str:
+    async def summarize_run(self, run: Run | TaskRun) -> str:
         if self.client is None:
             return self._fallback_run_summary(run)
         prompt = (
@@ -166,7 +166,7 @@ class DigestService:
                 fragments.append(text)
         return "".join(fragments).strip() or fallback
 
-    def _fallback_run_summary(self, run: Run) -> str:
+    def _fallback_run_summary(self, run: Run | TaskRun) -> str:
         if run.status == "passed":
             files = ", ".join((run.changed_files or [])[:3])
             if files:

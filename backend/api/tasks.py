@@ -11,14 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from db import get_db
-from models import Project, Run, Task, TaskRef, Thread, now
+from models import Task, TaskRef, TaskRun, now
 from services.run_engine import RunEngine
 from services.task_context import TaskContextService
 
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
-
-BRIDGE_PROJECT_PREFIX = "__task__"
 
 
 class TaskCreate(BaseModel):
@@ -51,7 +49,7 @@ class TaskResolveContext(BaseModel):
 
 
 class TaskRunCreate(BaseModel):
-    agent: str = Field(pattern="^(codex|claude-code|custom)$")
+    agent: str = Field(pattern="^(codex|claude-code)$")
     task: str = Field(min_length=1, max_length=8000)
 
 
@@ -180,9 +178,8 @@ async def create_task_run(task_id: str, payload: TaskRunCreate, db: AsyncSession
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     snapshot = await _ensure_snapshot_payload(db, task)
-    thread = await _ensure_bridge_thread(db, task)
-    run = await RunEngine(db).create_run(
-        thread_id=thread.id,
+    run = await RunEngine(db).create_task_run(
+        task_id=task.id,
         agent=payload.agent,
         task=payload.task.strip(),
         initial_artifacts=_initial_artifacts(task, snapshot),
@@ -206,12 +203,8 @@ async def _load_task_detail(db: AsyncSession, task_id: str) -> Task | None:
     return result.scalars().first()
 
 
-async def _list_task_runs(db: AsyncSession, task: Task) -> list[Run]:
-    metadata = task.metadata_ or {}
-    bridge_thread_id = metadata.get("bridgeThreadId")
-    if not bridge_thread_id:
-        return []
-    result = await db.execute(select(Run).where(Run.thread_id == bridge_thread_id).order_by(Run.created_at.asc()))
+async def _list_task_runs(db: AsyncSession, task: Task) -> list[TaskRun]:
+    result = await db.execute(select(TaskRun).where(TaskRun.task_id == task.id).order_by(TaskRun.created_at.asc()))
     return list(result.scalars())
 
 
@@ -270,36 +263,3 @@ def _initial_artifacts(task: Task, snapshot: dict[str, Any] | None) -> list[dict
             }
         )
     return artifacts
-
-
-async def _ensure_bridge_thread(db: AsyncSession, task: Task) -> Thread:
-    metadata = dict(task.metadata_ or {})
-    bridge_thread_id = metadata.get("bridgeThreadId")
-    if bridge_thread_id:
-        thread = await db.get(Thread, bridge_thread_id)
-        if thread is not None:
-            return thread
-
-    bridge_project_id = metadata.get("bridgeProjectId")
-    project = await db.get(Project, bridge_project_id) if bridge_project_id else None
-    if project is None:
-        project = Project(
-            title=f"{BRIDGE_PROJECT_PREFIX} {task.title}"[:200],
-            repo_path=task.repo_path,
-        )
-        db.add(project)
-        await db.flush()
-    else:
-        project.repo_path = task.repo_path
-
-    thread = Thread(project_id=project.id, title=task.title[:200])
-    db.add(thread)
-    await db.flush()
-
-    metadata.update({"bridgeProjectId": project.id, "bridgeThreadId": thread.id})
-    task.metadata_ = metadata
-    task.updated_at = now()
-    await db.commit()
-    await db.refresh(thread)
-    await db.refresh(task)
-    return thread

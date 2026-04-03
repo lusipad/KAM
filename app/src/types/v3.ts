@@ -32,7 +32,8 @@ export interface MessageRecord {
 
 export interface RunRecord {
   id: string
-  threadId: string
+  taskId: string | null
+  threadId: string | null
   agent: string
   status: RunStatus
   task: string

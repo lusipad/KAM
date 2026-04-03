@@ -133,7 +133,7 @@ export function resolveTaskContext(taskId: string, payload: { focus?: string | n
   )
 }
 
-export function createTaskRun(taskId: string, payload: { agent: 'codex' | 'claude-code' | 'custom'; task: string }) {
+export function createTaskRun(taskId: string, payload: { agent: 'codex' | 'claude-code'; task: string }) {
   return request<RunRecord>(`/tasks/${taskId}/runs`, {
     method: 'POST',
     body: JSON.stringify(payload),

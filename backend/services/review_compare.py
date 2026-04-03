@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import ReviewCompare, Run, Task
+from models import ReviewCompare, Task, TaskRun
 
 
 class ReviewCompareService:
@@ -19,14 +19,12 @@ class ReviewCompareService:
         if len(run_ids) < 2:
             raise ValueError("compare_requires_at_least_two_runs")
 
-        result = await self.db.execute(select(Run).where(Run.id.in_(run_ids)))
+        result = await self.db.execute(select(TaskRun).where(TaskRun.id.in_(run_ids)))
         runs = list(result.scalars())
         if len(runs) != len(run_ids):
             raise ValueError("compare_contains_missing_runs")
 
-        metadata = task.metadata_ or {}
-        bridge_thread_id = metadata.get("bridgeThreadId")
-        if bridge_thread_id and any(run.thread_id != bridge_thread_id for run in runs):
+        if any(run.task_id != task.id for run in runs):
             raise ValueError("compare_runs_do_not_belong_to_task")
 
         compare = ReviewCompare(
@@ -40,7 +38,7 @@ class ReviewCompareService:
         await self.db.refresh(compare)
         return compare
 
-    def _build_summary(self, runs: list[Run]) -> str:
+    def _build_summary(self, runs: list[TaskRun]) -> str:
         lines = [f"对比 {len(runs)} 个 run："]
         for run in runs:
             file_count = len(run.changed_files or [])

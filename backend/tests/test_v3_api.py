@@ -473,12 +473,12 @@ class V3ApiTests(unittest.TestCase):
         async def fake_run_command(_engine, run, _command, _cwd):
             return 0, f"执行完成：{run.task}"
 
-        async def fake_prepare_execution(_engine, _run, _project):
+        async def fake_prepare_task_execution(_engine, _run, _task):
             return None, ["fake-agent"]
 
         with (
             patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
-            patch("services.run_engine.RunEngine._prepare_execution", new=fake_prepare_execution),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
         ):
             run_one = self.client.post(
                 f"/api/tasks/{task['id']}/runs",

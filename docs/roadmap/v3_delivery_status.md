@@ -27,6 +27,7 @@
   - `/api/tasks/{task_id}/runs`
   - `/api/runs/{run_id}/artifacts`
   - `/api/reviews/{task_id}/compare`
+- harness run 已切成 task-native runtime，不再依赖 bridge project/thread
 - 默认前端主入口改为 task-first workbench
 - 新增 harness smoke
 - 新增 `POST /api/dev/seed-harness`
@@ -36,9 +37,8 @@
 ### 需要继续推进
 
 - 彻底下掉旧 `projects / threads / home / watchers / memory` 主入口
-- 把 bridge thread/project 方案继续收口为真正 task-native runtime
 - 把文档、脚本、命名进一步从 `v3 workspace` 语境切干净
-- 补更完整的 task-first 前端交互：多任务切换、引用编辑、compare 细化
+- 补更完整的 task-first 前端交互：多任务切换、run 创建、compare 细化
 
 ### 明确不优先做
 
@@ -50,7 +50,7 @@
 ## 当前建议
 
 - 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
-- 下一步优先做旧入口退场和 runtime 去桥接化
+- 下一步优先做旧入口退场和 task-first 交互补齐
 - 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档

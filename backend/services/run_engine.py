@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 from config import settings
 from db import async_session
 from events import event_bus
-from models import Project, Run, Thread, now
+from models import Project, Run, Task, TaskRun, Thread, now
 from services.artifact_store import ArtifactStore
 from services.digest import DigestService
 
@@ -61,16 +61,50 @@ class RunEngine:
         _STATE.tasks[run.id] = task_handle
         return run
 
-    async def retry_run(self, run_id: str) -> Run | None:
+    async def create_task_run(
+        self,
+        *,
+        task_id: str,
+        agent: str,
+        task: str,
+        initial_artifacts: list[dict[str, Any]] | None = None,
+    ) -> TaskRun:
+        run = TaskRun(task_id=task_id, agent=agent, task=task, status="pending")
+        self.db.add(run)
+        task_record = await self.db.get(Task, task_id)
+        if task_record is not None:
+            task_record.updated_at = now()
+        await self.db.commit()
+        await self.db.refresh(run)
+        if initial_artifacts:
+            _STATE.initial_artifacts[run.id] = [dict(artifact) for artifact in initial_artifacts]
+        if settings.is_test_env:
+            await self._execute_task_run(run.id)
+            await self.db.refresh(run)
+            return run
+        task_handle = asyncio.create_task(self._execute_task_run(run.id))
+        _STATE.tasks[run.id] = task_handle
+        return run
+
+    async def retry_run(self, run_id: str) -> Run | TaskRun | None:
         run = await self.db.get(Run, run_id)
-        if run is None:
-            return None
-        return await self.create_run(thread_id=run.thread_id, agent=run.agent, task=run.task)
+        if run is not None:
+            return await self.create_run(thread_id=run.thread_id, agent=run.agent, task=run.task)
+        task_run = await self.db.get(TaskRun, run_id)
+        if task_run is not None:
+            return await self.create_task_run(task_id=task_run.task_id, agent=task_run.agent, task=task_run.task)
+        return None
 
     async def adopt_run(self, run_id: str) -> dict[str, Any]:
         run = await self.db.get(Run, run_id)
-        if run is None:
-            return {"ok": False, "error": "run_not_found"}
+        if run is not None:
+            return await self._adopt_thread_run(run)
+        task_run = await self.db.get(TaskRun, run_id)
+        if task_run is not None:
+            return await self._adopt_task_run(task_run)
+        return {"ok": False, "error": "run_not_found"}
+
+    async def _adopt_thread_run(self, run: Run) -> dict[str, Any]:
         if run.status != "passed":
             return {"ok": False, "error": "only_passed_runs_can_be_adopted"}
         if run.adopted_at is not None:
@@ -96,6 +130,32 @@ class RunEngine:
             thread.updated_at = now()
         await self.db.commit()
         await self._publish(run, "run_adopted", {"adoptedAt": run.adopted_at.isoformat()})
+        return {"ok": True, "adoptedAt": run.adopted_at.isoformat()}
+
+    async def _adopt_task_run(self, run: TaskRun) -> dict[str, Any]:
+        if run.status != "passed":
+            return {"ok": False, "error": "only_passed_runs_can_be_adopted"}
+        if run.adopted_at is not None:
+            return {"ok": True, "adoptedAt": run.adopted_at.isoformat()}
+
+        task_record = await self.db.get(Task, run.task_id)
+        repo_path = Path(task_record.repo_path) if task_record and task_record.repo_path else None
+        worktree_path = Path(run.worktree_path) if run.worktree_path else None
+        if repo_path is None or worktree_path is None or not repo_path.exists() or not worktree_path.exists():
+            return {"ok": False, "error": "run_has_no_git_worktree"}
+
+        branch = self._branch_name(run.id)
+        try:
+            self._git(repo_path, "merge", "--ff-only", branch)
+            self._git(repo_path, "worktree", "remove", str(worktree_path), "--force")
+            self._git(repo_path, "branch", "-D", branch)
+        except subprocess.CalledProcessError as exc:
+            return {"ok": False, "error": exc.stderr.strip() or exc.stdout.strip() or "git_merge_failed"}
+
+        run.adopted_at = now()
+        if task_record is not None:
+            task_record.updated_at = now()
+        await self.db.commit()
         return {"ok": True, "adoptedAt": run.adopted_at.isoformat()}
 
     async def _execute_run(self, run_id: str) -> None:
@@ -125,7 +185,8 @@ class RunEngine:
                     run.raw_output = output[-20000:]
 
                     if code == 0:
-                        changed_files = await self._finalize_success(run, project, worktree_path)
+                        repo_path = Path(project.repo_path).resolve() if project and project.repo_path else None
+                        changed_files = await self._finalize_success(run.id, repo_path, worktree_path)
                         run.status = "passed"
                         run.changed_files = changed_files
                         run.check_passed = True
@@ -171,24 +232,96 @@ class RunEngine:
                 _STATE.tasks.pop(run_id, None)
                 _STATE.initial_artifacts.pop(run_id, None)
 
+    async def _execute_task_run(self, run_id: str) -> None:
+        async with _STATE.semaphore:
+            try:
+                async with async_session() as session:
+                    run = await self._load_task_run(session, run_id)
+                    if run is None:
+                        return
+                    task_record = run.task_rel
+                    run.status = "running"
+                    if task_record is not None:
+                        task_record.updated_at = now()
+                    await session.commit()
+
+                    started_at = asyncio.get_event_loop().time()
+                    worktree_path, command = await self._prepare_task_execution(run, task_record)
+                    patch_output = ""
+                    if worktree_path is not None:
+                        run.worktree_path = str(worktree_path)
+                        await session.commit()
+
+                    code, output = await self._run_command(run, command, worktree_path or settings.run_dir)
+                    run.duration_ms = int((asyncio.get_event_loop().time() - started_at) * 1000)
+                    run.raw_output = output[-20000:]
+
+                    repo_path = Path(task_record.repo_path).resolve() if task_record and task_record.repo_path else None
+                    if code == 0:
+                        changed_files = await self._finalize_success(run.id, repo_path, worktree_path)
+                        run.status = "passed"
+                        run.changed_files = changed_files
+                        run.check_passed = True
+                        patch_output = self._capture_patch(worktree_path)
+                    else:
+                        run.status = "failed"
+                        run.check_passed = False
+                        run.changed_files = []
+
+                    run.result_summary = await DigestService(session).summarize_run(run)
+                    await ArtifactStore(session).replace_for_task_run(
+                        run.id,
+                        self._build_artifacts(run, patch_output),
+                    )
+                    if task_record is not None:
+                        task_record.updated_at = now()
+                    await session.commit()
+            except Exception as exc:
+                async with async_session() as session:
+                    run = await self._load_task_run(session, run_id)
+                    if run is not None:
+                        run.status = "failed"
+                        run.check_passed = False
+                        run.raw_output = f"{run.raw_output or ''}\n{type(exc).__name__}: {exc}".strip()
+                        run.result_summary = f"执行失败：{type(exc).__name__}: {exc}"
+                        if run.task_rel is not None:
+                            run.task_rel.updated_at = now()
+                        await session.commit()
+            finally:
+                _STATE.tasks.pop(run_id, None)
+                _STATE.initial_artifacts.pop(run_id, None)
+
     async def _prepare_execution(self, run: Run, project: Project | None) -> tuple[Path | None, list[str]]:
         repo_path = Path(project.repo_path).resolve() if project and project.repo_path else None
+        return await self._prepare_workspace(run.id, run.agent, run.task, repo_path)
+
+    async def _prepare_task_execution(self, run: TaskRun, task_record: Task | None) -> tuple[Path | None, list[str]]:
+        repo_path = Path(task_record.repo_path).resolve() if task_record and task_record.repo_path else None
+        return await self._prepare_workspace(run.id, run.agent, run.task, repo_path)
+
+    async def _prepare_workspace(
+        self,
+        run_id: str,
+        agent: str,
+        task: str,
+        repo_path: Path | None,
+    ) -> tuple[Path | None, list[str]]:
         if repo_path and repo_path.exists() and (repo_path / ".git").exists():
-            worktree_path = settings.run_dir / run.id
+            worktree_path = settings.run_dir / run_id
             if worktree_path.exists():
                 shutil.rmtree(worktree_path, ignore_errors=True)
-            branch = self._branch_name(run.id)
+            branch = self._branch_name(run_id)
             self._git(repo_path, "worktree", "add", "-b", branch, str(worktree_path), "HEAD")
-            command = self._build_command(run, worktree_path)
+            command = self._build_command(agent, task, worktree_path)
             return worktree_path, command
 
-        scratch = settings.run_dir / run.id
+        scratch = settings.run_dir / run_id
         scratch.mkdir(parents=True, exist_ok=True)
-        command = self._build_command(run, scratch)
+        command = self._build_command(agent, task, scratch)
         return None, command
 
-    def _build_command(self, run: Run, cwd: Path) -> list[str]:
-        if run.agent == "codex":
+    def _build_command(self, agent: str, task: str, cwd: Path) -> list[str]:
+        if agent == "codex":
             return [
                 settings.codex_path,
                 "exec",
@@ -197,13 +330,13 @@ class RunEngine:
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--cd",
                 str(cwd),
-                run.task,
+                task,
             ]
-        if run.agent == "claude-code":
-            return [settings.claude_code_path, run.task]
-        raise RuntimeError(f"unsupported_agent:{run.agent}")
+        if agent == "claude-code":
+            return [settings.claude_code_path, task]
+        raise RuntimeError(f"unsupported_agent:{agent}")
 
-    async def _run_command(self, run: Run, command: list[str], cwd: Path) -> tuple[int, str]:
+    async def _run_command(self, run: Run | TaskRun, command: list[str], cwd: Path) -> tuple[int, str]:
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=str(cwd),
@@ -223,15 +356,17 @@ class RunEngine:
             output_lines.append(extracted)
             if extracted:
                 await event_bus.publish("home", {"type": "run_progress", "message": extracted[:200]})
-                await event_bus.publish(
-                    f"thread:{run.thread_id}",
-                    {"type": "run_progress", "runId": run.id, "threadId": run.thread_id, "message": extracted[:200]},
-                )
+                thread_id = getattr(run, "thread_id", None)
+                if thread_id:
+                    await event_bus.publish(
+                        f"thread:{thread_id}",
+                        {"type": "run_progress", "runId": run.id, "threadId": thread_id, "message": extracted[:200]},
+                    )
         code = await process.wait()
         return code, "\n".join(output_lines)
 
-    async def _finalize_success(self, run: Run, project: Project | None, worktree_path: Path | None) -> list[str]:
-        if project is None or worktree_path is None or not worktree_path.exists():
+    async def _finalize_success(self, run_id: str, repo_path: Path | None, worktree_path: Path | None) -> list[str]:
+        if repo_path is None or worktree_path is None or not worktree_path.exists():
             return []
         changed_files = self._git_output(worktree_path, "status", "--short")
         if not changed_files.strip():
@@ -239,7 +374,7 @@ class RunEngine:
         self._git(worktree_path, "config", "user.name", settings.git_user_name)
         self._git(worktree_path, "config", "user.email", settings.git_user_email)
         self._git(worktree_path, "add", "-A")
-        self._git(worktree_path, "commit", "-m", f"KAM run {run.id}")
+        self._git(worktree_path, "commit", "-m", f"KAM run {run_id}")
         committed_files = self._git_output(worktree_path, "show", "--pretty=", "--name-only", "HEAD")
         return [line.strip() for line in committed_files.splitlines() if line.strip()]
 
@@ -248,6 +383,15 @@ class RunEngine:
             select(Run)
             .where(Run.id == run_id)
             .options(selectinload(Run.thread).selectinload(Thread.project))
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def _load_task_run(self, session: AsyncSession, run_id: str) -> TaskRun | None:
+        stmt = (
+            select(TaskRun)
+            .where(TaskRun.id == run_id)
+            .options(selectinload(TaskRun.task_rel))
         )
         result = await session.execute(stmt)
         return result.scalars().first()
@@ -307,7 +451,7 @@ class RunEngine:
         except subprocess.CalledProcessError:
             return ""
 
-    def _build_artifacts(self, run: Run, patch_output: str) -> list[dict[str, Any]]:
+    def _build_artifacts(self, run: Run | TaskRun, patch_output: str) -> list[dict[str, Any]]:
         artifacts: list[dict[str, Any]] = [
             {"type": "task", "content": run.task, "metadata": {"agent": run.agent}},
             {"type": "stdout", "content": run.raw_output or "", "metadata": {"status": run.status}},

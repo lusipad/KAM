@@ -53,6 +53,11 @@ class Task(Base):
         order_by="ReviewCompare.created_at",
         cascade="all, delete-orphan",
     )
+    runs: Mapped[list["TaskRun"]] = relationship(
+        back_populates="task_rel",
+        order_by="TaskRun.created_at",
+        cascade="all, delete-orphan",
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -247,6 +252,7 @@ class Run(Base):
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "taskId": None,
             "threadId": self.thread_id,
             "agent": self.agent,
             "status": self.status,
@@ -276,6 +282,65 @@ class RunArtifact(Base):
         return {
             "id": self.id,
             "runId": self.run_id,
+            "type": self.type,
+            "content": self.content,
+            "metadata": self.metadata_ or {},
+            "createdAt": serialize_datetime(self.created_at),
+        }
+
+
+class TaskRun(Base):
+    __tablename__ = "task_runs"
+
+    id: Mapped[str] = mapped_column(String(12), primary_key=True, default=new_id)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"))
+    agent: Mapped[str] = mapped_column(String(30))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    task: Mapped[str] = mapped_column(Text)
+    result_summary: Mapped[str] = mapped_column(Text, nullable=True)
+    changed_files: Mapped[list[str]] = mapped_column(JSON, nullable=True)
+    check_passed: Mapped[bool] = mapped_column(Boolean, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=True)
+    worktree_path: Mapped[str] = mapped_column(String(500), nullable=True)
+    adopted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    raw_output: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    task_rel: Mapped["Task"] = relationship(back_populates="runs")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "taskId": self.task_id,
+            "threadId": None,
+            "agent": self.agent,
+            "status": self.status,
+            "task": self.task,
+            "resultSummary": self.result_summary,
+            "changedFiles": self.changed_files or [],
+            "checkPassed": self.check_passed,
+            "durationMs": self.duration_ms,
+            "worktreePath": self.worktree_path,
+            "adoptedAt": serialize_datetime(self.adopted_at),
+            "rawOutput": self.raw_output or "",
+            "createdAt": serialize_datetime(self.created_at),
+        }
+
+
+class TaskRunArtifact(Base):
+    __tablename__ = "task_run_artifacts"
+
+    id: Mapped[str] = mapped_column(String(12), primary_key=True, default=new_id)
+    task_run_id: Mapped[str] = mapped_column(ForeignKey("task_runs.id"))
+    type: Mapped[str] = mapped_column(String(50))
+    content: Mapped[str] = mapped_column(Text)
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "runId": self.task_run_id,
             "type": self.type,
             "content": self.content,
             "metadata": self.metadata_ or {},

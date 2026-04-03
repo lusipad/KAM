@@ -150,7 +150,7 @@ function FeedCard({
           </button>
         ) : null}
         {item.threadId ? (
-          <button type="button" className="button-secondary" onClick={() => onOpenThread(item.threadId)}>
+          <button type="button" className="button-secondary" onClick={() => onOpenThread(item.threadId!)}>
             查看
           </button>
         ) : null}
@@ -186,7 +186,7 @@ export function HomeFeed({ feed, threads, onOpenThread, onRefresh, onError }: Ho
                 <FeedCard
                   key={`${item.kind}-${item.id}`}
                   item={item}
-                  thread={item.kind === 'run' ? threads[item.threadId] : item.threadId ? threads[item.threadId] : undefined}
+                  thread={item.threadId ? threads[item.threadId] : undefined}
                   compact={section.compact}
                   onOpenThread={onOpenThread}
                   onRefresh={onRefresh}
