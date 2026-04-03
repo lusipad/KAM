@@ -84,6 +84,8 @@ pwsh -File .\verify-local.ps1
 pwsh -File .\verify-local.ps1 -RunRealAgentSmoke -RealSmokeAgent codex
 ```
 
+这条 smoke 现在会验证临时 git 仓库中的真实改动、Lore commit，以及 adopt 回主仓库的收口。
+
 `codex` 是当前默认 agent。`claude-code` 仍保留为可选执行目标和额外 smoke 目标，但不是默认主门禁。
 
 如果你要直接看 task-first 界面：

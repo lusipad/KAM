@@ -1,7 +1,8 @@
 import fs from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
-import { backendDir, startBackend, stopBackend, waitForHealth } from './smoke-support.mjs'
+import { backendDir, outputDir, startBackend, stopBackend, waitForHealth } from './smoke-support.mjs'
 
 
 const port = process.env.KAM_SMOKE_PORT || '8011'
@@ -9,6 +10,7 @@ const agent = process.env.KAM_SMOKE_AGENT || 'codex'
 const timeoutMs = Number(process.env.KAM_REAL_SMOKE_TIMEOUT_MS || '180000')
 const baseURL = `http://127.0.0.1:${port}`
 const sentinel = 'KAM_REAL_AGENT_SMOKE_OK'
+const repoSmokeMarker = 'repo-adopt-smoke'
 
 
 async function request(pathname, init = {}) {
@@ -45,14 +47,78 @@ async function waitForRun(taskId, runId) {
 }
 
 
+function runChecked(command, args, options = {}) {
+  const completed = spawnSync(command, args, {
+    encoding: 'utf-8',
+    ...options,
+  })
+  if (completed.status !== 0) {
+    const detail = completed.stderr?.trim() || completed.stdout?.trim() || `${command} exited with code ${completed.status}`
+    throw new Error(detail)
+  }
+  return completed.stdout.trim()
+}
+
+
+function createTempRepo() {
+  fs.mkdirSync(outputDir, { recursive: true })
+  const tempRoot = fs.mkdtempSync(path.join(outputDir, 'real-agent-smoke-'))
+  const repoPath = path.join(tempRoot, 'repo')
+  fs.mkdirSync(repoPath, { recursive: true })
+
+  runChecked('git', ['init'], { cwd: repoPath })
+  runChecked('git', ['config', 'user.name', 'KAM Smoke'], { cwd: repoPath })
+  runChecked('git', ['config', 'user.email', 'kam-smoke@example.com'], { cwd: repoPath })
+
+  const targetFile = path.join(repoPath, 'STATUS.md')
+  fs.writeFileSync(targetFile, 'before\n', 'utf-8')
+  fs.writeFileSync(path.join(repoPath, 'EXPECTED.txt'), `${sentinel}\n${repoSmokeMarker}\n`, 'utf-8')
+  fs.writeFileSync(
+    path.join(repoPath, 'check.py'),
+    [
+      'from pathlib import Path',
+      '',
+      "expected = Path('EXPECTED.txt').read_text(encoding='utf-8').strip()",
+      "actual = Path('STATUS.md').read_text(encoding='utf-8').strip()",
+      'if actual != expected:',
+      "    raise SystemExit(f'unexpected STATUS.md: {actual!r}')",
+      "print('ok')",
+      '',
+    ].join('\n'),
+    'utf-8',
+  )
+  fs.writeFileSync(
+    path.join(repoPath, 'AGENTS.md'),
+    [
+      'You are in a temporary smoke repository.',
+      'Your only goal is to make `python check.py` pass by editing `STATUS.md`.',
+      'Do not modify `EXPECTED.txt`, `check.py`, or this `AGENTS.md` file.',
+      '',
+    ].join('\n'),
+    'utf-8',
+  )
+  runChecked('git', ['add', 'STATUS.md', 'EXPECTED.txt', 'check.py', 'AGENTS.md'], { cwd: repoPath })
+  runChecked('git', ['commit', '-m', 'Seed temp repo for real agent smoke'], { cwd: repoPath })
+
+  return { tempRoot, repoPath, targetFile }
+}
+
+
 function smokePrompt() {
-  return `Use the current scratch directory only. Print exactly ${sentinel} and exit.`
+  return [
+    'Work only in the current repository.',
+    'Make `python check.py` exit 0 by editing only `STATUS.md`.',
+    'Do not modify `EXPECTED.txt`, `check.py`, or `AGENTS.md`.',
+    'Run `python check.py` after your edit.',
+  ].join('\n')
 }
 
 
 async function main() {
   const smokeDb = path.join(backendDir, 'storage', `smoke-agent-${agent}.db`)
   fs.rmSync(smokeDb, { force: true })
+  const repoFixture = createTempRepo()
+  const keepRepo = process.env.KAM_REAL_SMOKE_KEEP_REPO === '1'
 
   const backend = startBackend({
     port,
@@ -67,7 +133,8 @@ async function main() {
       method: 'POST',
       body: JSON.stringify({
         title: `真实 agent smoke: ${agent}`,
-        description: '验证非 mock agent 执行链路、初始 artifacts 和轮询收敛。',
+        description: '验证真实 agent 在临时 git 仓库中的改动、Lore commit 和 adopt 收口。',
+        repoPath: repoFixture.repoPath,
         labels: ['smoke', 'real-agent'],
       }),
     })
@@ -75,15 +142,15 @@ async function main() {
     await request(`/api/tasks/${task.id}/refs`, {
       method: 'POST',
       body: JSON.stringify({
-        kind: 'note',
-        label: 'Smoke Contract',
-        value: `The run must emit ${sentinel} in scratch mode.`,
+        kind: 'file',
+        label: 'Smoke Target',
+        value: 'STATUS.md',
       }),
     })
     await request(`/api/tasks/${task.id}/context/resolve`, {
       method: 'POST',
       body: JSON.stringify({
-        focus: '只验证真实 agent 执行链路，不触碰仓库工作区。',
+        focus: '验证真实 agent 改临时 git 仓库、自动提交并 adopt 回主仓库。',
       }),
     })
 
@@ -102,20 +169,41 @@ async function main() {
 
     const artifacts = await request(`/api/runs/${createdRun.id}/artifacts`)
     const artifactTypes = new Set(artifacts.artifacts.map((artifact) => artifact.type))
-    for (const required of ['task_snapshot', 'context_snapshot', 'task', 'stdout', 'summary']) {
+    for (const required of ['task_snapshot', 'context_snapshot', 'task', 'stdout', 'summary', 'changed_files', 'patch']) {
       if (!artifactTypes.has(required)) {
         throw new Error(`missing required artifact: ${required}`)
       }
     }
 
-    const outputText = artifacts.artifacts.map((artifact) => artifact.content).join('\n')
-    if (!outputText.includes(sentinel)) {
-      throw new Error(`${agent} smoke output did not include ${sentinel}`)
+    const changedFilesArtifact = artifacts.artifacts.find((artifact) => artifact.type === 'changed_files')
+    if (changedFilesArtifact?.content !== '["STATUS.md"]') {
+      throw new Error(`expected STATUS.md in changed_files artifact, got ${changedFilesArtifact?.content || '<missing>'}`)
     }
 
-    console.log(`Real agent smoke passed for ${agent}.`)
+    const adopt = await request(`/api/runs/${createdRun.id}/adopt`, { method: 'POST' })
+    if (!adopt.ok) {
+      throw new Error(`adopt failed: ${adopt.error || 'unknown error'}`)
+    }
+
+    const adoptedContent = fs.readFileSync(repoFixture.targetFile, 'utf-8').replace(/\r\n/g, '\n').trim()
+    if (adoptedContent !== `${sentinel}\n${repoSmokeMarker}`) {
+      throw new Error(`unexpected adopted file content: ${JSON.stringify(adoptedContent)}`)
+    }
+    runChecked('python', ['check.py'], { cwd: repoFixture.repoPath })
+
+    const commitMessage = runChecked('git', ['log', '-1', '--pretty=%B'], { cwd: repoFixture.repoPath })
+    for (const required of ['Constraint:', 'Directive:', 'Related: task/', 'Related: run/']) {
+      if (!commitMessage.includes(required)) {
+        throw new Error(`expected ${required} in adopted commit message`)
+      }
+    }
+
+    console.log(`Real agent repo smoke passed for ${agent}.`)
   } finally {
     stopBackend(backend)
+    if (!keepRepo) {
+      fs.rmSync(repoFixture.tempRoot, { recursive: true, force: true })
+    }
   }
 }
 

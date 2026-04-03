@@ -31,7 +31,7 @@
 - 后端启动建库已切到 Alembic 升级链
 - 默认前端主入口改为 task-first workbench
 - 新增 harness smoke
-- 新增 opt-in 真实 agent smoke（默认先覆盖 `codex`）
+- 新增 opt-in 真实 agent smoke（默认覆盖 `codex` 的临时 git repo 改动、Lore commit 和 adopt 链路）
 - 新增 `POST /api/dev/seed-harness`
 - 移除旧 `projects / threads / home / watchers / memory` 运行时入口
 - 移除 V3 前端组件、类型层和验证基线
