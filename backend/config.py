@@ -13,11 +13,10 @@ class Settings(BaseSettings):
     app_version: str = "3.0.0"
     app_env: str = "development"
     app_debug: bool = False
-    enable_legacy_v3: bool = False
     mock_runs: bool = False
     app_cors_origins: str = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:5173,http://127.0.0.1:5173"
 
-    database_url: str = "sqlite+aiosqlite:///./storage/kam-v3.db"
+    database_url: str = "sqlite+aiosqlite:///./storage/kam-harness.db"
     storage_path: str = "./storage"
     run_root: str = "./storage/runs"
 

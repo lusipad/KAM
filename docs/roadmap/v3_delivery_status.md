@@ -8,7 +8,7 @@
 - dogfood 验证基线：已稳定
 - 最小 harness backend：已接上
 - 默认前端入口：已切到 task-first workbench
-- 旧 V3 workspace：仍在仓库中，但已退居过渡层
+- V3 legacy runtime：已退场
 
 ## 已完成
 
@@ -17,7 +17,7 @@
   - `Task`
   - `TaskRef`
   - `ContextSnapshot`
-  - `RunArtifact`
+  - `TaskRunArtifact`
   - `ReviewCompare`
 - 新增最小 harness API：
   - `/api/tasks`
@@ -33,13 +33,14 @@
 - 新增 harness smoke
 - 新增 opt-in 真实 agent smoke（默认先覆盖 `codex`）
 - 新增 `POST /api/dev/seed-harness`
+- 移除旧 `projects / threads / home / watchers / memory` 运行时入口
+- 移除 V3 前端组件、类型层和验证基线
+- 新增 Alembic head 迁移，正式下掉 legacy 表
 
 ## 当前仍有缺口
 
 ### 需要继续推进
 
-- 彻底下掉旧 `projects / threads / home / watchers / memory` 主入口
-- 把文档、脚本、命名进一步从 `v3 workspace` 语境切干净
 - 补更完整的 task-first 前端交互：多任务切换、run 创建、compare 细化
 - 把真实 `claude-code` 登录态验证接进 smoke 基线
 
@@ -53,7 +54,7 @@
 ## 当前建议
 
 - 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
-- 下一步优先做旧入口退场和 task-first 交互补齐
+- 下一步优先补 task-first 交互和真实 `claude-code` smoke
 - 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档

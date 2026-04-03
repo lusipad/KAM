@@ -47,7 +47,9 @@ class InitDbTests(unittest.TestCase):
         with create_engine(_sync_database_url(self.database_url)).connect() as connection:
             tables = set(inspect(connection).get_table_names())
             self.assertIn("tasks", tables)
-            self.assertIn("run_artifacts", tables)
+            self.assertIn("task_runs", tables)
+            self.assertNotIn("projects", tables)
+            self.assertNotIn("runs", tables)
             version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
             self.assertEqual(version, self._head_revision())
 
@@ -64,6 +66,7 @@ class InitDbTests(unittest.TestCase):
             version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
             self.assertEqual(version, self._head_revision())
             self.assertIn("task_runs", inspect(connection).get_table_names())
+            self.assertNotIn("projects", inspect(connection).get_table_names())
 
     def _head_revision(self):
         config = Config(str(BACKEND_ROOT / "alembic.ini"))

@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -11,8 +10,6 @@ from fastapi.responses import FileResponse
 from api import api_router
 from config import settings
 from db import init_db
-from services.memory import MemoryService
-from services.watcher import set_scheduler, watcher_engine
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,17 +21,7 @@ RESERVED_BACKEND_PREFIXES = ("api", "docs", "redoc", "openapi.json", "health")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    if settings.is_test_env or not settings.enable_legacy_v3:
-        yield
-        return
-
-    scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
-    scheduler.start()
-    set_scheduler(scheduler)
-    await watcher_engine.bootstrap()
-    watcher_engine.schedule_memory_decay(MemoryService.decay_all)
     yield
-    scheduler.shutdown(wait=False)
 
 
 app = FastAPI(

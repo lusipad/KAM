@@ -1,5 +1,5 @@
-import { formatRelativeTime } from '@/lib/v3-ui'
-import type { TaskRecord } from '@/types/v3'
+import { formatRelativeTime } from '@/lib/ui'
+import type { TaskRecord } from '@/types/harness'
 
 type TaskSidebarProps = {
   tasks: TaskRecord[]

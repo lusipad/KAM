@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { FormEvent } from 'react'
 
-type MessageInputProps = {
+type PromptComposerProps = {
   value: string
   placeholder: string
   isSending?: boolean
@@ -11,7 +11,7 @@ type MessageInputProps = {
   onSubmit: () => void
 }
 
-export function MessageInput({
+export function PromptComposer({
   value,
   placeholder,
   isSending = false,
@@ -19,7 +19,7 @@ export function MessageInput({
   detailLabel = '当前会按任务判断',
   onChange,
   onSubmit,
-}: MessageInputProps) {
+}: PromptComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   useEffect(() => {

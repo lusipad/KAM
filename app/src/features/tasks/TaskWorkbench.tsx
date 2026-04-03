@@ -1,9 +1,9 @@
 import { useMemo } from 'react'
 
-import { MessageInput } from '@/features/thread/MessageInput'
-import { RunCard } from '@/features/thread/RunCard'
-import { formatRelativeTime } from '@/lib/v3-ui'
-import type { RunRecord, TaskDetail } from '@/types/v3'
+import { PromptComposer } from '@/components/PromptComposer'
+import { formatRelativeTime } from '@/lib/ui'
+import { TaskRunCard } from '@/features/tasks/TaskRunCard'
+import type { RunRecord, TaskDetail } from '@/types/harness'
 
 type TaskWorkbenchProps = {
   task: TaskDetail | null
@@ -221,7 +221,7 @@ export function TaskWorkbench({
               </button>
             </div>
 
-            <MessageInput
+            <PromptComposer
               value={runPrompt}
               placeholder="输入这轮要执行的任务..."
               isSending={creatingRun}
@@ -241,7 +241,7 @@ export function TaskWorkbench({
                       <button type="button" className="task-run-select" onClick={() => onSelectRun(run.id)}>
                         选中产物
                       </button>
-                      <RunCard run={run} onAdopt={onAdoptRun} onRetry={onRetryRun} />
+                      <TaskRunCard run={run} onAdopt={onAdoptRun} onRetry={onRetryRun} />
                     </div>
                   ))
               ) : (

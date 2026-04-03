@@ -30,7 +30,7 @@ ALEMBIC_INI_PATH = BACKEND_ROOT / "alembic.ini"
 ALEMBIC_SCRIPT_PATH = BACKEND_ROOT / "alembic"
 LEGACY_BASE_REVISION = "001_v3_initial"
 TASK_FIRST_BASE_REVISION = "002_task_harness_schema"
-KNOWN_APP_TABLES = {
+LEGACY_TABLES = {
     "projects",
     "threads",
     "messages",
@@ -39,12 +39,6 @@ KNOWN_APP_TABLES = {
     "memories",
     "watchers",
     "watcher_events",
-    "tasks",
-    "task_refs",
-    "context_snapshots",
-    "task_runs",
-    "task_run_artifacts",
-    "review_compares",
 }
 TASK_FIRST_TABLES = {
     "tasks",
@@ -54,6 +48,7 @@ TASK_FIRST_TABLES = {
     "task_run_artifacts",
     "review_compares",
 }
+KNOWN_APP_TABLES = LEGACY_TABLES | TASK_FIRST_TABLES
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:
@@ -102,7 +97,13 @@ def _bootstrap_existing_schema(config: Config) -> bool:
     if revision is not None or not tables.intersection(KNOWN_APP_TABLES):
         return False
 
-    base_revision = TASK_FIRST_BASE_REVISION if tables.intersection(TASK_FIRST_TABLES) else LEGACY_BASE_REVISION
+    has_legacy_tables = bool(tables.intersection(LEGACY_TABLES))
+    has_task_tables = bool(tables.intersection(TASK_FIRST_TABLES))
+    if has_task_tables and not has_legacy_tables:
+        command.stamp(config, current_head)
+        return True
+
+    base_revision = TASK_FIRST_BASE_REVISION if has_task_tables else LEGACY_BASE_REVISION
     command.stamp(config, base_revision)
     return False
 

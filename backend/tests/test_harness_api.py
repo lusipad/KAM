@@ -12,7 +12,6 @@ from unittest.mock import patch
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
-from sse_starlette.sse import AppStatus
 from sqlalchemy import text
 
 
@@ -34,7 +33,6 @@ from services.run_engine import RunEngine, wait_for_background_runs  # noqa: E40
 
 class HarnessApiTests(unittest.TestCase):
     def setUp(self):
-        AppStatus.should_exit_event = asyncio.Event()
         self.client = TestClient(app)
         self.client.__enter__()
         asyncio.run(self._truncate_tables())
@@ -72,8 +70,8 @@ class HarnessApiTests(unittest.TestCase):
         self.assertIn("## Task", snapshot["content"])
         self.assertIn("## Refs", snapshot["content"])
 
-        async def fake_run_command(_engine, run, _command, _cwd):
-            return 0, f"执行完成：{run.task}"
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：task-first harness"
 
         async def fake_prepare_task_execution(_engine, _run, _task):
             return None, ["fake-agent"]
@@ -175,14 +173,17 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(artifact_response.status_code, 404)
         self.assertEqual(artifact_response.json()["detail"], "执行记录不存在")
 
-    def test_legacy_v3_routes_are_disabled_by_default(self):
+    def test_legacy_v3_surface_is_removed(self):
         projects_response = self.client.post("/api/projects", json={"title": "旧项目"})
         threads_response = self.client.get("/api/threads/legacy-thread")
+        seed_demo_response = self.client.post("/api/dev/seed-demo", json={"reset": True})
 
         self.assertEqual(projects_response.status_code, 405)
         self.assertEqual(projects_response.json()["detail"], "Method Not Allowed")
         self.assertEqual(threads_response.status_code, 404)
         self.assertEqual(threads_response.json()["detail"], "未找到页面")
+        self.assertEqual(seed_demo_response.status_code, 405)
+        self.assertEqual(seed_demo_response.json()["detail"], "Method Not Allowed")
 
     async def _truncate_tables(self):
         async with engine.begin() as conn:
@@ -190,17 +191,9 @@ class HarnessApiTests(unittest.TestCase):
                 "review_compares",
                 "task_run_artifacts",
                 "task_runs",
-                "run_artifacts",
                 "context_snapshots",
                 "task_refs",
                 "tasks",
-                "watcher_events",
-                "watchers",
-                "memories",
-                "runs",
-                "messages",
-                "threads",
-                "projects",
             ):
                 await conn.execute(text(f'DELETE FROM "{table}"'))
 

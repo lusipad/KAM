@@ -1,15 +1,15 @@
 import { useState } from 'react'
 
-import { codeFiles, formatDuration, lastLogLine, runStatusLabel, runTone } from '@/lib/v3-ui'
-import type { RunRecord } from '@/types/v3'
+import { codeFiles, formatDuration, lastLogLine, runStatusLabel, runTone } from '@/lib/ui'
+import type { RunRecord } from '@/types/harness'
 
-type RunCardProps = {
+type TaskRunCardProps = {
   run: RunRecord
   onAdopt: (runId: string) => void
   onRetry: (runId: string) => void
 }
 
-export function RunCard({ run, onAdopt, onRetry }: RunCardProps) {
+export function TaskRunCard({ run, onAdopt, onRetry }: TaskRunCardProps) {
   const [detail, setDetail] = useState<'diff' | 'logs' | null>(null)
   const tone = runTone(run.status)
   const duration = formatDuration(run.durationMs)

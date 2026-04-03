@@ -72,11 +72,6 @@ try {
         "-Command",
         "& '$Python' -m unittest backend.tests.test_harness_api -v"
     ) $RootDir
-    Invoke-CheckedProcess "Legacy V3 后端回归" $Pwsh @(
-        "-NoProfile",
-        "-Command",
-        "& '$Python' -m unittest backend.tests.test_v3_api -v"
-    ) $RootDir
     Invoke-CheckedProcess "GitHub PR 适配器回归" $Pwsh @(
         "-NoProfile",
         "-Command",

@@ -1,5 +1,5 @@
-import { formatRelativeTime } from '@/lib/v3-ui'
-import type { ContextSnapshotRecord, ReviewCompareRecord, RunArtifactRecord } from '@/types/v3'
+import { formatRelativeTime } from '@/lib/ui'
+import type { ContextSnapshotRecord, ReviewCompareRecord, RunArtifactRecord } from '@/types/harness'
 
 type TaskPanelProps = {
   artifacts: RunArtifactRecord[]

@@ -20,7 +20,7 @@ import { TaskSidebar } from '@/features/tasks/TaskSidebar'
 import { TaskWorkbench } from '@/features/tasks/TaskWorkbench'
 import { AppShell } from '@/layout/AppShell'
 import type { ToastItem } from '@/layout/Toast'
-import type { RunArtifactRecord, TaskDetail, TaskRecord } from '@/types/v3'
+import type { RunArtifactRecord, TaskDetail, TaskRecord } from '@/types/harness'
 
 function inferTaskPayload(prompt: string) {
   const compact = prompt.trim().replace(/\s+/g, ' ')
