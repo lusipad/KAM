@@ -88,21 +88,27 @@ class HarnessApiTests(unittest.TestCase):
                 f"/api/tasks/{task['id']}/runs",
                 json={"agent": "claude-code", "task": "补 Compare 和 Artifacts API"},
             ).json()
+            retried = self.client.post(f"/api/runs/{run_one['id']}/retry").json()
 
         self.assertEqual(run_one["status"], "passed")
         self.assertEqual(run_two["status"], "passed")
+        self.assertEqual(retried["status"], "passed")
         self.assertEqual(run_one["taskId"], task["id"])
         self.assertIsNone(run_one["threadId"])
 
         detail = self.client.get(f"/api/tasks/{task['id']}").json()
         self.assertEqual(len(detail["refs"]), 1)
         self.assertEqual(len(detail["snapshots"]), 1)
-        self.assertEqual(len(detail["runs"]), 2)
+        self.assertEqual(len(detail["runs"]), 3)
         self.assertTrue(all(item["threadId"] is None for item in detail["runs"]))
 
         artifacts = self.client.get(f"/api/runs/{run_one['id']}/artifacts").json()["artifacts"]
         artifact_types = {artifact["type"] for artifact in artifacts}
         self.assertTrue({"task_snapshot", "context_snapshot", "task", "stdout", "summary"}.issubset(artifact_types))
+
+        retried_artifacts = self.client.get(f"/api/runs/{retried['id']}/artifacts").json()["artifacts"]
+        retried_types = {artifact["type"] for artifact in retried_artifacts}
+        self.assertTrue({"task_snapshot", "context_snapshot", "task", "stdout", "summary"}.issubset(retried_types))
 
         compare = self.client.post(
             f"/api/reviews/{task['id']}/compare",

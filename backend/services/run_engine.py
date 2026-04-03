@@ -19,6 +19,7 @@ from events import event_bus
 from models import Project, Run, Task, TaskRun, Thread, now
 from services.artifact_store import ArtifactStore
 from services.digest import DigestService
+from services.task_context import TaskContextService
 
 
 @dataclass
@@ -92,8 +93,51 @@ class RunEngine:
             return await self.create_run(thread_id=run.thread_id, agent=run.agent, task=run.task)
         task_run = await self.db.get(TaskRun, run_id)
         if task_run is not None:
-            return await self.create_task_run(task_id=task_run.task_id, agent=task_run.agent, task=task_run.task)
+            return await self.create_task_run(
+                task_id=task_run.task_id,
+                agent=task_run.agent,
+                task=task_run.task,
+                initial_artifacts=await self.build_task_initial_artifacts(task_run.task_id),
+            )
         return None
+
+    async def build_task_initial_artifacts(self, task_id: str) -> list[dict[str, Any]]:
+        result = await self.db.execute(
+            select(Task)
+            .where(Task.id == task_id)
+            .options(selectinload(Task.snapshots))
+        )
+        task_record = result.scalars().first()
+        if task_record is None:
+            return []
+
+        snapshot = task_record.snapshots[-1] if task_record.snapshots else await TaskContextService(self.db).build_snapshot(task_record.id)
+        artifacts: list[dict[str, Any]] = [
+            {
+                "type": "task_snapshot",
+                "content": json.dumps(
+                    {
+                        "taskId": task_record.id,
+                        "title": task_record.title,
+                        "status": task_record.status,
+                        "priority": task_record.priority,
+                        "repoPath": task_record.repo_path,
+                        "labels": task_record.labels or [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            }
+        ]
+        if snapshot is not None:
+            artifacts.append(
+                {
+                    "type": "context_snapshot",
+                    "content": snapshot.content,
+                    "metadata": {"snapshotId": snapshot.id, "summary": snapshot.summary, "focus": snapshot.focus},
+                }
+            )
+        return artifacts
 
     async def adopt_run(self, run_id: str) -> dict[str, Any]:
         run = await self.db.get(Run, run_id)
@@ -174,6 +218,24 @@ class RunEngine:
                     await self._publish(run, "run_started", {"progress": "开始执行"})
 
                     started_at = asyncio.get_event_loop().time()
+                    if settings.mock_runs:
+                        self._apply_mock_run_result(run, started_at)
+                        await ArtifactStore(session).replace_for_run(run.id, self._build_artifacts(run, ""))
+                        if thread is not None:
+                            thread.updated_at = now()
+                        await session.commit()
+                        await self._publish(
+                            run,
+                            "run_finished",
+                            {
+                                "status": run.status,
+                                "summary": run.result_summary,
+                                "changedFiles": run.changed_files or [],
+                                "durationMs": run.duration_ms,
+                            },
+                        )
+                        return
+
                     worktree_path, command = await self._prepare_execution(run, project)
                     patch_output = ""
                     if worktree_path is not None:
@@ -246,6 +308,14 @@ class RunEngine:
                     await session.commit()
 
                     started_at = asyncio.get_event_loop().time()
+                    if settings.mock_runs:
+                        self._apply_mock_run_result(run, started_at)
+                        await ArtifactStore(session).replace_for_task_run(run.id, self._build_artifacts(run, ""))
+                        if task_record is not None:
+                            task_record.updated_at = now()
+                        await session.commit()
+                        return
+
                     worktree_path, command = await self._prepare_task_execution(run, task_record)
                     patch_output = ""
                     if worktree_path is not None:
@@ -400,6 +470,14 @@ class RunEngine:
         event = {"type": event_type, "runId": run.id, "threadId": run.thread_id, **payload}
         await event_bus.publish(f"thread:{run.thread_id}", event)
         await event_bus.publish("home", event)
+
+    def _apply_mock_run_result(self, run: Run | TaskRun, started_at: float) -> None:
+        run.status = "passed"
+        run.check_passed = True
+        run.changed_files = []
+        run.duration_ms = max(1, int((asyncio.get_event_loop().time() - started_at) * 1000))
+        run.raw_output = f"Mock run completed.\n{run.task}"
+        run.result_summary = f"已完成 mock run：{run.task}"
 
     def _branch_name(self, run_id: str) -> str:
         return f"kam-run-{run_id}"

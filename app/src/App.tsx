@@ -152,10 +152,6 @@ function App() {
   }, [refreshTask, selectedTaskId])
 
   useEffect(() => {
-    void refreshArtifacts(selectedRunId)
-  }, [refreshArtifacts, selectedRunId])
-
-  useEffect(() => {
     if (!selectedTaskId || !task?.runs.some((run) => run.status === 'pending' || run.status === 'running')) {
       return
     }
@@ -299,11 +295,19 @@ function App() {
     }
   }, [onError, refreshTasks, task])
 
+  const selectedRun = useMemo(
+    () => task?.runs.find((item) => item.id === selectedRunId) ?? task?.runs.at(-1) ?? null,
+    [selectedRunId, task],
+  )
+
   const breadcrumb = useMemo(() => (task ? `Tasks / ${task.title}` : 'Tasks'), [task])
   const selectedRunLabel = useMemo(() => {
-    const run = task?.runs.find((item) => item.id === selectedRunId) ?? task?.runs.at(-1) ?? null
-    return run ? `${run.agent} · ${run.status}` : ''
-  }, [selectedRunId, task])
+    return selectedRun ? `${selectedRun.agent} · ${selectedRun.status}` : ''
+  }, [selectedRun])
+
+  useEffect(() => {
+    void refreshArtifacts(selectedRun?.id ?? null)
+  }, [refreshArtifacts, selectedRun?.id, selectedRun?.resultSummary, selectedRun?.status])
 
   return (
     <AppShell

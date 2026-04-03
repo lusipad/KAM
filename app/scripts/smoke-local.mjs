@@ -95,6 +95,7 @@ async function main() {
     env: {
       ...process.env,
       DATABASE_URL: 'sqlite+aiosqlite:///./storage/smoke-v3.db',
+      MOCK_RUNS: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })

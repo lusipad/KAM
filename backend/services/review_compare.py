@@ -20,7 +20,8 @@ class ReviewCompareService:
             raise ValueError("compare_requires_at_least_two_runs")
 
         result = await self.db.execute(select(TaskRun).where(TaskRun.id.in_(run_ids)))
-        runs = list(result.scalars())
+        runs_by_id = {run.id: run for run in result.scalars()}
+        runs = [runs_by_id[run_id] for run_id in run_ids if run_id in runs_by_id]
         if len(runs) != len(run_ids):
             raise ValueError("compare_contains_missing_runs")
 

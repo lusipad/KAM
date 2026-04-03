@@ -39,7 +39,7 @@ test('mobile keeps task detail and artifact panel reachable', async ({ page }) =
   await expect(page.locator('.memory-subtle').filter({ hasText: 'claude-code · passed' })).toBeVisible()
 })
 
-test('can create a task, add a ref, and generate a snapshot from the workbench', async ({ page }) => {
+test('can create a task, add refs, generate a snapshot, launch runs, and compare them', async ({ page }) => {
   await page.getByRole('button', { name: '新建任务' }).first().click()
 
   await page.getByPlaceholder('例如：把当前默认前端主入口切成 task-first workbench').fill('把 run runtime 切成 task-native')
@@ -60,4 +60,17 @@ test('can create a task, add a ref, and generate a snapshot from the workbench',
 
   await expect(page.locator('.task-list-row').filter({ hasText: '把 run runtime 切成 task-native · 1 refs' }).first()).toBeVisible()
   await expect(page.locator('.memory-chip').filter({ hasText: '先把 task run 挂到 task 下' }).first()).toBeVisible()
+
+  await page.getByPlaceholder('输入这轮要执行的任务...').fill('先落 task-native run API')
+  await page.locator('.composer-submit').click()
+  await expect(page.locator('.run-card').filter({ hasText: '已完成 mock run：先落 task-native run API' }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: 'Claude Code' }).click()
+  await page.getByPlaceholder('输入这轮要执行的任务...').fill('再补 compare 和 artifact 面板')
+  await page.locator('.composer-submit').click()
+  await expect(page.locator('.run-card').filter({ hasText: '已完成 mock run：再补 compare 和 artifact 面板' }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: '对比最近两个 Run' }).click()
+  await expect(page.locator('.task-list-row').filter({ hasText: '对比 2 个 run' }).first()).toBeVisible()
+  await expect(page.locator('.task-artifact-card').filter({ hasText: 'task_snapshot' }).first()).toBeVisible()
 })

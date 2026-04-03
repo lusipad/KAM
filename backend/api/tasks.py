@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -177,12 +176,12 @@ async def create_task_run(task_id: str, payload: TaskRunCreate, db: AsyncSession
     task = await db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
-    snapshot = await _ensure_snapshot_payload(db, task)
-    run = await RunEngine(db).create_task_run(
+    run_engine = RunEngine(db)
+    run = await run_engine.create_task_run(
         task_id=task.id,
         agent=payload.agent,
         task=payload.task.strip(),
-        initial_artifacts=_initial_artifacts(task, snapshot),
+        initial_artifacts=await run_engine.build_task_initial_artifacts(task.id),
     )
     task.updated_at = now()
     await db.commit()
@@ -206,60 +205,3 @@ async def _load_task_detail(db: AsyncSession, task_id: str) -> Task | None:
 async def _list_task_runs(db: AsyncSession, task: Task) -> list[TaskRun]:
     result = await db.execute(select(TaskRun).where(TaskRun.task_id == task.id).order_by(TaskRun.created_at.asc()))
     return list(result.scalars())
-
-
-async def _ensure_snapshot_payload(db: AsyncSession, task: Task) -> dict[str, Any] | None:
-    result = await db.execute(
-        select(Task)
-        .where(Task.id == task.id)
-        .options(selectinload(Task.refs), selectinload(Task.snapshots))
-    )
-    hydrated_task = result.scalars().first()
-    if hydrated_task is None:
-        return None
-    if hydrated_task.snapshots:
-        snapshot = hydrated_task.snapshots[-1]
-        return {
-            "id": snapshot.id,
-            "summary": snapshot.summary,
-            "content": snapshot.content,
-            "focus": snapshot.focus,
-        }
-    snapshot = await TaskContextService(db).build_snapshot(hydrated_task.id)
-    if snapshot is None:
-        return None
-    return {
-        "id": snapshot.id,
-        "summary": snapshot.summary,
-        "content": snapshot.content,
-        "focus": snapshot.focus,
-    }
-
-
-def _initial_artifacts(task: Task, snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
-    artifacts: list[dict[str, Any]] = [
-        {
-            "type": "task_snapshot",
-            "content": json.dumps(
-                {
-                    "taskId": task.id,
-                    "title": task.title,
-                    "status": task.status,
-                    "priority": task.priority,
-                    "repoPath": task.repo_path,
-                    "labels": task.labels or [],
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-        }
-    ]
-    if snapshot is not None:
-        artifacts.append(
-            {
-                "type": "context_snapshot",
-                "content": str(snapshot["content"]),
-                "metadata": {"snapshotId": snapshot["id"], "summary": snapshot["summary"], "focus": snapshot["focus"]},
-            }
-        )
-    return artifacts

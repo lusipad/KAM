@@ -534,7 +534,22 @@ class V3ApiTests(unittest.TestCase):
 
     async def _truncate_tables(self):
         async with engine.begin() as conn:
-            for table in ("watcher_events", "watchers", "memories", "runs", "messages", "threads", "projects"):
+            for table in (
+                "review_compares",
+                "task_run_artifacts",
+                "task_runs",
+                "run_artifacts",
+                "context_snapshots",
+                "task_refs",
+                "tasks",
+                "watcher_events",
+                "watchers",
+                "memories",
+                "runs",
+                "messages",
+                "threads",
+                "projects",
+            ):
                 await conn.execute(text(f'DELETE FROM "{table}"'))
 
     def _stream_message(self, thread_id: str, content: str) -> str:
