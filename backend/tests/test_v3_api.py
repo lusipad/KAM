@@ -32,6 +32,8 @@ os.environ.setdefault("ENABLE_LEGACY_V3", "true")
 from db import async_session, engine  # noqa: E402
 from main import app  # noqa: E402
 from models import Message, Project, Run, Thread  # noqa: E402
+from adapters.github import GitHubPRAdapter  # noqa: E402
+from services.action import ActionEngine  # noqa: E402
 from services.context import ContextAssembler  # noqa: E402
 from services.digest import DigestService  # noqa: E402
 from services.memory import MemoryService  # noqa: E402
@@ -189,6 +191,58 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(event_payload["event"]["eventType"], "ci_failed")
         self.assertEqual(event_payload["event"]["status"], "pending")
 
+    def test_review_watcher_recommended_action_includes_fix_context(self):
+        comment = {
+            "id": "comment-1",
+            "user": "reviewer",
+            "path": "backend/services/router.py",
+            "line": 44,
+            "body": "这里可以直接复用已有解析逻辑。",
+        }
+
+        action = GitHubPRAdapter().recommended_actions(
+            {"name": "PR #4518 评审监控", "config": {"repo": "lusipad/KAM", "number": 4518, "watch": "review_comments"}},
+            {"review_comments": [comment]},
+        )[0]
+
+        self.assertEqual(action["kind"], "create_run")
+        self.assertEqual(action["label"], "处理评审")
+        self.assertIn("lusipad/KAM PR #4518", action["params"]["task"])
+        self.assertIn("直接修复并验证", action["params"]["task"])
+        self.assertEqual(action["params"]["initialArtifacts"][0]["metadata"]["repo"], "lusipad/KAM")
+        self.assertEqual(
+            json.loads(action["params"]["initialArtifacts"][1]["content"])[0]["path"],
+            "backend/services/router.py",
+        )
+
+    def test_action_engine_passes_initial_artifacts_to_run_creation(self):
+        captured: dict[str, object] = {}
+
+        async def fake_create_run(action_run_engine, *, thread_id: str, agent: str, task: str, initial_artifacts=None):
+            captured["thread_id"] = thread_id
+            captured["agent"] = agent
+            captured["task"] = task
+            captured["initial_artifacts"] = initial_artifacts
+            return Run(id="run123", thread_id=thread_id, agent=agent, task=task, status="pending")
+
+        event = type("WatcherEventStub", (), {"thread_id": "thread123", "watcher_id": "watcher123"})()
+        action = {
+            "kind": "create_run",
+            "params": {
+                "agent": "codex",
+                "task": "处理 lusipad/KAM PR #4518 的评审评论",
+                "initialArtifacts": [{"type": "github_review_comments", "content": "[]"}],
+            },
+        }
+
+        with patch("services.action.RunEngine.create_run", new=fake_create_run):
+            outcome = asyncio.run(ActionEngine(None).execute(event, action))
+
+        self.assertTrue(outcome["ok"])
+        self.assertEqual(captured["thread_id"], "thread123")
+        self.assertEqual(captured["agent"], "codex")
+        self.assertEqual(captured["initial_artifacts"], [{"type": "github_review_comments", "content": "[]"}])
+
     def test_router_parses_github_review_watcher_from_natural_language(self):
         project = self.client.post("/api/projects", json={"title": "评审监控"}).json()
         thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "PR 评审监控"}).json()
@@ -209,7 +263,56 @@ class V3ApiTests(unittest.TestCase):
         self.assertEqual(watcher["config"]["watch"], "review_comments")
 
         detail = self.client.get(f"/api/threads/{thread['id']}").json()
+        self.assertEqual(detail["runs"], [])
         self.assertTrue(any(message["metadata"].get("kind") == "watcher-config" for message in detail["messages"]))
+
+    def test_router_model_path_drops_run_for_watcher_requests_without_immediate_trigger(self):
+        project = self.client.post("/api/projects", json={"title": "评审监控"}).json()
+        thread = self.client.post(f"/api/projects/{project['id']}/threads", json={"title": "PR 评审监控"}).json()
+
+        async def fake_create_run(*_args, **_kwargs):
+            self.fail("watcher-only request should not create a run")
+
+        blocks = [
+            self._fake_tool_block(
+                "create_watcher",
+                {
+                    "name": "PR #4518 评审监控",
+                    "sourceType": "github_pr",
+                    "config": {"repo": "lusipad/KAM", "watch": "review_comments", "number": 4518},
+                    "scheduleType": "interval",
+                    "scheduleValue": "30m",
+                    "autoActionLevel": 2,
+                },
+            ),
+            self._fake_tool_block(
+                "create_run",
+                {"agent": "codex", "task": "立即处理 lusipad/KAM PR #4518 的评论"},
+            ),
+            self._fake_text_block("我先帮你建监控并启动一次处理。"),
+        ]
+
+        async def exercise():
+            async with async_session() as session:
+                router = ConversationRouter(session)
+                router.client = type(
+                    "FakeClient",
+                    (),
+                    {"messages": type("FakeMessages", (), {"create": AsyncMock(return_value=type("FakeResponse", (), {"content": blocks})())})()},
+                )()
+                with patch("services.router.RunEngine.create_run", new=fake_create_run):
+                    return await router.route_message(
+                        thread_id=thread["id"],
+                        message_content="监控 lusipad/KAM 的 PR #4518 review 评论，每 30 分钟检查一次，能自动修复的就直接修。",
+                        project_id=project["id"],
+                    )
+        
+        events = asyncio.run(exercise())
+
+        self.assertTrue(any(event["type"] == "tool_result" and event["tool"] == "create_watcher" for event in events))
+        self.assertFalse(any(event["type"] == "tool_result" and event["tool"] == "create_run" for event in events))
+        detail = self.client.get(f"/api/threads/{thread['id']}").json()
+        self.assertEqual(detail["runs"], [])
 
     def test_z_activate_draft_watcher_enables_it(self):
         project = self.client.post("/api/projects", json={"title": "草稿监控"}).json()

@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sse_starlette.sse import AppStatus
 from sqlalchemy import text
@@ -27,7 +29,7 @@ os.environ["APP_ENV"] = "test"
 
 from db import engine  # noqa: E402
 from main import app  # noqa: E402
-from services.run_engine import wait_for_background_runs  # noqa: E402
+from services.run_engine import RunEngine, wait_for_background_runs  # noqa: E402
 
 
 class HarnessApiTests(unittest.TestCase):
@@ -138,6 +140,18 @@ class HarnessApiTests(unittest.TestCase):
         artifacts = self.client.get("/api/runs/task-run-2/artifacts").json()["artifacts"]
         self.assertTrue(any(item["type"] == "stdout" for item in artifacts))
 
+    def test_startup_applies_alembic_head(self):
+        version = asyncio.run(self._get_alembic_version())
+        self.assertEqual(version, self._get_alembic_head())
+
+    def test_claude_command_uses_noninteractive_print_mode(self):
+        command = RunEngine(None)._build_command("claude-code", "打印 smoke 标记", Path("D:/tmp"))
+        self.assertEqual(Path(command[0]).name.lower(), "claude.cmd")
+        self.assertEqual(
+            command[1:5],
+            ["-p", "--dangerously-skip-permissions", "--output-format", "text"],
+        )
+
     def test_archived_task_is_hidden_from_default_list(self):
         task = self.client.post("/api/tasks", json={"title": "过渡任务"}).json()
         archived = self.client.post(f"/api/tasks/{task['id']}/archive").json()
@@ -189,3 +203,13 @@ class HarnessApiTests(unittest.TestCase):
                 "projects",
             ):
                 await conn.execute(text(f'DELETE FROM "{table}"'))
+
+    async def _get_alembic_version(self):
+        async with engine.begin() as conn:
+            result = await conn.execute(text("SELECT version_num FROM alembic_version"))
+            return result.scalar_one()
+
+    def _get_alembic_head(self):
+        config = Config(str(BACKEND_ROOT / "alembic.ini"))
+        config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+        return ScriptDirectory.from_config(config).get_current_head()

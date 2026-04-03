@@ -17,10 +17,14 @@ class ActionEngine:
         kind = action.get("kind")
         params = action.get("params", {})
         if kind == "create_run":
+            initial_artifacts = params.get("initialArtifacts")
+            if not isinstance(initial_artifacts, list):
+                initial_artifacts = None
             run = await RunEngine(self.db).create_run(
                 thread_id=event.thread_id,
                 agent=params.get("agent", "codex"),
                 task=params["task"],
+                initial_artifacts=initial_artifacts,
             )
             return {"ok": True, "runId": run.id}
 

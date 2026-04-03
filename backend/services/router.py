@@ -87,15 +87,20 @@ class ConversationRouter:
     async def route_message(self, *, thread_id: str, message_content: str, project_id: str | None) -> list[dict[str, Any]]:
         context = await ContextAssembler(self.db).build(thread_id=thread_id, project_id=project_id, query=message_content)
         resolved_project_id = project_id or getattr(context.get("thread"), "project_id", None)
+        lower = message_content.lower()
         plan = await self._decide(message_content, context)
+        actions = self._finalize_actions(plan.actions, lower)
         events: list[dict[str, Any]] = []
 
-        for action in plan.actions:
+        for action in actions:
             result_event = await self._apply_action(action, thread_id=thread_id, project_id=resolved_project_id)
             if result_event is not None:
                 events.append(result_event)
 
-        reply = plan.assistant_reply.strip() or self._assistant_reply(actions=plan.actions, context=context, lower=message_content.lower())
+        reply = ""
+        if actions == plan.actions:
+            reply = plan.assistant_reply.strip()
+        reply = reply or self._assistant_reply(actions=actions, context=context, lower=lower)
         await self._touch_thread(thread_id)
         for fragment in self._stream_text(reply):
             events.append({"type": "text_delta", "delta": fragment})
@@ -338,7 +343,7 @@ class ConversationRouter:
             actions.append(PlannedAction(tool="create_run", input=run))
 
         reply = self._assistant_reply(actions=actions, context=context, lower=lower)
-        return OrchestrationPlan(assistant_reply=reply, actions=self._dedupe_actions(actions))
+        return OrchestrationPlan(assistant_reply=reply, actions=self._finalize_actions(actions, lower))
 
     def _memory_payloads(self, text: str, lower: str) -> list[dict[str, str]]:
         if any(token in lower for token in {"decision:", "decide", "decision", "决定", "统一", "drop ", "不再兼容", "只走", "只保留"}):
@@ -414,6 +419,34 @@ class ConversationRouter:
             "agent": self._agent_from_text(lower),
             "task": self._run_task(text, context),
         }
+
+    def _finalize_actions(self, actions: list[PlannedAction], lower: str) -> list[PlannedAction]:
+        finalized = self._dedupe_actions(actions)
+        has_watcher = any(action.tool == "create_watcher" for action in finalized)
+        has_run = any(action.tool == "create_run" for action in finalized)
+        if has_watcher and has_run and not self._should_start_run_with_watcher(lower):
+            finalized = [action for action in finalized if action.tool != "create_run"]
+        return finalized
+
+    def _should_start_run_with_watcher(self, lower: str) -> bool:
+        return any(
+            token in lower
+            for token in {
+                "run now",
+                "check now",
+                "fix now",
+                "right now",
+                "立即处理",
+                "马上处理",
+                "立刻处理",
+                "现在处理",
+                "先检查",
+                "先处理",
+                "现在修",
+                "立刻修",
+                "马上修",
+            }
+        )
 
     def _watcher_config_from(self, text: str, source_type: str, lower: str) -> dict[str, Any]:
         repo_match = re.search(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", text)

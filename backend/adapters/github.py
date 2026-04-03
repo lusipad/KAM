@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from typing import Any
 
 from ghapi.all import GhApi
@@ -12,21 +14,69 @@ def _split_repo(repo: str) -> tuple[str, str]:
     return owner, name
 
 
+def _load_git_credential_token() -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "credential", "fill"],
+            input="protocol=https\nhost=github.com\n\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    for line in completed.stdout.splitlines():
+        if line.startswith("password="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _resolve_github_token() -> str:
+    return settings.github_token or _load_git_credential_token()
+
+
 class GitHubPRAdapter:
     def __init__(self) -> None:
-        self._api = GhApi(token=settings.github_token) if settings.github_token else None
+        self._token = _resolve_github_token()
+        self._api = GhApi(token=self._token) if self._token else GhApi()
 
     async def fetch(self, config: dict[str, Any]) -> dict[str, Any]:
-        if self._api is None:
-            return {"items": [], "review_comments": [], "meta": {"error": "missing_github_token"}}
-
         repo = config["repo"]
         owner, name = _split_repo(repo)
         watch = config.get("watch", "assigned_prs")
         number = config.get("number")
 
         if watch == "review_comments" and number:
-            comments = list(self._api.pulls.list_review_comments(owner, name, number))
+            meta = {"repo": repo, "watch": watch, "number": number}
+            try:
+                pull = self._api.pulls.get(owner, name, number)
+                head = getattr(pull, "head", None)
+                head_repo = getattr(head, "repo", None)
+                base = getattr(pull, "base", None)
+                meta.update(
+                    {
+                        "pullUrl": getattr(pull, "html_url", None),
+                        "title": getattr(pull, "title", None),
+                        "state": getattr(pull, "state", None),
+                        "draft": bool(getattr(pull, "draft", False)),
+                        "headRef": getattr(head, "ref", None),
+                        "headSha": getattr(head, "sha", None),
+                        "headRepo": getattr(head_repo, "full_name", repo) if head_repo is not None else repo,
+                        "baseRef": getattr(base, "ref", None),
+                    }
+                )
+                comments = list(self._api.pulls.list_review_comments(owner, name, number))
+            except Exception as exc:
+                return {
+                    "items": [],
+                    "review_comments": [],
+                    "meta": {**meta, "error": f"{type(exc).__name__}: {exc}"},
+                }
+
             items = [
                 {
                     "id": item.id,
@@ -41,9 +91,17 @@ class GitHubPRAdapter:
                 }
                 for item in comments
             ]
-            return {"items": items, "review_comments": items, "meta": {"repo": repo, "watch": watch}}
+            return {"items": items, "review_comments": items, "meta": meta}
 
-        pulls = list(self._api.pulls.list(owner, name, state="open"))
+        try:
+            pulls = list(self._api.pulls.list(owner, name, state="open"))
+        except Exception as exc:
+            return {
+                "items": [],
+                "review_comments": [],
+                "meta": {"repo": repo, "watch": watch, "error": f"{type(exc).__name__}: {exc}"},
+            }
+
         items = []
         current_user = config.get("filter_user")
         for pull in pulls:
@@ -75,24 +133,89 @@ class GitHubPRAdapter:
                 created.append(item)
             elif old_item.get("updated_at") != item.get("updated_at"):
                 updated.append(item)
-        return {"created": created, "updated": updated, "review_comments": current.get("review_comments", [])}
+
+        previous_meta = (previous or {}).get("meta", {})
+        current_meta = current.get("meta", {})
+        errors = []
+        current_error = current_meta.get("error")
+        if current_error and current_error != previous_meta.get("error"):
+            errors.append(
+                {
+                    "repo": current_meta.get("repo"),
+                    "watch": current_meta.get("watch"),
+                    "number": current_meta.get("number"),
+                    "message": current_error,
+                }
+            )
+
+        return {
+            "created": created,
+            "updated": updated,
+            "review_comments": [*created, *updated],
+            "errors": errors,
+            "meta": current_meta,
+        }
 
     def recommended_actions(self, watcher: dict[str, Any], changes: dict[str, Any]) -> list[dict[str, Any]]:
         if changes.get("review_comments"):
+            config = watcher.get("config", {})
+            repo = config.get("repo", "owner/repo")
+            number = config.get("number")
+            scope = f"{repo} PR #{number}" if number else f"{repo} PR"
+            changed_comments = [
+                {
+                    "id": item.get("id"),
+                    "path": item.get("path"),
+                    "line": item.get("line"),
+                    "user": item.get("user"),
+                    "url": item.get("html_url"),
+                    "body": " ".join(str(item.get("body", "")).split())[:180],
+                }
+                for item in changes["review_comments"]
+            ]
             return [
                 {
-                    "label": "分析评论",
+                    "label": "处理评审",
                     "kind": "create_run",
                     "params": {
                         "agent": "codex",
-                        "task": f"分析监控 {watcher['name']} 新发现的 PR 评审评论，并准备修复或回复。",
+                        "task": (
+                            f"处理 {scope} 新发现的评审评论：能自动修复的直接修复并验证，"
+                            "需要额外产品、架构或业务上下文的评论则整理成简洁回复草稿。"
+                            f" 本次新增或更新的评论是：{json.dumps(changed_comments, ensure_ascii=False)}。"
+                            " 先确认当前工作目录对应这条 PR 的代码；如果不是，用 GitHub PR ref 抓取对应分支。"
+                            " 只直接修复能在当前上下文里明确落地的问题，并运行与改动相关的最小验证。"
+                            " 需要产品、架构或需求澄清的评论不要猜，明确写出阻塞点和建议回复。"
+                        ),
+                        "initialArtifacts": [
+                            {
+                                "type": "github_pr_context",
+                                "content": json.dumps(
+                                    {
+                                        "watcherName": watcher.get("name"),
+                                        "repo": repo,
+                                        "number": number,
+                                        "watch": config.get("watch", "review_comments"),
+                                        "meta": changes.get("meta", {}),
+                                    },
+                                    ensure_ascii=False,
+                                    indent=2,
+                                ),
+                                "metadata": {"repo": repo, "number": number},
+                            },
+                            {
+                                "type": "github_review_comments",
+                                "content": json.dumps(changes["review_comments"], ensure_ascii=False, indent=2),
+                                "metadata": {"count": len(changes["review_comments"])},
+                            },
+                        ],
                     },
                 }
             ]
         return []
 
     async def perform(self, action: dict[str, Any]) -> dict[str, Any]:
-        if self._api is None:
+        if not self._token:
             return {"ok": False, "error": "missing_github_token"}
 
         kind = action.get("kind")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 from collections.abc import Iterable
@@ -393,7 +394,7 @@ class RunEngine:
     def _build_command(self, agent: str, task: str, cwd: Path) -> list[str]:
         if agent == "codex":
             return [
-                settings.codex_path,
+                self._resolve_agent_binary(settings.codex_path),
                 "exec",
                 "--json",
                 "--skip-git-repo-check",
@@ -403,8 +404,28 @@ class RunEngine:
                 task,
             ]
         if agent == "claude-code":
-            return [settings.claude_code_path, task]
+            return [
+                self._resolve_agent_binary(settings.claude_code_path),
+                "-p",
+                "--dangerously-skip-permissions",
+                "--output-format",
+                "text",
+                task,
+            ]
         raise RuntimeError(f"unsupported_agent:{agent}")
+
+    def _resolve_agent_binary(self, executable: str) -> str:
+        candidate = Path(executable)
+        if candidate.is_file():
+            return str(candidate)
+
+        if os.name == "nt" and not candidate.suffix:
+            for suffix in (".cmd", ".exe", ".bat"):
+                resolved = shutil.which(f"{executable}{suffix}")
+                if resolved:
+                    return resolved
+
+        return shutil.which(executable) or executable
 
     async def _run_command(self, run: Run | TaskRun, command: list[str], cwd: Path) -> tuple[int, str]:
         process = await asyncio.create_subprocess_exec(

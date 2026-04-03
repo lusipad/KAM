@@ -28,8 +28,10 @@
   - `/api/runs/{run_id}/artifacts`
   - `/api/reviews/{task_id}/compare`
 - harness run 已切成 task-native runtime，不再依赖 bridge project/thread
+- 后端启动建库已切到 Alembic 升级链
 - 默认前端主入口改为 task-first workbench
 - 新增 harness smoke
+- 新增 opt-in 真实 agent smoke（默认先覆盖 `codex`）
 - 新增 `POST /api/dev/seed-harness`
 
 ## 当前仍有缺口
@@ -39,6 +41,7 @@
 - 彻底下掉旧 `projects / threads / home / watchers / memory` 主入口
 - 把文档、脚本、命名进一步从 `v3 workspace` 语境切干净
 - 补更完整的 task-first 前端交互：多任务切换、run 创建、compare 细化
+- 把真实 `claude-code` 登录态验证接进 smoke 基线
 
 ### 明确不优先做
 

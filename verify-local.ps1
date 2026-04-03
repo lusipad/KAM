@@ -1,5 +1,8 @@
 param(
-    [switch]$SkipSmoke
+    [switch]$SkipSmoke,
+    [switch]$RunRealAgentSmoke,
+    [ValidateSet("codex", "claude-code")]
+    [string]$RealSmokeAgent = "codex"
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,6 +62,11 @@ Write-Host ""
 
 Push-Location $RootDir
 try {
+    Invoke-CheckedProcess "数据库启动迁移测试" $Pwsh @(
+        "-NoProfile",
+        "-Command",
+        "& '$Python' -m unittest backend.tests.test_db_init -v"
+    ) $RootDir
     Invoke-CheckedProcess "Harness 后端单测" $Pwsh @(
         "-NoProfile",
         "-Command",
@@ -69,6 +77,16 @@ try {
         "-Command",
         "& '$Python' -m unittest backend.tests.test_v3_api -v"
     ) $RootDir
+    Invoke-CheckedProcess "GitHub PR 适配器回归" $Pwsh @(
+        "-NoProfile",
+        "-Command",
+        "& '$Python' -m unittest backend.tests.test_github_adapter -v"
+    ) $RootDir
+    Invoke-CheckedProcess "PR review monitor 回归" $Pwsh @(
+        "-NoProfile",
+        "-Command",
+        "& '$Python' -m unittest backend.tests.test_pr_review_monitor -v"
+    ) $RootDir
 
     Push-Location (Join-Path $RootDir "app")
     try {
@@ -76,6 +94,13 @@ try {
         Invoke-CheckedProcess "前端 lint" $Npm @("run", "lint") (Get-Location).Path
         if (-not $SkipSmoke) {
             Invoke-CheckedProcess "本地 smoke" $Npm @("run", "test:smoke:local") (Get-Location).Path
+        }
+        if ($RunRealAgentSmoke) {
+            Invoke-CheckedProcess "真实 agent smoke" $Pwsh @(
+                "-NoProfile",
+                "-Command",
+                "`$env:KAM_SMOKE_AGENT='$RealSmokeAgent'; & '$Npm' run test:smoke:agent"
+            ) (Get-Location).Path
         }
     }
     finally {
