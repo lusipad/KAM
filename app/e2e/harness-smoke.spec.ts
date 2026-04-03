@@ -46,11 +46,16 @@ test('can create a task, add refs, generate a snapshot, launch runs, and compare
   await page.getByRole('button', { name: '创建任务' }).click()
 
   await expect(page.locator('.feed-card-title').filter({ hasText: '把 run runtime 切成 task-native' }).first()).toBeVisible()
+  await page.getByPlaceholder('任务标题').fill('把 task-native run 收口到日常开发台')
+  await page.getByPlaceholder('状态').fill('in_progress')
+  await page.getByPlaceholder('优先级').fill('high')
+  await page.getByPlaceholder('标签，逗号分隔').fill('dogfood, editing')
+  await page.getByRole('button', { name: '保存任务设置' }).click()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '把 task-native run 收口到日常开发台' }).first()).toBeVisible()
 
-  const inputs = page.locator('.task-inline-form .watcher-input')
-  await inputs.nth(0).fill('file')
-  await inputs.nth(1).fill('Run Engine')
-  await inputs.nth(2).fill('backend/services/run_engine.py')
+  await page.getByPlaceholder('kind').fill('file')
+  await page.getByPlaceholder('label').fill('Run Engine')
+  await page.getByPlaceholder('value').fill('backend/services/run_engine.py')
   await page.getByRole('button', { name: '添加引用' }).click()
 
   await expect(page.locator('.task-list-row').filter({ hasText: '[file] Run Engine' }).first()).toBeVisible()
@@ -58,7 +63,7 @@ test('can create a task, add refs, generate a snapshot, launch runs, and compare
   await page.getByPlaceholder('可选 focus，例如：先切前端主入口').fill('先把 task run 挂到 task 下')
   await page.getByRole('button', { name: '生成快照' }).click()
 
-  await expect(page.locator('.task-list-row').filter({ hasText: '把 run runtime 切成 task-native · 1 refs' }).first()).toBeVisible()
+  await expect(page.locator('.task-list-row').filter({ hasText: '把 task-native run 收口到日常开发台 · 1 refs' }).first()).toBeVisible()
   await expect(page.locator('.memory-chip').filter({ hasText: '先把 task run 挂到 task 下' }).first()).toBeVisible()
 
   await page.getByPlaceholder('输入这轮要执行的任务...').fill('先落 task-native run API')
@@ -73,4 +78,9 @@ test('can create a task, add refs, generate a snapshot, launch runs, and compare
   await page.getByRole('button', { name: '对比最近两个 Run' }).click()
   await expect(page.locator('.task-list-row').filter({ hasText: '对比 2 个 run' }).first()).toBeVisible()
   await expect(page.locator('.task-artifact-card').filter({ hasText: 'task_snapshot' }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: '归档任务' }).click()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '把 task-native run 收口到日常开发台' }).first()).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: '状态 · archived' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '隐藏归档' })).toBeVisible()
 })

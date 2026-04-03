@@ -78,11 +78,13 @@ pwsh -File .\start-local.ps1
 pwsh -File .\verify-local.ps1
 ```
 
-如果你要额外验证真实 agent 执行链路：
+如果你要额外验证默认 `codex` 的真实 agent 执行链路：
 
 ```powershell
 pwsh -File .\verify-local.ps1 -RunRealAgentSmoke -RealSmokeAgent codex
 ```
+
+`codex` 是当前默认 agent。`claude-code` 仍保留为可选执行目标和额外 smoke 目标，但不是默认主门禁。
 
 如果你要直接看 task-first 界面：
 
@@ -97,6 +99,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest backend.tests.test_db_init -v
 .\.venv\Scripts\python.exe -m unittest backend.tests.test_harness_api -v
+.\.venv\Scripts\python.exe -m unittest backend.tests.test_run_engine_lore -v
 .\.venv\Scripts\python.exe -m unittest backend.tests.test_github_adapter -v
 .\.venv\Scripts\python.exe -m unittest backend.tests.test_pr_review_monitor -v
 ```

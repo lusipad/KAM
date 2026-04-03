@@ -7,6 +7,14 @@ import type { RunRecord, TaskDetail } from '@/types/harness'
 
 type TaskWorkbenchProps = {
   task: TaskDetail | null
+  taskDraft: {
+    title: string
+    description: string
+    repoPath: string
+    status: string
+    priority: string
+    labelsText: string
+  }
   loading: boolean
   runPrompt: string
   runAgent: 'codex' | 'claude-code'
@@ -17,8 +25,18 @@ type TaskWorkbenchProps = {
   addingRef: boolean
   creatingSnapshot: boolean
   creatingCompare: boolean
+  savingTask: boolean
   onRunPromptChange: (value: string) => void
   onRunAgentChange: (agent: 'codex' | 'claude-code') => void
+  onTaskDraftChange: (draft: {
+    title: string
+    description: string
+    repoPath: string
+    status: string
+    priority: string
+    labelsText: string
+  }) => void
+  onSaveTask: () => void
   onCreateRun: () => void
   onRefDraftChange: (draft: { kind: string; label: string; value: string }) => void
   onAddRef: () => void
@@ -40,6 +58,7 @@ function latestRunLabel(run: RunRecord | null) {
 
 export function TaskWorkbench({
   task,
+  taskDraft,
   loading,
   runPrompt,
   runAgent,
@@ -50,8 +69,11 @@ export function TaskWorkbench({
   addingRef,
   creatingSnapshot,
   creatingCompare,
+  savingTask,
   onRunPromptChange,
   onRunAgentChange,
+  onTaskDraftChange,
+  onSaveTask,
   onCreateRun,
   onRefDraftChange,
   onAddRef,
@@ -105,6 +127,49 @@ export function TaskWorkbench({
                 </span>
               ))}
             </div>
+            <div className="task-inline-form">
+              <input
+                className="watcher-input"
+                value={taskDraft.title}
+                onChange={(event) => onTaskDraftChange({ ...taskDraft, title: event.target.value })}
+                placeholder="任务标题"
+              />
+              <input
+                className="watcher-input"
+                value={taskDraft.status}
+                onChange={(event) => onTaskDraftChange({ ...taskDraft, status: event.target.value })}
+                placeholder="状态"
+              />
+              <input
+                className="watcher-input"
+                value={taskDraft.priority}
+                onChange={(event) => onTaskDraftChange({ ...taskDraft, priority: event.target.value })}
+                placeholder="优先级"
+              />
+              <button type="button" className="button-primary" disabled={savingTask || !taskDraft.title.trim()} onClick={onSaveTask}>
+                保存任务设置
+              </button>
+            </div>
+            <div className="task-inline-form">
+              <input
+                className="watcher-input"
+                value={taskDraft.repoPath}
+                onChange={(event) => onTaskDraftChange({ ...taskDraft, repoPath: event.target.value })}
+                placeholder="仓库路径"
+              />
+              <input
+                className="watcher-input"
+                value={taskDraft.labelsText}
+                onChange={(event) => onTaskDraftChange({ ...taskDraft, labelsText: event.target.value })}
+                placeholder="标签，逗号分隔"
+              />
+            </div>
+            <input
+              className="watcher-input"
+              value={taskDraft.description}
+              onChange={(event) => onTaskDraftChange({ ...taskDraft, description: event.target.value })}
+              placeholder="任务描述"
+            />
           </section>
 
           <section className="feed-card">

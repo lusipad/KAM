@@ -9,11 +9,11 @@ const baseURL = `http://127.0.0.1:${port}`
 
 
 async function main() {
-  const smokeDb = path.join(backendDir, 'storage', 'smoke-v3.db')
+  const smokeDb = path.join(backendDir, 'storage', 'smoke-harness.db')
   fs.rmSync(smokeDb, { force: true })
   const backend = startBackend({
     port,
-    databaseUrl: 'sqlite+aiosqlite:///./storage/smoke-v3.db',
+    databaseUrl: 'sqlite+aiosqlite:///./storage/smoke-harness.db',
     mockRuns: true,
     logPrefix: 'smoke-backend',
   })

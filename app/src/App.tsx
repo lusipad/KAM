@@ -14,6 +14,7 @@ import {
   listTasks,
   resolveTaskContext,
   retryRun,
+  updateTask,
 } from '@/api/client'
 import { TaskPanel } from '@/features/tasks/TaskPanel'
 import { TaskSidebar } from '@/features/tasks/TaskSidebar'
@@ -31,6 +32,43 @@ function inferTaskPayload(prompt: string) {
     repoPath,
     labels: ['dogfood'],
   }
+}
+
+type TaskDraft = {
+  title: string
+  description: string
+  repoPath: string
+  status: string
+  priority: string
+  labelsText: string
+}
+
+function toTaskDraft(task: TaskRecord | TaskDetail | null): TaskDraft {
+  if (!task) {
+    return {
+      title: '',
+      description: '',
+      repoPath: '',
+      status: 'open',
+      priority: 'medium',
+      labelsText: '',
+    }
+  }
+  return {
+    title: task.title,
+    description: task.description ?? '',
+    repoPath: task.repoPath ?? '',
+    status: task.status,
+    priority: task.priority,
+    labelsText: task.labels.join(', '),
+  }
+}
+
+function parseLabelsText(value: string) {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
 
 function EmptyTaskState({
@@ -68,8 +106,10 @@ function App() {
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [task, setTask] = useState<TaskDetail | null>(null)
+  const [taskDraft, setTaskDraft] = useState<TaskDraft>(toTaskDraft(null))
   const [loading, setLoading] = useState(false)
   const [panelOpen, setPanelOpen] = useState(true)
+  const [includeArchived, setIncludeArchived] = useState(false)
   const [artifacts, setArtifacts] = useState<RunArtifactRecord[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [taskPrompt, setTaskPrompt] = useState('')
@@ -80,6 +120,7 @@ function App() {
   const [addingRef, setAddingRef] = useState(false)
   const [creatingSnapshot, setCreatingSnapshot] = useState(false)
   const [creatingCompare, setCreatingCompare] = useState(false)
+  const [savingTask, setSavingTask] = useState(false)
   const [snapshotFocus, setSnapshotFocus] = useState('')
   const [refDraft, setRefDraft] = useState({ kind: 'file', label: '', value: '' })
   const [toasts, setToasts] = useState<ToastItem[]>([])
@@ -99,8 +140,8 @@ function App() {
     })
   }, [pushToast])
 
-  const refreshTasks = useCallback(async () => {
-    const data = await listTasks()
+  const refreshTasks = useCallback(async (options?: { includeArchived?: boolean }) => {
+    const data = await listTasks({ includeArchived: options?.includeArchived ?? includeArchived })
     setTasks(data.tasks)
     setSelectedTaskId((current) => {
       if (current && data.tasks.some((item) => item.id === current)) {
@@ -109,13 +150,14 @@ function App() {
       return data.tasks[0]?.id ?? null
     })
     return data.tasks
-  }, [])
+  }, [includeArchived])
 
   const refreshTask = useCallback(async (taskId: string) => {
     setLoading(true)
     try {
       const detail = await getTask(taskId)
       setTask(detail)
+      setTaskDraft(toTaskDraft(detail))
       setSelectedRunId((current) => {
         if (current && detail.runs.some((run) => run.id === current)) {
           return current
@@ -145,6 +187,7 @@ function App() {
   useEffect(() => {
     if (!selectedTaskId) {
       setTask(null)
+      setTaskDraft(toTaskDraft(null))
       setArtifacts([])
       return
     }
@@ -178,6 +221,29 @@ function App() {
       setCreatingTask(false)
     }
   }, [creatingTask, onError, pushToast, refreshTasks, taskPrompt])
+
+  const handleSaveTask = useCallback(async () => {
+    if (!task || savingTask || !taskDraft.title.trim()) {
+      return
+    }
+    setSavingTask(true)
+    try {
+      await updateTask(task.id, {
+        title: taskDraft.title.trim(),
+        description: taskDraft.description.trim() || null,
+        repoPath: taskDraft.repoPath.trim() || null,
+        status: taskDraft.status.trim() || 'open',
+        priority: taskDraft.priority.trim() || 'medium',
+        labels: parseLabelsText(taskDraft.labelsText),
+      })
+      await Promise.all([refreshTask(task.id), refreshTasks()])
+      pushToast({ id: `task-save-${task.id}`, message: '任务设置已更新。', tone: 'green' })
+    } catch (error) {
+      onError(error, '更新任务失败。')
+    } finally {
+      setSavingTask(false)
+    }
+  }, [onError, pushToast, refreshTask, refreshTasks, savingTask, task, taskDraft])
 
   const handleAddRef = useCallback(async () => {
     if (!task || addingRef || !refDraft.kind.trim() || !refDraft.label.trim() || !refDraft.value.trim()) {
@@ -287,13 +353,15 @@ function App() {
     }
     try {
       await archiveTask(task.id)
-      await refreshTasks()
-      setTask(null)
-      setArtifacts([])
+      setIncludeArchived(true)
+      await refreshTasks({ includeArchived: true })
+      setSelectedTaskId(task.id)
+      await refreshTask(task.id)
+      pushToast({ id: `task-archive-${task.id}`, message: '任务已归档。', tone: 'green' })
     } catch (error) {
       onError(error, '归档任务失败。')
     }
-  }, [onError, refreshTasks, task])
+  }, [onError, pushToast, refreshTask, refreshTasks, task])
 
   const selectedRun = useMemo(
     () => task?.runs.find((item) => item.id === selectedRunId) ?? task?.runs.at(-1) ?? null,
@@ -311,7 +379,16 @@ function App() {
 
   return (
     <AppShell
-      sidebar={<TaskSidebar tasks={tasks} activeTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} onCreateTask={() => setSelectedTaskId(null)} />}
+      sidebar={
+        <TaskSidebar
+          tasks={tasks}
+          activeTaskId={selectedTaskId}
+          includeArchived={includeArchived}
+          onSelectTask={setSelectedTaskId}
+          onCreateTask={() => setSelectedTaskId(null)}
+          onToggleArchived={() => setIncludeArchived((current) => !current)}
+        />
+      }
       breadcrumb={breadcrumb}
       memoryOpen={panelOpen}
       onToggleMemory={() => setPanelOpen((current) => !current)}
@@ -333,6 +410,7 @@ function App() {
             </div>
             <TaskWorkbench
               task={task}
+              taskDraft={taskDraft}
               loading={loading}
               runPrompt={runPrompt}
               runAgent={runAgent}
@@ -343,8 +421,11 @@ function App() {
               addingRef={addingRef}
               creatingSnapshot={creatingSnapshot}
               creatingCompare={creatingCompare}
+              savingTask={savingTask}
               onRunPromptChange={setRunPrompt}
               onRunAgentChange={setRunAgent}
+              onTaskDraftChange={setTaskDraft}
+              onSaveTask={handleSaveTask}
               onCreateRun={handleCreateRun}
               onRefDraftChange={setRefDraft}
               onAddRef={handleAddRef}

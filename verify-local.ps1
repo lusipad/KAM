@@ -72,6 +72,11 @@ try {
         "-Command",
         "& '$Python' -m unittest backend.tests.test_harness_api -v"
     ) $RootDir
+    Invoke-CheckedProcess "Run Engine Lore 回归" $Pwsh @(
+        "-NoProfile",
+        "-Command",
+        "& '$Python' -m unittest backend.tests.test_run_engine_lore -v"
+    ) $RootDir
     Invoke-CheckedProcess "GitHub PR 适配器回归" $Pwsh @(
         "-NoProfile",
         "-Command",

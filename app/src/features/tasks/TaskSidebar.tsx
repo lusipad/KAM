@@ -4,8 +4,10 @@ import type { TaskRecord } from '@/types/harness'
 type TaskSidebarProps = {
   tasks: TaskRecord[]
   activeTaskId: string | null
+  includeArchived: boolean
   onSelectTask: (taskId: string) => void
   onCreateTask: () => void
+  onToggleArchived: () => void
 }
 
 function taskTone(task: TaskRecord) {
@@ -22,11 +24,14 @@ function taskTone(task: TaskRecord) {
 }
 
 function taskMeta(task: TaskRecord) {
+  if (task.archivedAt) {
+    return '已归档'
+  }
   const label = task.labels.slice(0, 2).join(' · ')
   return label || formatRelativeTime(task.updatedAt)
 }
 
-export function TaskSidebar({ tasks, activeTaskId, onSelectTask, onCreateTask }: TaskSidebarProps) {
+export function TaskSidebar({ tasks, activeTaskId, includeArchived, onSelectTask, onCreateTask, onToggleArchived }: TaskSidebarProps) {
   return (
     <aside className="kam-sidebar">
       <div className="sidebar-brand">
@@ -65,6 +70,9 @@ export function TaskSidebar({ tasks, activeTaskId, onSelectTask, onCreateTask }:
       <div className="sidebar-footer">
         <button type="button" className="footer-tab is-wide is-active" onClick={onCreateTask}>
           新建任务
+        </button>
+        <button type="button" className={`footer-tab is-wide ${includeArchived ? 'is-active' : ''}`} onClick={onToggleArchived}>
+          {includeArchived ? '隐藏归档' : '显示归档'}
         </button>
       </div>
     </aside>

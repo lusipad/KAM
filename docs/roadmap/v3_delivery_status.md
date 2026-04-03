@@ -42,7 +42,8 @@
 ### 需要继续推进
 
 - 补更完整的 task-first 前端交互：多任务切换、run 创建、compare 细化
-- 把真实 `claude-code` 登录态验证接进 smoke 基线
+- 把真实 `codex` 仓库改动链路稳固成默认 smoke 门禁
+- 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
 
 ### 明确不优先做
 
@@ -54,7 +55,7 @@
 ## 当前建议
 
 - 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
-- 下一步优先补 task-first 交互和真实 `claude-code` smoke
+- 下一步优先补 task-first 交互，并把真实 `codex` 改仓库链路做成更硬的门禁
 - 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档

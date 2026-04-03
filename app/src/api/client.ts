@@ -46,8 +46,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export function listTasks() {
-  return request<{ tasks: TaskRecord[] }>('/tasks')
+export function listTasks(options?: { includeArchived?: boolean }) {
+  const search = new URLSearchParams()
+  if (options?.includeArchived) {
+    search.set('include_archived', 'true')
+  }
+  const suffix = search.size ? `?${search.toString()}` : ''
+  return request<{ tasks: TaskRecord[] }>(`/tasks${suffix}`)
 }
 
 export function getTask(taskId: string) {

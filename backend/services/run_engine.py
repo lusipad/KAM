@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -176,7 +177,7 @@ class RunEngine:
 
                     repo_path = Path(task_record.repo_path).resolve() if task_record and task_record.repo_path else None
                     if code == 0:
-                        changed_files = await self._finalize_success(run.id, repo_path, worktree_path)
+                        changed_files = await self._finalize_success(run, task_record, repo_path, worktree_path)
                         run.status = "passed"
                         run.changed_files = changed_files
                         run.check_passed = True
@@ -288,7 +289,13 @@ class RunEngine:
         code = await process.wait()
         return code, "\n".join(output_lines)
 
-    async def _finalize_success(self, run_id: str, repo_path: Path | None, worktree_path: Path | None) -> list[str]:
+    async def _finalize_success(
+        self,
+        run: TaskRun,
+        task_record: Task | None,
+        repo_path: Path | None,
+        worktree_path: Path | None,
+    ) -> list[str]:
         if repo_path is None or worktree_path is None or not worktree_path.exists():
             return []
         changed_files = self._git_output(worktree_path, "status", "--short")
@@ -297,9 +304,45 @@ class RunEngine:
         self._git(worktree_path, "config", "user.name", settings.git_user_name)
         self._git(worktree_path, "config", "user.email", settings.git_user_email)
         self._git(worktree_path, "add", "-A")
-        self._git(worktree_path, "commit", "-m", f"KAM run {run_id}")
+        message_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", suffix=".txt") as handle:
+                handle.write(self._build_commit_message(run, task_record))
+                message_path = Path(handle.name)
+            self._git(worktree_path, "commit", "-F", str(message_path))
+        finally:
+            if message_path is not None:
+                message_path.unlink(missing_ok=True)
         committed_files = self._git_output(worktree_path, "show", "--pretty=", "--name-only", "HEAD")
         return [line.strip() for line in committed_files.splitlines() if line.strip()]
+
+    def _build_commit_message(self, run: TaskRun, task_record: Task | None) -> str:
+        task_title = (task_record.title.strip() if task_record and task_record.title else "") or f"task {run.task_id}"
+        repo_path = task_record.repo_path.strip() if task_record and task_record.repo_path else None
+        narrative = [
+            f"This automated harness run completed successfully for {task_title}.",
+            f"Run task: {run.task.strip()}",
+        ]
+        if repo_path:
+            narrative.append(f"Repository: {repo_path}")
+
+        return "\n".join(
+            [
+                f"Advance {task_title} through a {run.agent} harness run",
+                "",
+                *narrative,
+                "",
+                "Constraint: Harness-generated commits must remain adoptable from isolated worktrees",
+                "Confidence: medium",
+                "Scope-risk: narrow",
+                "Reversibility: clean",
+                "Directive: Review the associated artifacts before adopting this run into the main worktree",
+                f"Tested: {run.agent} harness run exited with status 0",
+                "Not-tested: Manual validation after adopt into the main worktree",
+                f"Related: task/{run.task_id}",
+                f"Related: run/{run.id}",
+            ]
+        )
 
     async def _load_task_run(self, session: AsyncSession, run_id: str) -> TaskRun | None:
         stmt = (
