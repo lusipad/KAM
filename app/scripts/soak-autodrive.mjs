@@ -12,6 +12,8 @@ const taskIntervalMs = readPositiveInt('KAM_SOAK_TASK_INTERVAL_MS', 10000)
 const settleMs = readPositiveInt('KAM_SOAK_SETTLE_MS', 5000)
 const inactivityMs = Math.max(readPositiveInt('KAM_SOAK_INACTIVITY_MS', 20000), taskIntervalMs * 3, pollMs * 5)
 const maxRecentEvents = 12
+const logPrefix = process.env.KAM_SOAK_LOG_PREFIX || 'soak-backend'
+const resultFile = process.env.KAM_SOAK_RESULT_FILE || null
 
 
 function readPositiveInt(name, fallback) {
@@ -30,6 +32,15 @@ function readPositiveInt(name, fallback) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+
+function emitResult(payload) {
+  const text = JSON.stringify(payload, null, 2)
+  console.log(text)
+  if (resultFile) {
+    fs.writeFileSync(resultFile, `${text}\n`, 'utf8')
+  }
 }
 
 
@@ -159,7 +170,7 @@ async function main() {
     port,
     databaseUrl: 'sqlite+aiosqlite:///./storage/soak-harness.db',
     mockRuns: true,
-    logPrefix: 'soak-backend',
+    logPrefix,
   })
 
   const createdRoots = []
@@ -210,25 +221,20 @@ async function main() {
     await request('/api/tasks/autodrive/global/stop', { method: 'POST' })
     stopAttempted = true
 
-    console.log(
-      JSON.stringify(
-        {
-          status: 'ok',
-          baseURL,
-          durationMs,
-          pollMs,
-          taskIntervalMs,
-          settleMs,
-          createdRootTasks: createdRoots.length,
-          finalLoopCount: finalStatus.loopCount,
-          finalRecentEvents: finalStatus.recentEvents.length,
-          finalStatus: finalStatus.status,
-          verification,
-        },
-        null,
-        2,
-      ),
-    )
+    emitResult({
+      status: 'ok',
+      baseURL,
+      durationMs,
+      pollMs,
+      taskIntervalMs,
+      settleMs,
+      createdRootTasks: createdRoots.length,
+      finalLoopCount: finalStatus.loopCount,
+      finalRecentEvents: finalStatus.recentEvents.length,
+      finalStatus: finalStatus.status,
+      verification,
+      logPrefix,
+    })
   } finally {
     if (!stopAttempted) {
       try {
@@ -243,6 +249,21 @@ async function main() {
 
 
 main().catch((error) => {
+  if (resultFile) {
+    fs.writeFileSync(
+      resultFile,
+      `${JSON.stringify(
+        {
+          status: 'failed',
+          error: error instanceof Error ? error.message : String(error),
+          logPrefix,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    )
+  }
   console.error(error)
   process.exit(1)
 })

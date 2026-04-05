@@ -64,6 +64,7 @@
 - `verify-local.ps1` 已默认纳入真实 `codex` agent smoke，覆盖临时 git repo 改动、Lore commit 和 adopt 链路
 - `claude-code` 作为可选 real smoke lane 已补 readiness 预检，会在 `claude auth status` 未就绪时提前失败，而不是跑到中途才报错
 - 新增可配置的 global autodrive soak runner，并通过 `verify-local.ps1 -RunAutoDriveSoak` 暴露可选入口；它会持续注入 root task，校验长时轮询期间的进展信号与 recent events 有界性
+- 新增 `run-autodrive-soak.ps1`，可把长时 soak 的 stdout、backend log、commit hash 与运行元数据自动归档到 `output/soak-runs/`
 - 新增 `POST /api/dev/seed-harness`
 - 移除旧 `projects / threads / home / watchers / memory` 运行时入口
 - 移除 V3 前端组件、类型层和验证基线

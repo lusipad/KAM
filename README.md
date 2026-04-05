@@ -115,6 +115,29 @@ pwsh -File .\verify-local.ps1 -RunAutoDriveSoak -AutoDriveSoakMinutes 180
 - loop 持续推进，不会长时间卡死
 - 新注入 root task 最终能产出 follow-up task 和 passed run
 
+如果你要把长时 soak 直接落成一份可归档的运行记录，优先使用：
+
+```powershell
+pwsh -File .\run-autodrive-soak.ps1 -Minutes 480 -TaskIntervalSeconds 30
+```
+
+它会在 `output/soak-runs/<timestamp>-<commit>/` 下自动保存：
+
+- `metadata.json`
+- `soak-result.json`
+- `runner-stdout.log`
+- `runner-stderr.log`
+- `backend.out.log`
+- `backend.err.log`
+
+如果你想让 8 小时 soak 在后台继续跑：
+
+```powershell
+pwsh -File .\run-autodrive-soak.ps1 -Minutes 480 -TaskIntervalSeconds 30 -Detached
+```
+
+这会立即返回 `artifactDir` 和后台 `pid`，最终证据仍会写回同一个目录。
+
 如果你只想单独跑 soak runner，也可以直接执行：
 
 ```powershell
