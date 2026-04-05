@@ -952,6 +952,50 @@ class HarnessApiTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_global_autodrive_recent_events_stay_bounded_under_repeated_cycles(self):
+        async def scenario():
+            attempts = 0
+
+            async def alternating_continue_task(_service, *, task_id, create_plan_if_needed):
+                nonlocal attempts
+                attempts += 1
+                if attempts % 2 == 1:
+                    raise RuntimeError(f"dispatcher boom {attempts}")
+                return SimpleNamespace(
+                    action="stop",
+                    reason="no_high_value_action",
+                    summary=f"cycle {attempts}",
+                    task=None,
+                    scope_task_id=None,
+                    run=None,
+                    error=None,
+                )
+
+            with (
+                patch.object(type(config.settings), "is_test_env", new_callable=PropertyMock, return_value=False),
+                patch("services.task_autodrive.GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS", new=0.01),
+                patch("services.task_dispatcher.TaskDispatcherService.continue_task", new=alternating_continue_task),
+            ):
+                service = GlobalAutoDriveService()
+                start_result = await service.start()
+                self.assertTrue(start_result.enabled)
+
+                deadline = asyncio.get_running_loop().time() + 0.45
+                while asyncio.get_running_loop().time() < deadline:
+                    await asyncio.sleep(0.02)
+
+                status = await service.get_status()
+                self.assertTrue(status.enabled)
+                self.assertGreaterEqual(attempts, 8)
+                self.assertLessEqual(len(status.recent_events), 12)
+                self.assertTrue(any(item["reason"] == "global_auto_drive_error" for item in status.recent_events))
+                self.assertTrue(any(item["reason"] == "no_high_value_action" for item in status.recent_events))
+
+                stop_result = await service.stop()
+                self.assertFalse(stop_result.enabled)
+
+        asyncio.run(scenario())
+
     def test_startup_marks_inflight_runs_as_failed(self):
         task = self.client.post(
             "/api/tasks",
