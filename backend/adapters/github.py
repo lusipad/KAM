@@ -7,6 +7,7 @@ from typing import Any
 from ghapi.all import GhApi
 
 from config import settings
+from services.source_tasks import build_github_review_task_prompt
 
 
 def _split_repo(repo: str) -> tuple[str, str]:
@@ -161,7 +162,6 @@ class GitHubPRAdapter:
             config = watcher.get("config", {})
             repo = config.get("repo", "owner/repo")
             number = config.get("number")
-            scope = f"{repo} PR #{number}" if number else f"{repo} PR"
             changed_comments = [
                 {
                     "id": item.get("id"),
@@ -179,14 +179,7 @@ class GitHubPRAdapter:
                     "kind": "create_run",
                     "params": {
                         "agent": "codex",
-                        "task": (
-                            f"处理 {scope} 新发现的评审评论：能自动修复的直接修复并验证，"
-                            "需要额外产品、架构或业务上下文的评论则整理成简洁回复草稿。"
-                            f" 本次新增或更新的评论是：{json.dumps(changed_comments, ensure_ascii=False)}。"
-                            " 先确认当前工作目录对应这条 PR 的代码；如果不是，用 GitHub PR ref 抓取对应分支。"
-                            " 只直接修复能在当前上下文里明确落地的问题，并运行与改动相关的最小验证。"
-                            " 需要产品、架构或需求澄清的评论不要猜，明确写出阻塞点和建议回复。"
-                        ),
+                        "task": build_github_review_task_prompt(repo, number, changed_comments),
                         "initialArtifacts": [
                             {
                                 "type": "github_pr_context",

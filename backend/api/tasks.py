@@ -14,6 +14,13 @@ from models import Task, TaskRef, TaskRun, now
 from services.task_dispatcher import TaskDispatcherService
 from services.task_autodrive import GlobalAutoDriveService, TaskAutoDriveService
 from services.run_engine import RunEngine
+from services.source_tasks import (
+    build_github_review_task_description_from_metadata,
+    merge_source_task_metadata,
+    source_dedup_key,
+    source_task_guard,
+    GITHUB_PR_REVIEW_SOURCE_KIND,
+)
 from services.task_planner import TaskPlannerService
 from services.task_context import TaskContextService
 
@@ -138,44 +145,42 @@ async def stop_global_autodrive(db: AsyncSession = Depends(get_db)):
 @router.post("")
 async def create_task(payload: TaskCreate, db: AsyncSession = Depends(get_db)):
     metadata = dict(payload.metadata or {}) or None
-    dedup_key = _source_dedup_key(metadata)
-    if dedup_key:
-        reusable_task = await _find_reusable_source_task(db, dedup_key)
-        if reusable_task is not None:
-            reusable_task.title = payload.title.strip()
-            reusable_task.description = payload.description.strip() if payload.description else None
-            reusable_task.repo_path = payload.repoPath.strip() if payload.repoPath else None
-            reusable_task.priority = payload.priority.strip()
-            reusable_task.labels = _merge_labels(reusable_task.labels or [], payload.labels)
-            reusable_task.metadata_ = _merge_task_metadata(reusable_task.metadata_ or {}, metadata)
-            await _refresh_source_refs(db, reusable_task, payload.refs, metadata)
-            reusable_task.updated_at = now()
-            await db.commit()
-            await db.refresh(reusable_task)
-            return reusable_task.to_dict()
+    dedup_key = source_dedup_key(metadata)
+    async with source_task_guard(dedup_key):
+        if dedup_key:
+            reusable_task = await _find_reusable_source_task(db, dedup_key)
+            if reusable_task is not None:
+                merged_metadata = merge_source_task_metadata(reusable_task.metadata_ or {}, metadata)
+                reusable_task.title = payload.title.strip()
+                reusable_task.description = _merged_task_description(
+                    payload.description,
+                    merged_metadata,
+                )
+                reusable_task.repo_path = payload.repoPath.strip() if payload.repoPath else None
+                reusable_task.priority = payload.priority.strip()
+                reusable_task.labels = _merge_labels(reusable_task.labels or [], payload.labels)
+                reusable_task.metadata_ = merged_metadata
+                await _refresh_source_refs(db, reusable_task, payload.refs, merged_metadata)
+                reusable_task.updated_at = now()
+                await db.commit()
+                await db.refresh(reusable_task)
+                return reusable_task.to_dict()
 
-    task = Task(
-        title=payload.title.strip(),
-        description=payload.description.strip() if payload.description else None,
-        repo_path=payload.repoPath.strip() if payload.repoPath else None,
-        status=payload.status.strip(),
-        priority=payload.priority.strip(),
-        labels=[label.strip() for label in payload.labels if label.strip()],
-        metadata_=metadata,
-    )
-    db.add(task)
-    await db.flush()
-    _add_task_refs(db, task.id, payload.refs)
-    await db.commit()
-    await db.refresh(task)
-    return task.to_dict()
-
-
-def _source_dedup_key(metadata: dict[str, Any] | None) -> str | None:
-    if not metadata:
-        return None
-    value = metadata.get("sourceDedupKey")
-    return value.strip() if isinstance(value, str) and value.strip() else None
+        task = Task(
+            title=payload.title.strip(),
+            description=_merged_task_description(payload.description, metadata),
+            repo_path=payload.repoPath.strip() if payload.repoPath else None,
+            status=payload.status.strip(),
+            priority=payload.priority.strip(),
+            labels=[label.strip() for label in payload.labels if label.strip()],
+            metadata_=metadata,
+        )
+        db.add(task)
+        await db.flush()
+        _add_task_refs(db, task.id, payload.refs)
+        await db.commit()
+        await db.refresh(task)
+        return task.to_dict()
 
 
 def _merge_labels(existing: list[str], incoming: list[str]) -> list[str]:
@@ -184,12 +189,6 @@ def _merge_labels(existing: list[str], incoming: list[str]) -> list[str]:
         label = raw.strip()
         if label and label not in merged:
             merged.append(label)
-    return merged
-
-
-def _merge_task_metadata(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(existing)
-    merged.update(incoming)
     return merged
 
 
@@ -211,7 +210,7 @@ async def _find_reusable_source_task(db: AsyncSession, dedup_key: str) -> Task |
         .order_by(desc(Task.updated_at))
     )
     for task in result.scalars():
-        if _source_dedup_key(task.metadata_ or {}) != dedup_key:
+        if source_dedup_key(task.metadata_ or {}) != dedup_key:
             continue
         if _task_is_reusable_for_source_update(task):
             return task
@@ -225,12 +224,18 @@ async def _refresh_source_refs(
     metadata: dict[str, Any],
 ) -> None:
     intake_source_kind = str(metadata.get("sourceKind") or "").strip()
+    if not intake_source_kind:
+        _add_task_refs(db, task.id, _merge_non_source_refs(task, refs, intake_source_kind))
+        return
+    merged_source_refs = _merge_source_refs(task, refs, intake_source_kind)
+    non_source_refs = _merge_non_source_refs(task, refs, intake_source_kind)
     existing_refs = list(task.refs)
     for ref in existing_refs:
         ref_source_kind = str((ref.metadata_ or {}).get("intakeSourceKind") or "").strip()
         if intake_source_kind and ref_source_kind == intake_source_kind:
             await db.delete(ref)
-    _add_task_refs(db, task.id, refs)
+    _add_task_refs(db, task.id, merged_source_refs)
+    _add_task_refs(db, task.id, non_source_refs)
 
 
 def _add_task_refs(db: AsyncSession, task_id: str, refs: list[TaskRefCreate]) -> None:
@@ -244,6 +249,64 @@ def _add_task_refs(db: AsyncSession, task_id: str, refs: list[TaskRefCreate]) ->
                 metadata_=ref_payload.metadata,
             )
         )
+
+
+def _merge_source_refs(task: Task, refs: list[TaskRefCreate], source_kind: str) -> list[TaskRefCreate]:
+    if not source_kind:
+        return list(refs)
+    merged: dict[tuple[str, str, str], TaskRefCreate] = {}
+    for ref in task.refs:
+        ref_source_kind = str((ref.metadata_ or {}).get("intakeSourceKind") or "").strip()
+        if ref_source_kind != source_kind:
+            continue
+        payload = TaskRefCreate(kind=ref.kind, label=ref.label, value=ref.value, metadata=dict(ref.metadata_ or {}))
+        merged[_source_ref_signature(payload)] = payload
+    for ref_payload in refs:
+        if str((ref_payload.metadata or {}).get("intakeSourceKind") or "").strip() != source_kind:
+            continue
+        merged[_source_ref_signature(ref_payload)] = ref_payload
+    return list(merged.values())
+
+
+def _merge_non_source_refs(task: Task, refs: list[TaskRefCreate], source_kind: str) -> list[TaskRefCreate]:
+    existing_signatures = {
+        _source_ref_signature(TaskRefCreate(kind=ref.kind, label=ref.label, value=ref.value, metadata=dict(ref.metadata_ or {})))
+        for ref in task.refs
+        if str((ref.metadata_ or {}).get("intakeSourceKind") or "").strip() != source_kind
+    }
+    merged: list[TaskRefCreate] = []
+    for ref_payload in refs:
+        if str((ref_payload.metadata or {}).get("intakeSourceKind") or "").strip() == source_kind:
+            continue
+        signature = _source_ref_signature(ref_payload)
+        if signature in existing_signatures:
+            continue
+        existing_signatures.add(signature)
+        merged.append(ref_payload)
+    return merged
+
+
+def _source_ref_signature(ref_payload: TaskRefCreate) -> tuple[str, str, str]:
+    metadata = ref_payload.metadata or {}
+    comment_id = metadata.get("commentId")
+    normalized_comment_id = ""
+    if isinstance(comment_id, int):
+        normalized_comment_id = str(comment_id)
+    elif isinstance(comment_id, str):
+        normalized_comment_id = comment_id.strip()
+    return (
+        ref_payload.kind.strip(),
+        ref_payload.value.strip(),
+        normalized_comment_id,
+    )
+
+
+def _merged_task_description(payload_description: str | None, metadata: dict[str, Any] | None) -> str | None:
+    if metadata and str(metadata.get("sourceKind") or "").strip() == GITHUB_PR_REVIEW_SOURCE_KIND:
+        source_description = build_github_review_task_description_from_metadata(metadata)
+        if source_description:
+            return source_description
+    return payload_description.strip() if payload_description else None
 
 
 @router.get("/{task_id}")

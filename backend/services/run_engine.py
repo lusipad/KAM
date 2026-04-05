@@ -27,6 +27,7 @@ from services.task_autodrive import (
     wait_for_background_autodrive,
 )
 from services.task_context import TaskContextService
+from services.source_tasks import source_dedup_key, source_task_guard
 
 
 @dataclass
@@ -67,15 +68,18 @@ class RunEngine:
         task: str,
         initial_artifacts: list[dict[str, Any]] | None = None,
     ) -> TaskRun:
-        run = TaskRun(task_id=task_id, agent=agent, task=task, status="pending")
-        self.db.add(run)
         task_record = await self.db.get(Task, task_id)
-        if task_record is not None:
-            if task_record.status in {"open", "failed"}:
-                task_record.status = "in_progress"
-            task_record.updated_at = now()
-        await self.db.commit()
-        await self.db.refresh(run)
+        dedup_key = source_dedup_key(task_record.metadata_ if task_record is not None else None)
+        async with source_task_guard(dedup_key):
+            task_record = await self.db.get(Task, task_id)
+            run = TaskRun(task_id=task_id, agent=agent, task=task, status="pending")
+            self.db.add(run)
+            if task_record is not None:
+                if task_record.status in {"open", "failed"}:
+                    task_record.status = "in_progress"
+                task_record.updated_at = now()
+            await self.db.commit()
+            await self.db.refresh(run)
         if initial_artifacts:
             _STATE.initial_artifacts[run.id] = [dict(artifact) for artifact in initial_artifacts]
         if settings.is_test_env:

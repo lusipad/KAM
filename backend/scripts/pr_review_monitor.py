@@ -22,6 +22,11 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from adapters.github import GitHubPRAdapter  # noqa: E402
 from config import settings  # noqa: E402
+from services.source_tasks import (  # noqa: E402
+    GITHUB_PR_REVIEW_SOURCE_KIND,
+    build_github_review_task_description,
+    build_github_review_task_title,
+)
 
 
 def utc_now_iso() -> str:
@@ -333,25 +338,10 @@ def _build_harness_task_payload(
     create_run: dict[str, Any],
 ) -> dict[str, Any]:
     review_comments = list(changes.get("review_comments", []))
-    source_kind = "github_pr_review_comments"
+    source_kind = GITHUB_PR_REVIEW_SOURCE_KIND
     source_dedup_key = f"{source_kind}:{repo}:{pull_number}"
-    summarized_comments = []
-    for item in review_comments[:5]:
-        body = " ".join(str(item.get("body", "")).split())
-        path = str(item.get("path", "")).strip()
-        line = item.get("line")
-        location = f"{path}:{line}" if path and line else path
-        summary = f"{location} · {body[:160]}".strip(" ·")
-        if summary:
-            summarized_comments.append(summary)
-
-    title = f"处理 {repo} PR #{pull_number} 新发现的评审评论"
-    description_lines = [
-        f"把 {repo} PR #{pull_number} 新增或更新的 review comments 接入 KAM 任务池，并在对应分支上修复、验证、回推。",
-    ]
-    if summarized_comments:
-        description_lines.append("本批评论摘要：")
-        description_lines.extend(f"- {line}" for line in summarized_comments[:3])
+    title = build_github_review_task_title(repo, pull_number)
+    description = build_github_review_task_description(repo, pull_number, review_comments)
 
     refs: list[dict[str, Any]] = []
     pull_url = meta.get("pullUrl")
@@ -416,7 +406,7 @@ def _build_harness_task_payload(
 
     return {
         "title": title,
-        "description": "\n".join(description_lines),
+        "description": description,
         "repoPath": str(workspace),
         "status": "open",
         "priority": "high",

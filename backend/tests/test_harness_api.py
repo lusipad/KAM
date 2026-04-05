@@ -33,10 +33,11 @@ os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["APP_ENV"] = "test"
 
 import config  # noqa: E402
-from db import engine  # noqa: E402
+from db import async_session, engine  # noqa: E402
 from main import app  # noqa: E402
 from models import ContextSnapshot, Task, TaskRun  # noqa: E402
 from services.run_engine import RunEngine, wait_for_background_runs  # noqa: E402
+from services.source_tasks import source_task_guard  # noqa: E402
 from services.task_autodrive import (  # noqa: E402
     GLOBAL_AUTO_DRIVE_LEASE_FILENAME,
     GLOBAL_AUTO_DRIVE_STATE_FILENAME,
@@ -201,6 +202,12 @@ class HarnessApiTests(unittest.TestCase):
                     "recommendedAgent": "codex",
                     "sourceKind": "github_pr_review_comments",
                     "sourceDedupKey": "github_pr_review_comments:lusipad/KAM:4518",
+                    "sourceRepo": "lusipad/KAM",
+                    "sourcePullNumber": 4518,
+                    "sourceMeta": {"headRef": "feature/pr-4518"},
+                    "sourceReviewComments": [
+                        {"id": 1, "body": "请先修第一处", "path": "backend/a.py", "line": 11, "html_url": "https://github.com/lusipad/KAM/pull/4518#discussion_r1"}
+                    ],
                 },
                 "refs": [
                     {
@@ -233,6 +240,12 @@ class HarnessApiTests(unittest.TestCase):
                     "recommendedAgent": "codex",
                     "sourceKind": "github_pr_review_comments",
                     "sourceDedupKey": "github_pr_review_comments:lusipad/KAM:4518",
+                    "sourceRepo": "lusipad/KAM",
+                    "sourcePullNumber": 4518,
+                    "sourceMeta": {"headRef": "feature/pr-4518"},
+                    "sourceReviewComments": [
+                        {"id": 2, "body": "再补第二处", "path": "backend/b.py", "line": 22, "html_url": "https://github.com/lusipad/KAM/pull/4518#discussion_r2"}
+                    ],
                 },
                 "refs": [
                     {
@@ -255,13 +268,19 @@ class HarnessApiTests(unittest.TestCase):
 
         tasks = self.client.get("/api/tasks").json()["tasks"]
         self.assertEqual(len(tasks), 1)
-        self.assertEqual(tasks[0]["metadata"]["recommendedPrompt"], "处理第二轮评论。")
+        self.assertEqual(len(tasks[0]["metadata"]["sourceReviewComments"]), 2)
+        self.assertIn("backend/a.py", tasks[0]["metadata"]["recommendedPrompt"])
+        self.assertIn("backend/b.py", tasks[0]["metadata"]["recommendedPrompt"])
         self.assertIn("autodrive", tasks[0]["labels"])
 
         detail = self.client.get(f"/api/tasks/{first['id']}").json()
-        self.assertEqual(detail["description"], "第二轮评论，应该复用同一张任务。")
-        self.assertEqual(len(detail["refs"]), 2)
-        self.assertEqual(detail["refs"][1]["label"], "Review comment #2")
+        self.assertIn("请先修第一处", detail["description"])
+        self.assertIn("再补第二处", detail["description"])
+        self.assertEqual(len(detail["refs"]), 3)
+        self.assertEqual(
+            [item["label"] for item in detail["refs"]],
+            ["PR", "Review comment #1", "Review comment #2"],
+        )
 
     def test_create_task_creates_follow_up_when_same_source_task_is_already_running(self):
         first = self.client.post(
@@ -278,6 +297,12 @@ class HarnessApiTests(unittest.TestCase):
                     "recommendedAgent": "codex",
                     "sourceKind": "github_pr_review_comments",
                     "sourceDedupKey": "github_pr_review_comments:lusipad/KAM:4518",
+                    "sourceRepo": "lusipad/KAM",
+                    "sourcePullNumber": 4518,
+                    "sourceMeta": {"headRef": "feature/pr-4518"},
+                    "sourceReviewComments": [
+                        {"id": 1, "body": "请先修第一处", "path": "backend/a.py", "line": 11, "html_url": "https://github.com/lusipad/KAM/pull/4518#discussion_r1"}
+                    ],
                 },
                 "refs": [
                     {
@@ -311,6 +336,12 @@ class HarnessApiTests(unittest.TestCase):
                     "recommendedAgent": "codex",
                     "sourceKind": "github_pr_review_comments",
                     "sourceDedupKey": "github_pr_review_comments:lusipad/KAM:4518",
+                    "sourceRepo": "lusipad/KAM",
+                    "sourcePullNumber": 4518,
+                    "sourceMeta": {"headRef": "feature/pr-4518"},
+                    "sourceReviewComments": [
+                        {"id": 2, "body": "再补第二处", "path": "backend/b.py", "line": 22, "html_url": "https://github.com/lusipad/KAM/pull/4518#discussion_r2"}
+                    ],
                 },
                 "refs": [
                     {
@@ -339,9 +370,65 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(first_detail["metadata"]["recommendedPrompt"], "处理首轮评论。")
         self.assertEqual(first_detail["refs"][1]["label"], "Review comment #1")
         self.assertEqual(first_detail["runs"][0]["status"], "running")
-        self.assertEqual(second_detail["metadata"]["recommendedPrompt"], "处理第二轮评论。")
+        self.assertEqual(second_detail["metadata"]["sourceReviewComments"][0]["id"], 2)
         self.assertEqual(second_detail["refs"][1]["label"], "Review comment #2")
         self.assertIn("follow-up", second_detail["labels"])
+
+    def test_create_task_run_waits_for_source_lock_before_inserting_run(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "处理 PR review 评论",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+                "metadata": {
+                    "recommendedPrompt": "处理评论。",
+                    "recommendedAgent": "codex",
+                    "sourceKind": "github_pr_review_comments",
+                    "sourceDedupKey": "github_pr_review_comments:lusipad/KAM:4518",
+                    "sourceRepo": "lusipad/KAM",
+                    "sourcePullNumber": 4518,
+                    "sourceReviewComments": [
+                        {"id": 1, "body": "请先修第一处", "path": "backend/a.py", "line": 11},
+                    ],
+                },
+            },
+        ).json()
+
+        async def fake_execute_task_run(_self, _run_id: str) -> None:
+            return None
+
+        async def scenario() -> None:
+            with patch("services.run_engine.RunEngine._execute_task_run", new=fake_execute_task_run):
+                async with source_task_guard("github_pr_review_comments:lusipad/KAM:4518"):
+                    async def worker() -> None:
+                        async with async_session() as session:
+                            engine_instance = RunEngine(session)
+                            await engine_instance.create_task_run(task_id=task["id"], agent="codex", task="处理评论")
+
+                    worker_task = asyncio.create_task(worker())
+                    await asyncio.sleep(0.05)
+                    async with engine.begin() as conn:
+                        count = (
+                            await conn.execute(
+                                text("SELECT COUNT(*) FROM task_runs WHERE task_id = :task_id"),
+                                {"task_id": task["id"]},
+                            )
+                        ).scalar_one()
+                    self.assertEqual(count, 0)
+                await worker_task
+
+            async with engine.begin() as conn:
+                count = (
+                    await conn.execute(
+                        text("SELECT COUNT(*) FROM task_runs WHERE task_id = :task_id"),
+                        {"task_id": task["id"]},
+                    )
+                ).scalar_one()
+            self.assertEqual(count, 1)
+
+        asyncio.run(scenario())
 
     def test_seed_harness_reset_waits_for_background_runs(self):
         calls: list[str] = []
