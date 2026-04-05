@@ -5,7 +5,7 @@ import path from 'node:path'
 import { backendDir, outputDir, resolvePython, startBackend, stopBackend, waitForHealth } from './smoke-support.mjs'
 
 
-const port = process.env.KAM_SMOKE_PORT || '8011'
+const port = process.env.KAM_SMOKE_PORT || '8012'
 const agent = process.env.KAM_SMOKE_AGENT || 'codex'
 const timeoutMs = Number(process.env.KAM_REAL_SMOKE_TIMEOUT_MS || '180000')
 const baseURL = `http://127.0.0.1:${port}`

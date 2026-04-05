@@ -14,6 +14,11 @@ const inactivityMs = Math.max(readPositiveInt('KAM_SOAK_INACTIVITY_MS', 20000), 
 const maxRecentEvents = 12
 const logPrefix = process.env.KAM_SOAK_LOG_PREFIX || 'soak-backend'
 const resultFile = process.env.KAM_SOAK_RESULT_FILE || null
+const storageKey = process.env.KAM_SOAK_STORAGE_KEY || logPrefix
+const relativeStoragePath = toPosixPath(path.join('.', 'storage', 'soak', storageKey))
+const relativeDatabasePath = toPosixPath(path.join(relativeStoragePath, 'kam-harness.db'))
+const relativeRunRoot = toPosixPath(path.join(relativeStoragePath, 'runs'))
+const soakStorageDir = path.join(backendDir, 'storage', 'soak', storageKey)
 
 
 function readPositiveInt(name, fallback) {
@@ -32,6 +37,11 @@ function readPositiveInt(name, fallback) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+
+function toPosixPath(value) {
+  return value.split(path.sep).join('/')
 }
 
 
@@ -163,14 +173,17 @@ async function verifyCreatedRoots(createdRoots) {
 
 
 async function main() {
-  const soakDb = path.join(backendDir, 'storage', 'soak-harness.db')
-  fs.rmSync(soakDb, { force: true })
+  fs.rmSync(soakStorageDir, { force: true, recursive: true })
 
   const backend = startBackend({
     port,
-    databaseUrl: 'sqlite+aiosqlite:///./storage/soak-harness.db',
+    databaseUrl: `sqlite+aiosqlite:///${relativeDatabasePath}`,
     mockRuns: true,
     logPrefix,
+    extraEnv: {
+      STORAGE_PATH: relativeStoragePath,
+      RUN_ROOT: relativeRunRoot,
+    },
   })
 
   const createdRoots = []
