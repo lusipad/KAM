@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +35,9 @@ GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS = 1.0
 GLOBAL_AUTO_DRIVE_DISABLED_SUMMARY = "当前还没有开启全局无人值守。"
 GLOBAL_AUTO_DRIVE_RECOVERED_SUMMARY = "已恢复全局无人值守，KAM 会继续跨 task family 接活。"
 GLOBAL_AUTO_DRIVE_STATE_FILENAME = "autodrive-global-state.json"
+GLOBAL_AUTO_DRIVE_LEASE_FILENAME = "autodrive-global-lease.json"
+GLOBAL_AUTO_DRIVE_LEASE_TTL_SECONDS = 10.0
+GLOBAL_AUTO_DRIVE_WAITING_FOR_LEASE_SUMMARY = "全局无人值守已开启，正在等待另一实例释放 lease。"
 
 
 @dataclass
@@ -104,6 +111,8 @@ class _GlobalAutoDriveState:
 _STATE = _AutoDriveState()
 _GLOBAL_STATE = _GlobalAutoDriveState()
 _UNSET = object()
+_PROCESS_HOSTNAME = socket.gethostname()
+_PROCESS_OWNER_ID = f"{_PROCESS_HOSTNAME}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
 
 class TaskAutoDriveService:
@@ -245,6 +254,12 @@ class GlobalAutoDriveService:
     async def stop(self) -> GlobalAutoDriveControlResult:
         _GLOBAL_STATE.enabled = False
         await asyncio.to_thread(_persist_global_autodrive_enabled, False)
+        background_task = _GLOBAL_STATE.task
+        if _is_background_task_running(background_task):
+            background_task.cancel()
+            if background_task is not asyncio.current_task():
+                await asyncio.gather(background_task, return_exceptions=True)
+        await asyncio.to_thread(_release_global_lease_if_owned)
         _update_global_state(
             status="disabled",
             summary="已停止全局无人值守。",
@@ -456,6 +471,23 @@ async def _run_global_autodrive() -> bool:
 
     try:
         while is_global_autodrive_enabled():
+            lease_acquired, current_lease = await asyncio.to_thread(_acquire_or_refresh_global_lease)
+            if not lease_acquired:
+                _update_global_state(
+                    status="waiting_for_lease",
+                    summary=_global_lease_waiting_summary(current_lease),
+                    action="stop",
+                    reason="global_auto_drive_lease_held_by_other_process",
+                    current_task_id=None,
+                    current_scope_task_id=None,
+                    current_run_id=None,
+                    error="",
+                )
+                if settings.is_test_env:
+                    return True
+                await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
+                continue
+
             decision: Any | None = None
             for _ in range(GLOBAL_AUTO_DRIVE_MAX_STEPS):
                 if not is_global_autodrive_enabled():
@@ -468,6 +500,7 @@ async def _run_global_autodrive() -> bool:
                         create_plan_if_needed=True,
                     )
                 _update_global_state_from_decision(decision)
+                await asyncio.to_thread(_refresh_global_lease_if_owned)
 
                 if settings.is_test_env:
                     if not _should_continue_immediately(decision):
@@ -486,11 +519,13 @@ async def _run_global_autodrive() -> bool:
                 )
                 if settings.is_test_env:
                     return True
+                await asyncio.to_thread(_refresh_global_lease_if_owned)
                 await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
                 continue
 
             if settings.is_test_env:
                 return True
+            await asyncio.to_thread(_refresh_global_lease_if_owned)
             await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
 
         return True
@@ -502,6 +537,11 @@ async def _run_global_autodrive() -> bool:
         )
         return True
     finally:
+        should_release_lease = not (
+            settings.is_test_env and is_global_autodrive_enabled() and _GLOBAL_STATE.status != "error"
+        )
+        if should_release_lease:
+            await asyncio.to_thread(_release_global_lease_if_owned)
         if settings.is_test_env:
             _GLOBAL_STATE.task = None
 
@@ -623,9 +663,16 @@ async def recover_autodrive_runtime_state() -> None:
 
 
 def reset_autodrive_runtime_state(*, clear_persistence: bool = False) -> None:
+    for task in list(_STATE.scopes.values()):
+        if not task.done():
+            task.cancel()
+    if _GLOBAL_STATE.task is not None and not _GLOBAL_STATE.task.done():
+        _GLOBAL_STATE.task.cancel()
     _STATE.scopes.clear()
     _reset_global_autodrive_state(enabled=False)
+    _release_global_lease_if_owned()
     if clear_persistence:
+        _clear_global_lease()
         _persist_global_autodrive_enabled(False)
 
 
@@ -674,6 +721,10 @@ def _global_autodrive_state_path() -> Path:
     return settings.storage_dir / GLOBAL_AUTO_DRIVE_STATE_FILENAME
 
 
+def _global_autodrive_lease_path() -> Path:
+    return settings.storage_dir / GLOBAL_AUTO_DRIVE_LEASE_FILENAME
+
+
 def _load_persisted_global_autodrive_enabled() -> bool:
     state_path = _global_autodrive_state_path()
     try:
@@ -699,3 +750,120 @@ def _persist_global_autodrive_enabled(enabled: bool) -> None:
     temp_path = state_path.with_suffix(f"{state_path.suffix}.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(state_path)
+
+
+def _load_global_lease_payload() -> dict[str, Any] | None:
+    lease_path = _global_autodrive_lease_path()
+    try:
+        return json.loads(lease_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _acquire_or_refresh_global_lease() -> tuple[bool, dict[str, Any] | None]:
+    lease_path = _global_autodrive_lease_path()
+    existing = _load_global_lease_payload()
+    if existing is not None and _is_current_process_global_lease(existing):
+        payload = _build_global_lease_payload(existing)
+        _write_json_file_atomic(lease_path, payload)
+        return True, payload
+    if existing is not None and not _is_global_lease_stale(existing):
+        return False, existing
+    if existing is not None:
+        try:
+            lease_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            latest = _load_global_lease_payload()
+            if latest is not None and not _is_global_lease_stale(latest):
+                return False, latest
+
+    payload = _build_global_lease_payload()
+    lease_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(str(lease_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError:
+        latest = _load_global_lease_payload()
+        if latest is not None and _is_current_process_global_lease(latest):
+            payload = _build_global_lease_payload(latest)
+            _write_json_file_atomic(lease_path, payload)
+            return True, payload
+        return False, latest
+
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+    except Exception:
+        lease_path.unlink(missing_ok=True)
+        raise
+    return True, payload
+
+
+def _refresh_global_lease_if_owned() -> None:
+    existing = _load_global_lease_payload()
+    if existing is None or not _is_current_process_global_lease(existing):
+        return
+    _write_json_file_atomic(_global_autodrive_lease_path(), _build_global_lease_payload(existing))
+
+
+def _release_global_lease_if_owned() -> None:
+    lease_path = _global_autodrive_lease_path()
+    existing = _load_global_lease_payload()
+    if existing is None or not _is_current_process_global_lease(existing):
+        return
+    lease_path.unlink(missing_ok=True)
+
+
+def _clear_global_lease() -> None:
+    _global_autodrive_lease_path().unlink(missing_ok=True)
+
+
+def _build_global_lease_payload(existing: dict[str, Any] | None = None) -> dict[str, object]:
+    timestamp = now().isoformat()
+    acquired_at = existing.get("acquiredAt") if isinstance(existing, dict) and _is_current_process_global_lease(existing) else None
+    if not isinstance(acquired_at, str) or not acquired_at.strip():
+        acquired_at = timestamp
+    return {
+        "ownerId": _PROCESS_OWNER_ID,
+        "pid": os.getpid(),
+        "hostname": _PROCESS_HOSTNAME,
+        "acquiredAt": acquired_at,
+        "heartbeatAt": timestamp,
+    }
+
+
+def _is_current_process_global_lease(payload: dict[str, Any]) -> bool:
+    return payload.get("ownerId") == _PROCESS_OWNER_ID
+
+
+def _is_global_lease_stale(payload: dict[str, Any]) -> bool:
+    heartbeat_at = payload.get("heartbeatAt")
+    if not isinstance(heartbeat_at, str) or not heartbeat_at.strip():
+        return True
+    try:
+        heartbeat_time = datetime.fromisoformat(heartbeat_at)
+    except ValueError:
+        return True
+    return now() - heartbeat_time > timedelta(seconds=GLOBAL_AUTO_DRIVE_LEASE_TTL_SECONDS)
+
+
+def _global_lease_waiting_summary(payload: dict[str, Any] | None) -> str:
+    if payload is None:
+        return GLOBAL_AUTO_DRIVE_WAITING_FOR_LEASE_SUMMARY
+    hostname = payload.get("hostname")
+    pid = payload.get("pid")
+    if isinstance(hostname, str) and hostname.strip() and isinstance(pid, int):
+        return f"{GLOBAL_AUTO_DRIVE_WAITING_FOR_LEASE_SUMMARY} 当前持有者：{hostname}:{pid}。"
+    if isinstance(pid, int):
+        return f"{GLOBAL_AUTO_DRIVE_WAITING_FOR_LEASE_SUMMARY} 当前持有者 pid：{pid}。"
+    return GLOBAL_AUTO_DRIVE_WAITING_FOR_LEASE_SUMMARY
+
+
+def _write_json_file_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(path)

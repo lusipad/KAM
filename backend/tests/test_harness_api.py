@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,7 +33,11 @@ from db import engine  # noqa: E402
 from main import app  # noqa: E402
 from models import ContextSnapshot, Task, TaskRun  # noqa: E402
 from services.run_engine import RunEngine, wait_for_background_runs  # noqa: E402
-from services.task_autodrive import reset_autodrive_runtime_state  # noqa: E402
+from services.task_autodrive import (  # noqa: E402
+    GLOBAL_AUTO_DRIVE_LEASE_FILENAME,
+    GLOBAL_AUTO_DRIVE_STATE_FILENAME,
+    reset_autodrive_runtime_state,
+)
 
 
 class HarnessApiTests(unittest.TestCase):
@@ -468,8 +474,57 @@ class HarnessApiTests(unittest.TestCase):
         self.assertFalse(status["enabled"])
         self.assertEqual(status["status"], "disabled")
 
+    def test_global_autodrive_waits_when_foreign_lease_is_active(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+        second_root_id = asyncio.run(self._seed_secondary_root_task())
+        self._write_foreign_global_lease(stale=False)
+
+        response = self.client.post("/api/tasks/autodrive/global/start")
+
+        self.assertEqual(response.status_code, 200)
+        status = self.client.get("/api/tasks/autodrive/global").json()
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["status"], "waiting_for_lease")
+        self.assertEqual(status["lastReason"], "global_auto_drive_lease_held_by_other_process")
+
+        tasks = self.client.get("/api/tasks").json()["tasks"]
+        root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
+        self.assertEqual(root_two_children, [])
+
+    def test_global_autodrive_reclaims_stale_foreign_lease(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+        second_root_id = asyncio.run(self._seed_secondary_root_task())
+        self._write_foreign_global_lease(stale=True)
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：stale lease reclaim"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post("/api/tasks/autodrive/global/start")
+
+        self.assertEqual(response.status_code, 200)
+        status = self.client.get("/api/tasks/autodrive/global").json()
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["status"], "idle")
+        self.assertEqual(status["lastReason"], "no_high_value_action")
+
+        tasks = self.client.get("/api/tasks").json()["tasks"]
+        root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
+        self.assertGreaterEqual(len(root_two_children), 1)
+
+        lease_payload = self._read_global_lease_payload()
+        self.assertIsNotNone(lease_payload)
+        self.assertEqual(lease_payload["pid"], os.getpid())
+
     def test_seed_harness_reset_clears_global_autodrive_runtime_state(self):
         self.client.post("/api/tasks/autodrive/global/start")
+        self._write_foreign_global_lease(stale=False)
 
         response = self.client.post("/api/dev/seed-harness", json={"reset": True})
 
@@ -478,6 +533,7 @@ class HarnessApiTests(unittest.TestCase):
         self.assertFalse(status["enabled"])
         self.assertEqual(status["status"], "disabled")
         self.assertEqual(status["summary"], "当前还没有开启全局无人值守。")
+        self.assertFalse((TMP_ROOT / GLOBAL_AUTO_DRIVE_LEASE_FILENAME).exists())
 
     def test_startup_recovers_persisted_global_autodrive_after_restart(self):
         self.client.post("/api/dev/seed-harness", json={"reset": True})
@@ -739,6 +795,31 @@ class HarnessApiTests(unittest.TestCase):
         reset_autodrive_runtime_state(clear_persistence=clear_persistence)
         self.client = TestClient(app)
         self.client.__enter__()
+
+    def _write_persisted_global_autodrive_state(self) -> None:
+        state_path = TMP_ROOT / GLOBAL_AUTO_DRIVE_STATE_FILENAME
+        state_path.write_text(
+            json.dumps({"enabled": True, "updatedAt": datetime.now(UTC).isoformat()}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _write_foreign_global_lease(self, *, stale: bool) -> None:
+        lease_path = TMP_ROOT / GLOBAL_AUTO_DRIVE_LEASE_FILENAME
+        heartbeat_at = datetime.now(UTC) - timedelta(seconds=30 if stale else 1)
+        payload = {
+            "ownerId": "foreign-host:4321:foreign",
+            "pid": 4321,
+            "hostname": "foreign-host",
+            "acquiredAt": heartbeat_at.isoformat(),
+            "heartbeatAt": heartbeat_at.isoformat(),
+        }
+        lease_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _read_global_lease_payload(self) -> dict[str, object] | None:
+        lease_path = TMP_ROOT / GLOBAL_AUTO_DRIVE_LEASE_FILENAME
+        if not lease_path.exists():
+            return None
+        return json.loads(lease_path.read_text(encoding="utf-8"))
 
     async def _seed_retryable_child_task(self) -> tuple[str, str]:
         async with engine.begin() as conn:
