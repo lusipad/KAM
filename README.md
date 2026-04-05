@@ -102,6 +102,28 @@ pwsh -File .\verify-local.ps1 -RunRealAgentSmoke -RealSmokeAgent claude-code
 
 这条链路现在会先做 `claude auth status` readiness 预检，未登录时会在真实 smoke 开始前直接失败。
 
+如果你要补一轮更长时间的全局无人值守 soak：
+
+```powershell
+pwsh -File .\verify-local.ps1 -RunAutoDriveSoak -AutoDriveSoakMinutes 180
+```
+
+这条可选验证会启动独立 mock backend、持续注入新的 root task，并检查：
+
+- 全局无人值守始终保持开启
+- `recentEvents` 仍然有界
+- loop 持续推进，不会长时间卡死
+- 新注入 root task 最终能产出 follow-up task 和 passed run
+
+如果你只想单独跑 soak runner，也可以直接执行：
+
+```powershell
+Set-Location .\app
+$env:KAM_SOAK_DURATION_MS='10800000'
+$env:KAM_SOAK_TASK_INTERVAL_MS='30000'
+npm run test:soak:autodrive
+```
+
 如果你要直接看 task-first 界面：
 
 ```powershell
@@ -140,6 +162,7 @@ npm run build
 npm run lint
 npm run test:smoke:local
 npm run test:smoke:agent
+npm run test:soak:autodrive
 ```
 
 安装 PR review comment 自动监控计划任务：

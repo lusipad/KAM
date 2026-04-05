@@ -2,6 +2,11 @@ param(
     [switch]$SkipSmoke,
     [switch]$SkipRealAgentSmoke,
     [switch]$RunRealAgentSmoke,
+    [switch]$RunAutoDriveSoak,
+    [ValidateRange(1, 1440)]
+    [int]$AutoDriveSoakMinutes = 180,
+    [ValidateRange(5, 3600)]
+    [int]$AutoDriveSoakTaskIntervalSeconds = 30,
     [ValidateSet("codex", "claude-code")]
     [string]$RealSmokeAgent = "codex"
 )
@@ -129,6 +134,15 @@ try {
                 "-NoProfile",
                 "-Command",
                 "`$env:KAM_SMOKE_AGENT='$RealSmokeAgent'; & '$Npm' run test:smoke:agent"
+            ) (Get-Location).Path
+        }
+        if ($RunAutoDriveSoak) {
+            $soakDurationMs = $AutoDriveSoakMinutes * 60 * 1000
+            $soakTaskIntervalMs = $AutoDriveSoakTaskIntervalSeconds * 1000
+            Invoke-CheckedProcess "Global autodrive soak" $Pwsh @(
+                "-NoProfile",
+                "-Command",
+                "`$env:KAM_SOAK_DURATION_MS='$soakDurationMs'; `$env:KAM_SOAK_TASK_INTERVAL_MS='$soakTaskIntervalMs'; & '$Npm' run test:soak:autodrive"
             ) (Get-Location).Path
         }
     }

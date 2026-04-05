@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test:smoke": "playwright test --config playwright.config.ts",
     "test:smoke:local": "node scripts/smoke-local.mjs",
-    "test:smoke:agent": "node scripts/smoke-agent.mjs"
+    "test:smoke:agent": "node scripts/smoke-agent.mjs",
+    "test:soak:autodrive": "node scripts/soak-autodrive.mjs"
   },
   "dependencies": {
     "react": "^19.2.0",

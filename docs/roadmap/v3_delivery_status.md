@@ -63,6 +63,7 @@
 - 新增 harness smoke
 - `verify-local.ps1` 已默认纳入真实 `codex` agent smoke，覆盖临时 git repo 改动、Lore commit 和 adopt 链路
 - `claude-code` 作为可选 real smoke lane 已补 readiness 预检，会在 `claude auth status` 未就绪时提前失败，而不是跑到中途才报错
+- 新增可配置的 global autodrive soak runner，并通过 `verify-local.ps1 -RunAutoDriveSoak` 暴露可选入口；它会持续注入 root task，校验长时轮询期间的进展信号与 recent events 有界性
 - 新增 `POST /api/dev/seed-harness`
 - 移除旧 `projects / threads / home / watchers / memory` 运行时入口
 - 移除 V3 前端组件、类型层和验证基线
@@ -73,7 +74,7 @@
 ### 需要继续推进
 
 - 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
-- 如果后续要上更长时间无人值守，仍建议补多小时级别 soak 验证，但它已不是当前交付阻塞项
+- 多小时级别无人值守 soak 现在已有脚本化入口，但仍需要在目标值守机器上实际跑够时长并留档
 
 ### 明确不优先做
 
