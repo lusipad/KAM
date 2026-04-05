@@ -63,7 +63,7 @@
 ## 当前建议
 
 - 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
-- 下一步优先把 task self-planning 继续做深，并把真实 `codex` 改仓库链路做成更硬的门禁
+- 下一步优先把 task self-dispatch 做得更可靠，再把真实 `codex` 改仓库链路做成更硬的门禁
 - 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档

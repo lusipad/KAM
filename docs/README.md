@@ -1,18 +1,21 @@
 # 文档索引
 
-当前仓库的主目标已经切到 `task-first software-engineering harness`。
+当前仓库的主目标已经切到 `task-first software-engineering harness`，并且当前主链路已经进入：
+
+`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare -> Follow-up Planning -> Next-Task Dispatch`
 
 ## 当前主参考
 
-- [product/ai_work_assistant_prd.md](product/ai_work_assistant_prd.md): 唯一主目标定义
-- [../.omx/plans/prd-harness-dogfood-cutover.md](../.omx/plans/prd-harness-dogfood-cutover.md): 当前 cutover PRD
-- [../.omx/plans/test-spec-harness-dogfood-cutover.md](../.omx/plans/test-spec-harness-dogfood-cutover.md): 当前 cutover test spec
-- [roadmap/v3_delivery_status.md](roadmap/v3_delivery_status.md): V3 退场结果与 cutover 结论
+- [../README.md](../README.md): 仓库根说明与本地开发/验证入口
+- [product/ai_work_assistant_prd.md](product/ai_work_assistant_prd.md): 当前唯一产品目标定义
+- [roadmap/v3_delivery_status.md](roadmap/v3_delivery_status.md): 当前交付状态、已完成能力和剩余缺口
+- [../.omx/plans/prd-harness-dogfood-cutover.md](../.omx/plans/prd-harness-dogfood-cutover.md): 本地 cutover PRD
+- [../.omx/plans/test-spec-harness-dogfood-cutover.md](../.omx/plans/test-spec-harness-dogfood-cutover.md): 本地 cutover test spec
 
 ## 过渡与历史资料
 
-- [design/v3_architecture_design.md](design/v3_architecture_design.md): V3 设计稿，现已降级为历史参考
-- [design/v3_ui_spec.md](design/v3_ui_spec.md): V3 UI 规范，现已降级为历史参考
+- [design/v3_architecture_design.md](design/v3_architecture_design.md): V3 设计稿，已降级为历史参考
+- [design/v3_ui_spec.md](design/v3_ui_spec.md): V3 UI 规范，已降级为历史参考
 - [roadmap/v2_implementation_roadmap.md](roadmap/v2_implementation_roadmap.md): 历史执行拆解
 - [roadmap/mvp_backlog.md](roadmap/mvp_backlog.md): 历史 backlog
 - [migration/](migration): 历史迁移文档
