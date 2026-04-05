@@ -171,6 +171,9 @@ function autoDriveReasonLabel(value: string | null) {
   if (value === 'scope_has_active_run') {
     return '当前仍有 run 在执行'
   }
+  if (value === 'latest_failed_run_retry_budget_exhausted') {
+    return '最近失败 run 已到自动重试上限'
+  }
   if (value === 'global_auto_drive_error') {
     return '调度异常，系统会自动重试'
   }

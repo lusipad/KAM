@@ -429,6 +429,8 @@ async def _run_scope_autodrive(scope_task_id: str) -> bool:
                 if decision.action == "stop":
                     if decision.reason == "scope_has_active_run":
                         status = "waiting_for_run"
+                    elif decision.reason == "latest_failed_run_retry_budget_exhausted":
+                        status = "paused"
                     elif decision.reason in {"scope_task_terminal", "task_not_found"}:
                         enabled = False
                         status = "disabled"
@@ -591,6 +593,8 @@ def _update_global_state_from_decision(decision: Any) -> None:
     if decision.action == "stop":
         if decision.reason == "scope_has_active_run":
             status = "waiting_for_run"
+        elif decision.reason == "latest_failed_run_retry_budget_exhausted":
+            status = "paused"
         else:
             status = "idle"
     elif decision.run is not None and decision.run.status in {"pending", "running"}:

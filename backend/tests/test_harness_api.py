@@ -393,6 +393,48 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(payload["task"]["id"], task["id"])
         self.assertEqual(payload["run"]["status"], "passed")
 
+    def test_continue_stops_when_latest_failed_run_reaches_retry_budget(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "失败预算耗尽后停止自动继续",
+                "repoPath": "D:/Repos/KAM",
+                "status": "failed",
+                "priority": "high",
+            },
+        ).json()
+        asyncio.run(self._seed_retry_exhausted_root_task(task["id"]))
+
+        response = self.client.post(
+            "/api/tasks/continue",
+            json={"taskId": task["id"], "createPlanIfNeeded": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["action"], "stop")
+        self.assertEqual(payload["reason"], "latest_failed_run_retry_budget_exhausted")
+        self.assertIn("已达到自动重试上限", payload["summary"])
+        self.assertEqual(payload["task"]["id"], task["id"])
+        self.assertEqual(payload["run"]["id"], "runrootx002")
+
+    def test_dispatch_next_skips_failed_task_when_retry_budget_is_exhausted(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "失败预算耗尽后不再自动开跑",
+                "repoPath": "D:/Repos/KAM",
+                "status": "failed",
+                "priority": "high",
+            },
+        ).json()
+        asyncio.run(self._seed_retry_exhausted_root_task(task["id"]))
+
+        response = self.client.post("/api/tasks/dispatch-next", json={"createPlanIfNeeded": False})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "当前没有可自动接手的任务")
+
     def test_continue_plans_and_dispatches_when_parent_has_no_runnable_child(self):
         self.client.post("/api/dev/seed-harness", json={"reset": True})
 
@@ -492,6 +534,31 @@ class HarnessApiTests(unittest.TestCase):
             detail = self.client.get(f"/api/tasks/{item['id']}").json()
             self.assertTrue(detail["runs"])
             self.assertEqual(detail["runs"][-1]["status"], "passed")
+
+    def test_autodrive_pauses_when_latest_failed_run_reaches_retry_budget(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "失败预算耗尽后暂停自动托管",
+                "repoPath": "D:/Repos/KAM",
+                "status": "failed",
+                "priority": "high",
+            },
+        ).json()
+        asyncio.run(self._seed_retry_exhausted_root_task(task["id"]))
+
+        response = self.client.post(f"/api/tasks/{task['id']}/autodrive/start")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["scopeTaskId"], task["id"])
+        self.assertTrue(payload["enabled"])
+        self.assertFalse(payload["running"])
+
+        detail = self.client.get(f"/api/tasks/{task['id']}").json()
+        self.assertEqual(detail["metadata"]["autoDriveStatus"], "paused")
+        self.assertEqual(detail["metadata"]["autoDriveLastAction"], "stop")
+        self.assertEqual(detail["metadata"]["autoDriveLastReason"], "latest_failed_run_retry_budget_exhausted")
 
     def test_global_autodrive_start_advances_across_task_families(self):
         self.client.post("/api/dev/seed-harness", json={"reset": True})
@@ -1367,6 +1434,61 @@ class HarnessApiTests(unittest.TestCase):
                     changed_files=["backend/services/task_dispatcher.py"],
                     check_passed=False,
                     raw_output="AssertionError: retry root",
+                )
+            )
+
+    async def _seed_retry_exhausted_root_task(self, task_id: str) -> None:
+        base = datetime.now(UTC)
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.update()
+                .where(Task.__table__.c.id == task_id)
+                .values(
+                    metadata={
+                        "recommendedPrompt": "重试当前失败任务并重新验证。",
+                        "recommendedAgent": "codex",
+                        "acceptanceChecks": ["修复失败", "重新验证"],
+                        "suggestedRefs": [],
+                    }
+                )
+            )
+            await conn.execute(
+                ContextSnapshot.__table__.insert().values(
+                    id="snaprootx01",
+                    task_id=task_id,
+                    summary="Retry budget exhausted snapshot",
+                    content="## Task\n标题：失败预算耗尽后停止自动继续",
+                    focus="不要继续无上限重跑失败任务。",
+                )
+            )
+            await conn.execute(
+                TaskRun.__table__.insert().values(
+                    [
+                        {
+                            "id": "runrootx001",
+                            "task_id": task_id,
+                            "agent": "codex",
+                            "status": "failed",
+                            "task": "第一次失败，允许自动重试。",
+                            "result_summary": "执行失败：AssertionError: retry budget 1",
+                            "changed_files": ["backend/services/task_dispatcher.py"],
+                            "check_passed": False,
+                            "raw_output": "AssertionError: retry budget 1",
+                            "created_at": base - timedelta(seconds=2),
+                        },
+                        {
+                            "id": "runrootx002",
+                            "task_id": task_id,
+                            "agent": "codex",
+                            "status": "failed",
+                            "task": "第二次失败，应该触发自动停止。",
+                            "result_summary": "执行失败：AssertionError: retry budget 2",
+                            "changed_files": ["backend/services/task_dispatcher.py"],
+                            "check_passed": False,
+                            "raw_output": "AssertionError: retry budget 2",
+                            "created_at": base - timedelta(seconds=1),
+                        },
+                    ]
                 )
             )
 

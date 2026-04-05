@@ -43,6 +43,7 @@
 - KAM 已可从现有任务池里自动接下一张任务；没有可跑 child task 时会先拆一张再开跑
 - KAM 已可围绕当前 task family 自动继续推进：优先 `adopt / retry / plan_and_dispatch / stop`
 - `dispatch-next / continue` 已切成显式 ranking：会稳定区分 `adopt / retry / existing runnable task / parent planning`，并优先处理强信号失败任务而不是弱 generic child
+- 自动继续推进现在会尊重失败预算：同一任务连续失败达到上限后会显式 `paused/stop`，不再绕过 `retry` 限制继续重开 run
 - planner follow-up 已切成显式 source ranking：会优先使用最新 terminal run / compare 信号，不再让旧失败 run 压过更新的通过结果
 - KAM 已可对当前 task family 开启自动托管：run 完成后会继续复用 `continue_task()`，直到显式 `stop`
 - 新增 `/api/tasks/{task_id}/autodrive/start` 与 `/api/tasks/{task_id}/autodrive/stop`

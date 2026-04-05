@@ -67,6 +67,8 @@ class _ContinueCandidate:
 
 
 class TaskDispatcherService:
+    AUTO_RETRY_FAILURE_LIMIT = 2
+
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
@@ -153,6 +155,21 @@ class TaskDispatcherService:
                 reason="no_high_value_action",
                 summary="当前没有更高价值的自动下一步，先停在这里。",
                 task=scope_root,
+                scope_task_id=scope_task_id,
+            )
+
+        if candidate.action == "stop_retry_budget_exhausted" and candidate.run is not None:
+            failed_task = candidate.task
+            failed_run = candidate.run
+            return TaskContinueResult(
+                action="stop",
+                reason="latest_failed_run_retry_budget_exhausted",
+                summary=(
+                    f"最近失败的 run {failed_run.id} 已达到自动重试上限，"
+                    "先停下等待新的修复判断。"
+                ),
+                task=failed_task,
+                run=failed_run,
                 scope_task_id=scope_task_id,
             )
 
@@ -326,6 +343,33 @@ class TaskDispatcherService:
         )
         return candidates[0]
 
+    def _pick_retry_budget_exhausted_candidate(self, tasks: list[Task]) -> tuple[Task, TaskRun] | None:
+        candidates: list[tuple[Task, TaskRun]] = []
+        for task in tasks:
+            latest_run = task.runs[-1] if task.runs else None
+            if latest_run is None:
+                continue
+            if latest_run.status != "failed":
+                continue
+            if self._is_terminal_task(task):
+                continue
+            if any(candidate.status in {"pending", "running"} for candidate in task.runs):
+                continue
+            if self._has_retry_budget(task):
+                continue
+            candidates.append((task, latest_run))
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda item: (
+                self._scope_rank(item[0]),
+                self._priority_rank(item[0].priority),
+                self._planning_reason_rank(item[0].metadata_ or {}),
+                -item[1].created_at.timestamp(),
+            )
+        )
+        return candidates[0]
+
     def _pick_continue_candidate(
         self,
         tasks: list[Task],
@@ -369,6 +413,24 @@ class TaskDispatcherService:
                 )
             )
 
+        exhausted_candidate = self._pick_retry_budget_exhausted_candidate(tasks)
+        if exhausted_candidate is not None:
+            exhausted_task, exhausted_run = exhausted_candidate
+            candidates.append(
+                _ContinueCandidate(
+                    action="stop_retry_budget_exhausted",
+                    task=exhausted_task,
+                    run=exhausted_run,
+                    rank=(
+                        self._continue_action_rank("stop_retry_budget_exhausted"),
+                        self._scope_rank(exhausted_task),
+                        self._priority_rank(exhausted_task.priority),
+                        self._planning_reason_rank(exhausted_task.metadata_ or {}),
+                        -exhausted_run.created_at.timestamp(),
+                    ),
+                )
+            )
+
         existing = self._pick_existing_runnable_task(tasks)
         if existing is not None:
             candidates.append(
@@ -407,6 +469,8 @@ class TaskDispatcherService:
         latest_run = task.runs[-1] if task.runs else None
         if latest_run is not None and latest_run.status == "passed":
             return False
+        if latest_run is not None and latest_run.status == "failed" and not self._has_retry_budget(task):
+            return False
         return True
 
     def _is_plannable_parent_task(self, task: Task) -> bool:
@@ -425,7 +489,7 @@ class TaskDispatcherService:
             return False
         if any(candidate.status in {"pending", "running"} for candidate in task.runs):
             return False
-        return self._consecutive_failed_runs(task) < 2
+        return self._has_retry_budget(task)
 
     def _existing_task_sort_key(self, task: Task) -> tuple[int, int, int, int, int, float]:
         latest_run = task.runs[-1] if task.runs else None
@@ -474,10 +538,12 @@ class TaskDispatcherService:
             return 0
         if action == "retry":
             return 1
-        if action == "dispatch_existing":
+        if action == "stop_retry_budget_exhausted":
             return 2
-        if action == "plan_parent":
+        if action == "dispatch_existing":
             return 3
+        if action == "plan_parent":
+            return 4
         return 4
 
     def _scope_rank(self, task: Task) -> int:
@@ -562,6 +628,9 @@ class TaskDispatcherService:
                 break
             count += 1
         return count
+
+    def _has_retry_budget(self, task: Task) -> bool:
+        return self._consecutive_failed_runs(task) < self.AUTO_RETRY_FAILURE_LIMIT
 
     def _can_auto_adopt(self, task: Task, run: TaskRun) -> bool:
         if task.repo_path is None or run.worktree_path is None:

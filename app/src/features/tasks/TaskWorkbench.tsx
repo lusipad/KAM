@@ -167,6 +167,9 @@ function continueReasonLabel(value: string | null) {
   if (value === 'scope_has_active_run') {
     return '当前仍有 run 在执行'
   }
+  if (value === 'latest_failed_run_retry_budget_exhausted') {
+    return '最近失败 run 已到自动重试上限'
+  }
   if (value === 'no_high_value_action') {
     return '当前没有更高价值的下一步'
   }
