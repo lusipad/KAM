@@ -3,7 +3,9 @@ param(
     [int]$PullRequest = 4518,
     [string]$PythonBin = "",
     [string]$CodexBin = "",
+    [string]$KamApiUrl = "http://127.0.0.1:8000/api",
     [string]$TaskName = "",
+    [switch]$DirectCodex,
     [switch]$SkipValidate,
     [switch]$RunNow
 )
@@ -71,10 +73,15 @@ function Resolve-Codex {
 }
 
 $Python = Resolve-Python -ExplicitPath $PythonBin
-$Codex = Resolve-Codex -ExplicitPath $CodexBin
 $ScriptPath = Join-Path $RootDir "backend\\scripts\\pr_review_monitor.py"
 if (-not (Test-Path $ScriptPath)) {
     throw "Monitor script not found: $ScriptPath"
+}
+
+$UseHarnessQueue = (-not $DirectCodex) -and [string]::IsNullOrWhiteSpace($KamApiUrl) -eq $false
+$Codex = $null
+if (-not $UseHarnessQueue) {
+    $Codex = Resolve-Codex -ExplicitPath $CodexBin
 }
 
 if (-not $SkipValidate) {
@@ -109,7 +116,12 @@ if (-not $SkipValidate) {
 }
 
 $EffectiveTaskName = if ($TaskName) { $TaskName } else { "KAM-PRReview-$($Repo.Replace('/','-'))-$PullRequest" }
-$Argument = '"' + $ScriptPath + '" --repo "' + $Repo + '" --pr ' + $PullRequest + ' --codex-path "' + $Codex + '"'
+$Argument = '"' + $ScriptPath + '" --repo "' + $Repo + '" --pr ' + $PullRequest
+if ($UseHarnessQueue) {
+    $Argument += ' --kam-url "' + $KamApiUrl + '"'
+} else {
+    $Argument += ' --codex-path "' + $Codex + '"'
+}
 $Action = New-ScheduledTaskAction -Execute $Python -Argument $Argument
 $Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650)
 $Settings = New-ScheduledTaskSettingsSet `
@@ -124,7 +136,7 @@ Register-ScheduledTask `
     -Action $Action `
     -Trigger $Trigger `
     -Settings $Settings `
-    -Description "Monitor $Repo PR #$PullRequest review comments every 30 minutes with Codex auto-fix." `
+    -Description "Monitor $Repo PR #$PullRequest review comments every 30 minutes and feed them into KAM." `
     -Force | Out-Null
 
 if ($RunNow) {
@@ -132,4 +144,5 @@ if ($RunNow) {
 }
 
 Write-Host "Installed PR review monitor task: $EffectiveTaskName" -ForegroundColor Green
+Write-Host ("Mode: " + ($(if ($UseHarnessQueue) { "KAM harness queue" } else { "Direct Codex fallback" }))) -ForegroundColor DarkGray
 Write-Host "Command: $Python $Argument" -ForegroundColor DarkGray

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = BACKEND_ROOT.parent
@@ -318,11 +319,121 @@ def _build_summary(*, repo: str, pull_number: int, state_path: Path, workspace: 
     }
 
 
+def _normalize_api_url(url: str) -> str:
+    return url.rstrip("/")
+
+
+def _build_harness_task_payload(
+    *,
+    repo: str,
+    pull_number: int,
+    workspace: Path,
+    meta: dict[str, Any],
+    changes: dict[str, Any],
+    create_run: dict[str, Any],
+) -> dict[str, Any]:
+    review_comments = list(changes.get("review_comments", []))
+    summarized_comments = []
+    for item in review_comments[:5]:
+        body = " ".join(str(item.get("body", "")).split())
+        path = str(item.get("path", "")).strip()
+        line = item.get("line")
+        location = f"{path}:{line}" if path and line else path
+        summary = f"{location} · {body[:160]}".strip(" ·")
+        if summary:
+            summarized_comments.append(summary)
+
+    title = f"处理 {repo} PR #{pull_number} 新发现的评审评论"
+    description_lines = [
+        f"把 {repo} PR #{pull_number} 新增或更新的 review comments 接入 KAM 任务池，并在对应分支上修复、验证、回推。",
+    ]
+    if summarized_comments:
+        description_lines.append("本批评论摘要：")
+        description_lines.extend(f"- {line}" for line in summarized_comments[:3])
+
+    refs: list[dict[str, Any]] = []
+    pull_url = meta.get("pullUrl")
+    if isinstance(pull_url, str) and pull_url.strip():
+        refs.append({"kind": "url", "label": f"{repo} PR #{pull_number}", "value": pull_url.strip()})
+
+    unique_paths: list[str] = []
+    for item in review_comments:
+        path = str(item.get("path", "")).strip()
+        if path and path not in unique_paths:
+            unique_paths.append(path)
+    for path in unique_paths[:5]:
+        refs.append(
+            {
+                "kind": "file",
+                "label": f"PR 文件 · {path}",
+                "value": path,
+                "metadata": {"source": "github_review_comment"},
+            }
+        )
+
+    for item in review_comments[:5]:
+        comment_url = item.get("html_url")
+        comment_id = item.get("id")
+        if isinstance(comment_url, str) and comment_url.strip():
+            refs.append(
+                {
+                    "kind": "url",
+                    "label": f"Review comment #{comment_id}",
+                    "value": comment_url.strip(),
+                    "metadata": {"commentId": comment_id},
+                }
+            )
+
+    params = create_run.get("params", {})
+    metadata: dict[str, Any] = {
+        "recommendedPrompt": params.get("task"),
+        "recommendedAgent": params.get("agent", "codex"),
+        "sourceKind": "github_pr_review_comments",
+        "sourceRepo": repo,
+        "sourcePullNumber": pull_number,
+        "sourceMeta": meta,
+        "sourceReviewComments": review_comments,
+    }
+    head_repo = meta.get("headRepo")
+    head_ref = meta.get("headRef")
+    head_sha = meta.get("headSha")
+    if isinstance(head_repo, str) and head_repo.strip() and isinstance(head_ref, str) and head_ref.strip():
+        metadata["executionRemoteUrl"] = f"https://github.com/{head_repo.strip()}.git"
+        metadata["executionRef"] = head_ref.strip()
+        metadata["executionPushOnSuccess"] = True
+        if isinstance(head_sha, str) and head_sha.strip():
+            metadata["executionHeadSha"] = head_sha.strip()
+
+    return {
+        "title": title,
+        "description": "\n".join(description_lines),
+        "repoPath": str(workspace),
+        "status": "open",
+        "priority": "high",
+        "labels": ["dogfood", "github", "pr-review"],
+        "metadata": metadata,
+        "refs": refs,
+    }
+
+
+def _enqueue_task_to_harness(kam_api_url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    response = httpx.post(f"{_normalize_api_url(kam_api_url)}/tasks", json=payload, timeout=30.0)
+    response.raise_for_status()
+    return response.json()
+
+
+def _start_harness_global_autodrive(kam_api_url: str) -> dict[str, Any]:
+    response = httpx.post(f"{_normalize_api_url(kam_api_url)}/tasks/autodrive/global/start", timeout=30.0)
+    response.raise_for_status()
+    return response.json()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Monitor GitHub PR review comments and auto-run Codex when new comments arrive.")
     parser.add_argument("--repo", required=True, help="GitHub repo, e.g. lusipad/KAM")
     parser.add_argument("--pr", type=int, required=True, help="Pull request number")
     parser.add_argument("--codex-path", default=os.environ.get("CODEX_PATH", "codex"))
+    parser.add_argument("--kam-url", default=os.environ.get("KAM_API_URL", ""))
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -389,6 +500,46 @@ def main() -> int:
             if args.dry_run:
                 summary["status"] = "dry-run"
                 summary["task"] = create_run["params"]["task"]
+                if args.kam_url:
+                    summary["taskMode"] = "harness_queue"
+                    summary["enqueuePayload"] = _build_harness_task_payload(
+                        repo=args.repo,
+                        pull_number=args.pr,
+                        workspace=base_workspace,
+                        meta=current_state.get("meta", {}),
+                        changes=changes,
+                        create_run=create_run,
+                    )
+                _write_json(summary_path, summary)
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
+                return 0
+
+            if args.kam_url:
+                task_payload = _build_harness_task_payload(
+                    repo=args.repo,
+                    pull_number=args.pr,
+                    workspace=base_workspace,
+                    meta=current_state.get("meta", {}),
+                    changes=changes,
+                    create_run=create_run,
+                )
+                created_task = _enqueue_task_to_harness(args.kam_url, task_payload)
+                summary["taskMode"] = "harness_queue"
+                summary["task"] = create_run["params"]["task"]
+                summary["taskId"] = created_task.get("id")
+                summary["status"] = "enqueued"
+                summary["message"] = "检测到新评论，已写入 KAM 任务池。"
+                _write_json(state_path, current_state)
+                try:
+                    summary["autodrive"] = _start_harness_global_autodrive(args.kam_url)
+                except Exception as autodrive_exc:
+                    summary["status"] = "enqueued-with-autodrive-error"
+                    summary["message"] = "新评论已入 KAM 任务池，但拉起全局无人值守失败。"
+                    summary["autodriveError"] = f"{type(autodrive_exc).__name__}: {autodrive_exc}"
+                    _write_json(summary_path, summary)
+                    print(json.dumps(summary, ensure_ascii=False, indent=2))
+                    return 1
+
                 _write_json(summary_path, summary)
                 print(json.dumps(summary, ensure_ascii=False, indent=2))
                 return 0

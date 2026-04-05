@@ -155,6 +155,37 @@ class HarnessApiTests(unittest.TestCase):
         artifacts = self.client.get("/api/runs/task-run-2/artifacts").json()["artifacts"]
         self.assertTrue(any(item["type"] == "stdout" for item in artifacts))
 
+    def test_create_task_accepts_metadata_and_refs(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "处理 PR review 评论",
+                "description": "把外部评论接回 KAM 任务池。",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+                "labels": ["dogfood", "github"],
+                "metadata": {
+                    "recommendedPrompt": "处理评审评论并回推。",
+                    "recommendedAgent": "codex",
+                    "sourceKind": "github_pr_review_comments",
+                },
+                "refs": [
+                    {"kind": "url", "label": "PR", "value": "https://github.com/lusipad/KAM/pull/4518"},
+                    {"kind": "file", "label": "Run Engine", "value": "backend/services/run_engine.py"},
+                ],
+            },
+        ).json()
+
+        self.assertEqual(task["priority"], "high")
+        self.assertEqual(task["metadata"]["recommendedPrompt"], "处理评审评论并回推。")
+        self.assertEqual(task["metadata"]["sourceKind"], "github_pr_review_comments")
+
+        detail = self.client.get(f"/api/tasks/{task['id']}").json()
+        self.assertEqual(len(detail["refs"]), 2)
+        self.assertEqual(detail["refs"][0]["label"], "PR")
+        self.assertEqual(detail["refs"][1]["value"], "backend/services/run_engine.py")
+
     def test_seed_harness_reset_waits_for_background_runs(self):
         calls: list[str] = []
 
@@ -248,6 +279,59 @@ class HarnessApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"], "当前没有可自动接手的任务")
+
+    def test_dispatch_next_can_push_back_to_tracked_remote_branch(self):
+        repo, remote, branch_name = self._create_remote_backed_git_repo()
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "处理远端分支上的评审修复",
+                "repoPath": str(repo),
+                "status": "open",
+                "priority": "high",
+                "labels": ["dogfood", "github", "pr-review"],
+                "metadata": {
+                    "recommendedPrompt": "更新 README 并验证，再把结果推回评审分支。",
+                    "recommendedAgent": "codex",
+                    "executionRemoteUrl": str(remote),
+                    "executionRef": branch_name,
+                    "executionPushOnSuccess": True,
+                    "sourceKind": "github_pr_review_comments",
+                    "sourceRepo": "lusipad/KAM",
+                    "sourcePullNumber": 4518,
+                    "sourceMeta": {"headRef": branch_name},
+                    "sourceReviewComments": [{"id": 9, "path": "README.md", "body": "Please update README"}],
+                },
+                "refs": [
+                    {"kind": "url", "label": "PR", "value": "https://github.com/lusipad/KAM/pull/4518"},
+                    {"kind": "file", "label": "README", "value": "README.md"},
+                ],
+            },
+        ).json()
+
+        async def fake_run_command(_engine, _command, cwd):
+            readme = Path(cwd) / "README.md"
+            readme.write_text("after remote push\n", encoding="utf-8")
+            return 0, "执行完成：已回推到评审分支"
+
+        with patch("services.run_engine.RunEngine._run_command", new=fake_run_command):
+            response = self.client.post("/api/tasks/dispatch-next", json={"createPlanIfNeeded": False})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["task"]["id"], task["id"])
+        self.assertEqual(payload["run"]["status"], "passed")
+        self.assertIsNotNone(payload["run"]["adoptedAt"])
+
+        detail = self.client.get(f"/api/tasks/{task['id']}").json()
+        self.assertEqual(detail["status"], "verified")
+
+        self._git(repo, "fetch", "origin", branch_name)
+        pushed_readme = self._git_output(repo, "show", "FETCH_HEAD:README.md")
+        self.assertEqual(pushed_readme, "after remote push\n")
+
+        artifacts = self.client.get(f"/api/runs/{payload['run']['id']}/artifacts").json()["artifacts"]
+        self.assertTrue(any(item["type"] == "source_context" for item in artifacts))
 
     def test_continue_prefers_adopt_for_latest_passed_unadopted_run(self):
         repo = self._create_git_repo()
@@ -1211,6 +1295,40 @@ class HarnessApiTests(unittest.TestCase):
         self._git(repo, "commit", "-m", "Initial commit")
         return repo
 
+    def _create_remote_backed_git_repo(self) -> tuple[Path, Path, str]:
+        remote = TMP_ROOT / f"remote-{next(tempfile._get_candidate_names())}.git"
+        subprocess.run(
+            ["git", "init", "--bare", str(remote)],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        repo = TMP_ROOT / f"repo-{next(tempfile._get_candidate_names())}"
+        subprocess.run(
+            ["git", "clone", str(remote), str(repo)],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        self._git(repo, "config", "user.name", "Test User")
+        self._git(repo, "config", "user.email", "test@example.com")
+        (repo / "README.md").write_text("before remote push\n", encoding="utf-8")
+        self._git(repo, "add", "README.md")
+        self._git(repo, "commit", "-m", "Initial commit")
+        self._git(repo, "branch", "-M", "main")
+        self._git(repo, "push", "-u", "origin", "main")
+
+        branch_name = "feature/pr-4518"
+        self._git(repo, "checkout", "-b", branch_name)
+        self._git(repo, "push", "-u", "origin", branch_name)
+        self._git(repo, "checkout", "main")
+        return repo, remote, branch_name
+
     def _git(self, cwd: Path, *args: str) -> None:
         subprocess.run(
             ["git", "-C", str(cwd), *args],
@@ -1220,6 +1338,17 @@ class HarnessApiTests(unittest.TestCase):
             encoding="utf-8",
             errors="replace",
         )
+
+    def _git_output(self, cwd: Path, *args: str) -> str:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return completed.stdout
 
     def _restart_client(self, *, clear_persistence: bool) -> None:
         self.client.__exit__(None, None, None)

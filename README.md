@@ -28,6 +28,8 @@ V3 workspace 已经从运行时、前端主入口、验证基线和数据库 hea
 - 当前 task 已可基于 run、compare、snapshot、refs 和 artifacts 自动拆出可执行的 follow-up tasks
 - KAM 已可从任务池里自动接下一张任务；若当前没有可跑 child task，会先拆一张再开跑
 - KAM 已可围绕当前 task family 自动继续推进：优先 `adopt / retry / plan_and_dispatch / stop`
+- GitHub PR review comment monitor 已可把新评论写入 KAM 任务池，并自动拉起 global autodrive
+- 带 `executionRemoteUrl + executionRef` 的任务已可在指定远端分支上起 worktree、执行、push 回去，并自动把任务收口到 `verified`
 - 开发态提供 harness demo 播种接口：`POST /api/dev/seed-harness`
 
 ## 目录
@@ -192,6 +194,14 @@ npm run test:soak:autodrive
 
 ```powershell
 pwsh -File .\install-pr-review-monitor.ps1 -Repo lusipad/KAM -PullRequest 4518
+```
+
+默认模式会把新评论写入本机正在运行的 KAM backend（默认 `http://127.0.0.1:8000/api`），由 KAM 自己接单、执行并回推到 PR 分支。
+
+如果你要保留旧的“监控脚本直接跑 Codex”旁路，可显式切回：
+
+```powershell
+pwsh -File .\install-pr-review-monitor.ps1 -Repo lusipad/KAM -PullRequest 4518 -DirectCodex
 ```
 
 ## 当前原则

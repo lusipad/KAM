@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -33,6 +34,22 @@ class _RunState:
     semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(settings.max_concurrent_runs))
     tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     initial_artifacts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _ExecutionTarget:
+    remote_url: str
+    ref: str
+    head_sha: str | None = None
+    push_on_success: bool = False
+
+
+@dataclass(frozen=True)
+class _FinalizeSuccessResult:
+    changed_files: list[str]
+    patch_output: str = ""
+    auto_adopted: bool = False
+    task_status: str | None = None
 
 
 _STATE = _RunState()
@@ -108,6 +125,9 @@ class RunEngine:
                 ),
             }
         ]
+        source_context_artifact = self._build_source_context_artifact(task_record.metadata_ or {})
+        if source_context_artifact is not None:
+            artifacts.append(source_context_artifact)
         if snapshot is not None:
             artifacts.append(
                 {
@@ -176,6 +196,7 @@ class RunEngine:
 
                     worktree_path, command = await self._prepare_task_execution(run, task_record)
                     patch_output = ""
+                    execution_target = self._task_execution_target(task_record)
                     if worktree_path is not None:
                         run.worktree_path = str(worktree_path)
                         await session.commit()
@@ -186,11 +207,21 @@ class RunEngine:
 
                     repo_path = Path(task_record.repo_path).resolve() if task_record and task_record.repo_path else None
                     if code == 0:
-                        changed_files = await self._finalize_success(run, task_record, repo_path, worktree_path)
+                        finalize_result = await self._finalize_success(
+                            run,
+                            task_record,
+                            repo_path,
+                            worktree_path,
+                            execution_target,
+                        )
                         run.status = "passed"
-                        run.changed_files = changed_files
+                        run.changed_files = finalize_result.changed_files
                         run.check_passed = True
-                        patch_output = self._capture_patch(worktree_path)
+                        patch_output = finalize_result.patch_output
+                        if finalize_result.auto_adopted:
+                            run.adopted_at = now()
+                        if task_record is not None and finalize_result.task_status:
+                            task_record.status = finalize_result.task_status
                     else:
                         run.status = "failed"
                         run.check_passed = False
@@ -227,7 +258,8 @@ class RunEngine:
 
     async def _prepare_task_execution(self, run: TaskRun, task_record: Task | None) -> tuple[Path | None, list[str]]:
         repo_path = Path(task_record.repo_path).resolve() if task_record and task_record.repo_path else None
-        return await self._prepare_workspace(run.id, run.agent, run.task, repo_path)
+        execution_target = self._task_execution_target(task_record)
+        return await self._prepare_workspace(run.id, run.agent, run.task, repo_path, execution_target)
 
     async def _prepare_workspace(
         self,
@@ -235,13 +267,17 @@ class RunEngine:
         agent: str,
         task: str,
         repo_path: Path | None,
+        execution_target: _ExecutionTarget | None = None,
     ) -> tuple[Path | None, list[str]]:
         if repo_path and repo_path.exists() and (repo_path / ".git").exists():
             worktree_path = settings.run_dir / run_id
             if worktree_path.exists():
                 shutil.rmtree(worktree_path, ignore_errors=True)
             branch = self._branch_name(run_id)
-            self._git(repo_path, "worktree", "add", "-b", branch, str(worktree_path), "HEAD")
+            start_point = "HEAD"
+            if execution_target is not None:
+                start_point = self._resolve_execution_start_point(repo_path, execution_target)
+            self._git(repo_path, "worktree", "add", "-b", branch, str(worktree_path), start_point)
             command = self._build_command(agent, task, worktree_path)
             return worktree_path, command
 
@@ -313,28 +349,52 @@ class RunEngine:
         task_record: Task | None,
         repo_path: Path | None,
         worktree_path: Path | None,
-    ) -> list[str]:
+        execution_target: _ExecutionTarget | None = None,
+    ) -> _FinalizeSuccessResult:
         if repo_path is None or worktree_path is None or not worktree_path.exists():
-            return []
+            return _FinalizeSuccessResult(changed_files=[])
         changed_files = self._git_output(worktree_path, "status", "--short")
         if not changed_files.strip():
-            return []
+            if execution_target is not None and execution_target.push_on_success:
+                self._cleanup_worktree_branch(repo_path, worktree_path, run.id)
+                return _FinalizeSuccessResult(
+                    changed_files=[],
+                    auto_adopted=True,
+                    task_status="verified",
+                )
+            return _FinalizeSuccessResult(changed_files=[])
         self._git(worktree_path, "config", "user.name", settings.git_user_name)
         self._git(worktree_path, "config", "user.email", settings.git_user_email)
         self._git(worktree_path, "add", "-A")
         message_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", suffix=".txt") as handle:
-                handle.write(self._build_commit_message(run, task_record))
+                handle.write(self._build_commit_message(run, task_record, execution_target))
                 message_path = Path(handle.name)
             self._git(worktree_path, "commit", "-F", str(message_path))
         finally:
             if message_path is not None:
                 message_path.unlink(missing_ok=True)
-        committed_files = self._git_output(worktree_path, "show", "--pretty=", "--name-only", "HEAD")
-        return [line.strip() for line in committed_files.splitlines() if line.strip()]
+        committed_files = [line.strip() for line in self._git_output(worktree_path, "show", "--pretty=", "--name-only", "HEAD").splitlines() if line.strip()]
+        patch_output = self._capture_patch(worktree_path)
+        if execution_target is not None and execution_target.push_on_success:
+            remote_name = self._ensure_remote(repo_path, execution_target.remote_url)
+            self._git(worktree_path, "push", remote_name, f"HEAD:refs/heads/{execution_target.ref}")
+            self._cleanup_worktree_branch(repo_path, worktree_path, run.id)
+            return _FinalizeSuccessResult(
+                changed_files=committed_files,
+                patch_output=patch_output,
+                auto_adopted=True,
+                task_status="verified",
+            )
+        return _FinalizeSuccessResult(changed_files=committed_files, patch_output=patch_output)
 
-    def _build_commit_message(self, run: TaskRun, task_record: Task | None) -> str:
+    def _build_commit_message(
+        self,
+        run: TaskRun,
+        task_record: Task | None,
+        execution_target: _ExecutionTarget | None = None,
+    ) -> str:
         task_title = (task_record.title.strip() if task_record and task_record.title else "") or f"task {run.task_id}"
         repo_path = task_record.repo_path.strip() if task_record and task_record.repo_path else None
         narrative = [
@@ -343,6 +403,16 @@ class RunEngine:
         ]
         if repo_path:
             narrative.append(f"Repository: {repo_path}")
+        if execution_target is not None and execution_target.push_on_success:
+            narrative.append(f"Push target: {execution_target.remote_url}#{execution_target.ref}")
+
+        constraint = "Harness-generated commits must remain adoptable from isolated worktrees"
+        directive = "Review the associated artifacts before adopting this run into the main worktree"
+        not_tested = "Manual validation after adopt into the main worktree"
+        if execution_target is not None and execution_target.push_on_success:
+            constraint = "Harness-generated commits must stay pushable back to the tracked remote branch"
+            directive = "Review the pushed branch and linked PR context before enqueueing follow-up review work"
+            not_tested = "Manual reviewer confirmation after pushing back to the tracked branch"
 
         return "\n".join(
             [
@@ -350,13 +420,13 @@ class RunEngine:
                 "",
                 *narrative,
                 "",
-                "Constraint: Harness-generated commits must remain adoptable from isolated worktrees",
+                f"Constraint: {constraint}",
                 "Confidence: medium",
                 "Scope-risk: narrow",
                 "Reversibility: clean",
-                "Directive: Review the associated artifacts before adopting this run into the main worktree",
+                f"Directive: {directive}",
                 f"Tested: {run.agent} harness run exited with status 0",
-                "Not-tested: Manual validation after adopt into the main worktree",
+                f"Not-tested: {not_tested}",
                 f"Related: task/{run.task_id}",
                 f"Related: run/{run.id}",
             ]
@@ -381,6 +451,75 @@ class RunEngine:
 
     def _branch_name(self, run_id: str) -> str:
         return f"kam-run-{run_id}"
+
+    def _task_execution_target(self, task_record: Task | None) -> _ExecutionTarget | None:
+        metadata = task_record.metadata_ if task_record is not None and task_record.metadata_ else {}
+        remote_url = metadata.get("executionRemoteUrl")
+        ref = metadata.get("executionRef")
+        if not isinstance(remote_url, str) or not remote_url.strip():
+            return None
+        if not isinstance(ref, str) or not ref.strip():
+            return None
+        head_sha = metadata.get("executionHeadSha")
+        return _ExecutionTarget(
+            remote_url=remote_url.strip(),
+            ref=ref.strip(),
+            head_sha=head_sha.strip() if isinstance(head_sha, str) and head_sha.strip() else None,
+            push_on_success=bool(metadata.get("executionPushOnSuccess")),
+        )
+
+    def _build_source_context_artifact(self, metadata: dict[str, Any]) -> dict[str, Any] | None:
+        source_kind = metadata.get("sourceKind")
+        source_meta = metadata.get("sourceMeta")
+        source_comments = metadata.get("sourceReviewComments")
+        if not source_kind and not source_meta and not source_comments:
+            return None
+        payload = {
+            "sourceKind": source_kind,
+            "sourceRepo": metadata.get("sourceRepo"),
+            "sourcePullNumber": metadata.get("sourcePullNumber"),
+            "sourceMeta": source_meta if isinstance(source_meta, dict) else {},
+            "sourceReviewComments": source_comments if isinstance(source_comments, list) else [],
+        }
+        return {
+            "type": "source_context",
+            "content": json.dumps(payload, ensure_ascii=False, indent=2),
+            "metadata": {"sourceKind": source_kind or "external"},
+        }
+
+    def _resolve_execution_start_point(self, repo_path: Path, execution_target: _ExecutionTarget) -> str:
+        remote_name = self._ensure_remote(repo_path, execution_target.remote_url)
+        try:
+            self._git(repo_path, "fetch", "--prune", remote_name, execution_target.ref)
+        except subprocess.CalledProcessError:
+            if execution_target.head_sha is None:
+                raise
+            self._git(repo_path, "fetch", "--prune", remote_name, execution_target.head_sha)
+        return self._git_output(repo_path, "rev-parse", "FETCH_HEAD").strip()
+
+    def _ensure_remote(self, repo_path: Path, remote_url: str) -> str:
+        origin_url = self._git_output(repo_path, "remote", "get-url", "origin").strip()
+        if self._normalize_remote_url(origin_url) == self._normalize_remote_url(remote_url):
+            return "origin"
+
+        remote_name = f"kam-target-{hashlib.sha1(remote_url.encode('utf-8')).hexdigest()[:10]}"
+        try:
+            current_url = self._git_output(repo_path, "remote", "get-url", remote_name).strip()
+            if self._normalize_remote_url(current_url) != self._normalize_remote_url(remote_url):
+                self._git(repo_path, "remote", "set-url", remote_name, remote_url)
+        except subprocess.CalledProcessError:
+            self._git(repo_path, "remote", "add", remote_name, remote_url)
+        return remote_name
+
+    def _normalize_remote_url(self, url: str) -> str:
+        normalized = url.strip().lower().replace(".git", "")
+        if normalized.startswith("git@github.com:"):
+            normalized = normalized.replace("git@github.com:", "https://github.com/")
+        return normalized.rstrip("/")
+
+    def _cleanup_worktree_branch(self, repo_path: Path, worktree_path: Path, run_id: str) -> None:
+        self._git(repo_path, "worktree", "remove", str(worktree_path), "--force")
+        self._git(repo_path, "branch", "-D", self._branch_name(run_id))
 
     def _git(self, cwd: Path, *args: str) -> None:
         subprocess.run(

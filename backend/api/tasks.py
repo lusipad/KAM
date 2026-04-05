@@ -21,6 +21,13 @@ from services.task_context import TaskContextService
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
+class TaskRefCreate(BaseModel):
+    kind: str = Field(min_length=1, max_length=50)
+    label: str = Field(min_length=1, max_length=200)
+    value: str = Field(min_length=1, max_length=4000)
+    metadata: dict[str, Any] | None = None
+
+
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=4000)
@@ -28,6 +35,8 @@ class TaskCreate(BaseModel):
     status: str = Field(default="open", max_length=20)
     priority: str = Field(default="medium", max_length=20)
     labels: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] | None = None
+    refs: list[TaskRefCreate] = Field(default_factory=list)
 
 
 class TaskUpdate(BaseModel):
@@ -37,13 +46,6 @@ class TaskUpdate(BaseModel):
     status: str | None = Field(default=None, max_length=20)
     priority: str | None = Field(default=None, max_length=20)
     labels: list[str] | None = None
-
-
-class TaskRefCreate(BaseModel):
-    kind: str = Field(min_length=1, max_length=50)
-    label: str = Field(min_length=1, max_length=200)
-    value: str = Field(min_length=1, max_length=4000)
-    metadata: dict[str, Any] | None = None
 
 
 class TaskResolveContext(BaseModel):
@@ -142,8 +144,20 @@ async def create_task(payload: TaskCreate, db: AsyncSession = Depends(get_db)):
         status=payload.status.strip(),
         priority=payload.priority.strip(),
         labels=[label.strip() for label in payload.labels if label.strip()],
+        metadata_=dict(payload.metadata or {}) or None,
     )
     db.add(task)
+    await db.flush()
+    for ref_payload in payload.refs:
+        db.add(
+            TaskRef(
+                task_id=task.id,
+                kind=ref_payload.kind.strip(),
+                label=ref_payload.label.strip(),
+                value=ref_payload.value.strip(),
+                metadata_=ref_payload.metadata,
+            )
+        )
     await db.commit()
     await db.refresh(task)
     return task.to_dict()

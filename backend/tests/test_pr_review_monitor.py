@@ -75,6 +75,7 @@ class PRReviewMonitorTests(unittest.TestCase):
                 repo="lusipad/KAM",
                 pr=4518,
                 codex_path="codex.cmd",
+                kam_url="",
                 output_dir=str(output_dir),
                 dry_run=False,
             )
@@ -117,6 +118,7 @@ class PRReviewMonitorTests(unittest.TestCase):
                 repo="lusipad/KAM",
                 pr=4518,
                 codex_path="codex.cmd",
+                kam_url="",
                 output_dir=str(output_dir),
                 dry_run=False,
             )
@@ -146,6 +148,57 @@ class PRReviewMonitorTests(unittest.TestCase):
             self.assertEqual(summary["status"], "pushed")
             self.assertEqual(summary["pushedCommit"], "def456")
             self.assertIsNone(summary["worktree"])
+
+    def test_main_enqueues_kam_task_and_starts_autodrive(self):
+        current_state = {
+            "items": [{"id": 9, "body": "Please reuse helper", "path": "backend/services/router.py", "updated_at": "2026-04-04T00:00:00Z"}],
+            "meta": {
+                "repo": "lusipad/KAM",
+                "watch": "review_comments",
+                "number": 4518,
+                "headRef": "feature/pr-4518",
+                "headSha": "abc123",
+                "headRepo": "lusipad/KAM",
+                "pullUrl": "https://github.com/lusipad/KAM/pull/4518",
+            },
+        }
+        changes = {"review_comments": current_state["items"], "meta": current_state["meta"]}
+        actions = [{"kind": "create_run", "params": {"agent": "codex", "task": "处理评审"}}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            args = argparse.Namespace(
+                repo="lusipad/KAM",
+                pr=4518,
+                codex_path="codex.cmd",
+                kam_url="http://127.0.0.1:8000/api",
+                output_dir=str(output_dir),
+                dry_run=False,
+            )
+            with (
+                patch.object(pr_review_monitor, "parse_args", return_value=args),
+                patch.object(pr_review_monitor, "_ensure_base_clone"),
+                patch.object(pr_review_monitor, "_resolve_github_token", return_value="token"),
+                patch.object(pr_review_monitor, "GitHubPRAdapter", return_value=FakeAdapter(current_state, changes, actions)),
+                patch.object(pr_review_monitor, "_enqueue_task_to_harness", return_value={"id": "taskkam0001"}),
+                patch.object(
+                    pr_review_monitor,
+                    "_start_harness_global_autodrive",
+                    return_value={"enabled": True, "running": True, "status": "running"},
+                ),
+                patch.object(pr_review_monitor, "_resolve_codex") as mocked_resolve_codex,
+            ):
+                rc = pr_review_monitor.main()
+
+            self.assertEqual(rc, 0)
+            mocked_resolve_codex.assert_not_called()
+            saved_state = json.loads((output_dir / "state.json").read_text(encoding="utf-8"))
+            summary = json.loads((output_dir / "last-run.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved_state, current_state)
+            self.assertEqual(summary["status"], "enqueued")
+            self.assertEqual(summary["taskMode"], "harness_queue")
+            self.assertEqual(summary["taskId"], "taskkam0001")
+            self.assertTrue(summary["autodrive"]["enabled"])
 
 
 if __name__ == "__main__":

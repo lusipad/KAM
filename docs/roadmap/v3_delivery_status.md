@@ -62,6 +62,8 @@
 - 前端已新增全局无人值守状态面板与开关
 - 新增 harness smoke
 - `verify-local.ps1` 已默认纳入真实 `codex` agent smoke，覆盖临时 git repo 改动、Lore commit 和 adopt 链路
+- PR review comment monitor 已可把新评论写入 KAM 任务池，并自动拉起 global autodrive，而不是旁路直接执行
+- 带远端执行目标的任务已可在指定 remote branch 上起 worktree、完成 run、push 回源分支，并自动把任务标记为 `verified`
 - `claude-code` 作为可选 real smoke lane 已补 readiness 预检，会在 `claude auth status` 未就绪时提前失败，而不是跑到中途才报错
 - 新增可配置的 global autodrive soak runner，并通过 `verify-local.ps1 -RunAutoDriveSoak` 暴露可选入口；它会持续注入 root task，校验长时轮询期间的进展信号与 recent events 有界性
 - 新增 `run-autodrive-soak.ps1`，可把长时 soak 的 stdout、backend log、commit hash 与运行元数据自动归档到 `output/soak-runs/`

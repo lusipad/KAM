@@ -84,10 +84,11 @@ class RunEngineLoreTests(unittest.TestCase):
             task="Replace single-line auto commit messages with Lore protocol content",
         )
 
-        changed_files = asyncio.run(RunEngine(None)._finalize_success(run, task, repo, repo))
+        result = asyncio.run(RunEngine(None)._finalize_success(run, task, repo, repo))
         message = self._git_output(repo, "log", "-1", "--pretty=%B")
 
-        self.assertEqual(changed_files, ["README.md"])
+        self.assertEqual(result.changed_files, ["README.md"])
+        self.assertIn("README.md", result.patch_output)
         self.assertIn("Advance Make harness commits self-describing through a codex harness run", message)
         self.assertIn("Constraint:", message)
         self.assertIn("Directive:", message)
