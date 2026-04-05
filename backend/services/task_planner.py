@@ -63,6 +63,12 @@ class PlannedTaskSuggestion:
         }
 
 
+@dataclass(frozen=True)
+class _SuggestionCandidate:
+    suggestion: PlannedTaskSuggestion
+    rank: tuple[int, float]
+
+
 class TaskPlannerService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -198,52 +204,77 @@ class TaskPlannerService:
         run_artifacts_by_run_id: dict[str, list[TaskRunArtifact]],
         limit: int,
     ) -> list[PlannedTaskSuggestion]:
-        suggestions: list[PlannedTaskSuggestion] = []
+        candidates: list[_SuggestionCandidate] = []
         runs_by_id = {run.id: run for run in task.runs}
 
-        latest_failed_run = next((run for run in reversed(task.runs) if run.status == "failed"), None)
-        if latest_failed_run is not None:
-            suggestions.append(
-                self._build_failed_run_follow_up(
-                    task,
-                    latest_failed_run,
-                    latest_snapshot,
-                    run_artifacts_by_run_id.get(latest_failed_run.id, []),
+        latest_terminal_run = self._latest_terminal_run(task)
+        if latest_terminal_run is not None and latest_terminal_run.status == "failed":
+            candidates.append(
+                _SuggestionCandidate(
+                    suggestion=self._build_failed_run_follow_up(
+                        task,
+                        latest_terminal_run,
+                        latest_snapshot,
+                        run_artifacts_by_run_id.get(latest_terminal_run.id, []),
+                    ),
+                    rank=(
+                        self._suggestion_reason_rank("failed_run_follow_up"),
+                        -latest_terminal_run.created_at.timestamp(),
+                    ),
                 )
             )
 
-        latest_unadopted_run = next(
-            (run for run in reversed(task.runs) if run.status == "passed" and run.adopted_at is None),
-            None,
-        )
-        if latest_unadopted_run is not None:
-            suggestions.append(
-                self._build_adopt_follow_up(
-                    task,
-                    latest_unadopted_run,
-                    latest_snapshot,
-                    run_artifacts_by_run_id.get(latest_unadopted_run.id, []),
+        if latest_terminal_run is not None and latest_terminal_run.status == "passed" and latest_terminal_run.adopted_at is None:
+            candidates.append(
+                _SuggestionCandidate(
+                    suggestion=self._build_adopt_follow_up(
+                        task,
+                        latest_terminal_run,
+                        latest_snapshot,
+                        run_artifacts_by_run_id.get(latest_terminal_run.id, []),
+                    ),
+                    rank=(
+                        self._suggestion_reason_rank("passed_run_not_adopted"),
+                        -latest_terminal_run.created_at.timestamp(),
+                    ),
                 )
             )
 
         latest_compare = task.review_compares[-1] if task.review_compares else None
         if latest_compare is not None:
-            suggestions.append(
-                self._build_compare_follow_up(
-                    task,
-                    latest_compare,
-                    latest_snapshot,
-                    runs_by_id,
-                    run_artifacts_by_run_id,
+            candidates.append(
+                _SuggestionCandidate(
+                    suggestion=self._build_compare_follow_up(
+                        task,
+                        latest_compare,
+                        latest_snapshot,
+                        runs_by_id,
+                        run_artifacts_by_run_id,
+                    ),
+                    rank=(
+                        self._suggestion_reason_rank("review_compare_follow_up"),
+                        -latest_compare.created_at.timestamp(),
+                    ),
                 )
             )
 
-        if not suggestions:
-            suggestions.append(self._build_generic_follow_up(task, latest_snapshot))
+        if not candidates:
+            candidates.append(
+                _SuggestionCandidate(
+                    suggestion=self._build_generic_follow_up(task, latest_snapshot),
+                    rank=(
+                        self._suggestion_reason_rank("task_next_step"),
+                        -task.updated_at.timestamp(),
+                    ),
+                )
+            )
+
+        candidates.sort(key=lambda item: item.rank)
 
         unique_suggestions: list[PlannedTaskSuggestion] = []
         seen_signatures = set(existing_signatures)
-        for suggestion in suggestions:
+        for candidate in candidates:
+            suggestion = candidate.suggestion
             signature = suggestion.signature()
             if signature in seen_signatures:
                 continue
@@ -702,6 +733,23 @@ class TaskPlannerService:
             str(metadata.get("sourceRunId", "")),
             str(metadata.get("sourceCompareId", "")),
         )
+
+    def _latest_terminal_run(self, task: Task) -> TaskRun | None:
+        for run in reversed(task.runs):
+            if run.status in {"failed", "passed"}:
+                return run
+        return None
+
+    def _suggestion_reason_rank(self, reason: str) -> int:
+        if reason == "failed_run_follow_up":
+            return 0
+        if reason == "passed_run_not_adopted":
+            return 1
+        if reason == "review_compare_follow_up":
+            return 2
+        if reason == "task_next_step":
+            return 3
+        return 4
 
     def _optional_line(self, label: str, value: str | None) -> str | None:
         if not value:

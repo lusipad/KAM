@@ -121,6 +121,19 @@ class TaskPlannerApiTests(unittest.TestCase):
         self.assertGreaterEqual(len(suggestion["acceptanceChecks"]), 3)
         self.assertTrue(any(ref["value"] == "backend/services/router.py" for ref in suggestion["suggestedRefs"]))
 
+    def test_plan_prefers_latest_passed_run_over_older_failed_run(self):
+        task_id = asyncio.run(self._seed_superseded_failed_task())
+
+        response = self.client.post(f"/api/tasks/{task_id}/plan", json={"createTasks": False, "limit": 1})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(len(payload["suggestions"]), 1)
+        suggestion = payload["suggestions"][0]
+        self.assertEqual(suggestion["metadata"]["planningReason"], "passed_run_not_adopted")
+        self.assertTrue(suggestion["recommendedPrompt"].startswith("收口父任务"))
+        self.assertIn("backend/services/task_planner.py", suggestion["recommendedPrompt"])
+
     def test_plan_falls_back_to_generic_next_step_with_snapshot_and_refs(self):
         task_id = asyncio.run(self._seed_generic_task())
 
@@ -311,6 +324,81 @@ class TaskPlannerApiTests(unittest.TestCase):
                 )
             )
         return "taskfail1234"
+
+    async def _seed_superseded_failed_task(self) -> str:
+        failed_at = datetime(2026, 4, 5, 8, 0, tzinfo=UTC)
+        passed_at = datetime(2026, 4, 5, 9, 0, tzinfo=UTC)
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="tasksup1234",
+                    title="旧失败已被新通过 run 覆盖",
+                    description="planner 应优先收口最新通过结果，而不是回头追旧失败。",
+                    repo_path="D:/Repos/KAM",
+                    status="in_progress",
+                    priority="high",
+                    labels=["dogfood", "planner"],
+                    updated_at=passed_at,
+                )
+            )
+            await conn.execute(
+                ContextSnapshot.__table__.insert().values(
+                    id="snapsup1234",
+                    task_id="tasksup1234",
+                    summary="Latest passed should win",
+                    content="## Task\n标题：旧失败已被新通过 run 覆盖",
+                    focus="优先收口最新通过的实现。",
+                )
+            )
+            await conn.execute(
+                TaskRun.__table__.insert().values(
+                    [
+                        {
+                            "id": "runsupf001",
+                            "task_id": "tasksup1234",
+                            "agent": "codex",
+                            "status": "failed",
+                            "task": "先前失败的一轮 run",
+                            "result_summary": "执行失败：AssertionError: old failure",
+                            "changed_files": ["backend/services/router.py"],
+                            "check_passed": False,
+                            "raw_output": "AssertionError: old failure",
+                            "created_at": failed_at,
+                        },
+                        {
+                            "id": "runsupp001",
+                            "task_id": "tasksup1234",
+                            "agent": "codex",
+                            "status": "passed",
+                            "task": "最新一轮已经给出可采纳实现",
+                            "result_summary": "最新实现已通过验证，等待收口。",
+                            "changed_files": ["backend/services/task_planner.py"],
+                            "check_passed": True,
+                            "raw_output": "ok",
+                            "created_at": passed_at,
+                        },
+                    ]
+                )
+            )
+            await conn.execute(
+                TaskRunArtifact.__table__.insert().values(
+                    [
+                        {
+                            "id": "artsup001",
+                            "task_run_id": "runsupf001",
+                            "type": "summary",
+                            "content": "执行失败：AssertionError: old failure",
+                        },
+                        {
+                            "id": "artsup002",
+                            "task_run_id": "runsupp001",
+                            "type": "summary",
+                            "content": "最新实现已通过验证，等待收口。",
+                        },
+                    ]
+                )
+            )
+        return "tasksup1234"
 
     async def _seed_generic_task(self) -> str:
         async with engine.begin() as conn:

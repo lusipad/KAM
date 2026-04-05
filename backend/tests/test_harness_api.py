@@ -155,6 +155,18 @@ class HarnessApiTests(unittest.TestCase):
         artifacts = self.client.get("/api/runs/task-run-2/artifacts").json()["artifacts"]
         self.assertTrue(any(item["type"] == "stdout" for item in artifacts))
 
+    def test_seed_harness_reset_waits_for_background_runs(self):
+        calls: list[str] = []
+
+        async def fake_wait_for_background_runs(timeout: float = 5.0):
+            calls.append(f"timeout={timeout}")
+
+        with patch("api.dev.wait_for_background_runs", new=fake_wait_for_background_runs):
+            response = self.client.post("/api/dev/seed-harness", json={"reset": True})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls, ["timeout=5.0"])
+
     def test_dispatch_next_plans_then_runs_child_task(self):
         self.client.post("/api/dev/seed-harness", json={"reset": True})
 
@@ -210,6 +222,27 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(payload["run"]["status"], "passed")
         self.assertEqual(payload["task"]["metadata"]["parentTaskId"], "task-harness-cutover")
 
+    def test_dispatch_next_prefers_failed_root_task_over_generic_child_follow_up(self):
+        root_task_id = asyncio.run(self._seed_failed_root_with_generic_child())
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：failed root first"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post("/api/tasks/dispatch-next", json={"createPlanIfNeeded": False})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "existing_task")
+        self.assertEqual(payload["task"]["id"], root_task_id)
+        self.assertEqual(payload["run"]["status"], "passed")
+
     def test_dispatch_next_returns_conflict_when_no_task_available(self):
         response = self.client.post("/api/tasks/dispatch-next", json={"createPlanIfNeeded": False})
 
@@ -253,6 +286,45 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(payload["run"]["id"], run["id"])
         self.assertIsNotNone(payload["run"]["adoptedAt"])
         self.assertEqual((repo / "README.md").read_text(encoding="utf-8"), "after\n")
+
+    def test_continue_prefers_adopt_before_retry_when_both_are_available(self):
+        repo = self._create_git_repo()
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "先采纳已通过结果，再回头补失败修复",
+                "repoPath": str(repo),
+                "status": "in_progress",
+                "priority": "high",
+            },
+        ).json()
+
+        async def fake_run_command(_engine, _command, cwd):
+            readme = Path(cwd) / "README.md"
+            readme.write_text("after adopt first\n", encoding="utf-8")
+            return 0, "执行完成：先产出可采纳结果"
+
+        with patch("services.run_engine.RunEngine._run_command", new=fake_run_command):
+            passed_run = self.client.post(
+                f"/api/tasks/{task['id']}/runs",
+                json={"agent": "codex", "task": "先产出一轮可以直接采纳的改动"},
+            ).json()
+
+        asyncio.run(self._seed_retryable_child_for_parent(task["id"]))
+
+        response = self.client.post(
+            "/api/tasks/continue",
+            json={"taskId": task["id"], "createPlanIfNeeded": True},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["action"], "adopt")
+        self.assertEqual(payload["reason"], "latest_passed_run_adopted")
+        self.assertEqual(payload["task"]["id"], task["id"])
+        self.assertEqual(payload["run"]["id"], passed_run["id"])
+        self.assertIsNotNone(payload["run"]["adoptedAt"])
+        self.assertEqual((repo / "README.md").read_text(encoding="utf-8"), "after adopt first\n")
 
     def test_continue_retries_latest_failed_child_run_before_planning_new_work(self):
         parent_task_id, child_task_id = asyncio.run(self._seed_retryable_child_task())
@@ -572,6 +644,82 @@ class HarnessApiTests(unittest.TestCase):
         self.assertTrue(status["enabled"])
         self.assertEqual(status["status"], "idle")
         self.assertEqual(status["lastReason"], "no_high_value_action")
+
+        tasks = self.client.get("/api/tasks").json()["tasks"]
+        root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
+        self.assertGreaterEqual(len(root_two_children), 1)
+
+    def test_startup_recovers_persisted_global_autodrive_and_reclaims_stale_lease(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+        second_root_id = asyncio.run(self._seed_secondary_root_task())
+        self._write_persisted_global_autodrive_state()
+        self._write_foreign_global_lease(age_seconds=30.0)
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：restart reclaim stale lease"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            self._restart_client(clear_persistence=False)
+            status = self.client.get("/api/tasks/autodrive/global").json()
+
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["status"], "idle")
+        self.assertEqual(status["lastReason"], "no_high_value_action")
+        self.assertTrue(status["lease"]["ownedByCurrentProcess"])
+        self.assertFalse(status["lease"]["stale"])
+
+        tasks = self.client.get("/api/tasks").json()["tasks"]
+        root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
+        self.assertGreaterEqual(len(root_two_children), 1)
+
+    def test_startup_waits_for_foreign_lease_then_reclaims_after_ttl_on_next_restart(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+        second_root_id = asyncio.run(self._seed_secondary_root_task())
+        self._write_persisted_global_autodrive_state()
+
+        ttl_seconds = 2.0
+        self._write_foreign_global_lease(age_seconds=0.1)
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：restart reclaim after ttl"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.task_autodrive.GLOBAL_AUTO_DRIVE_LEASE_TTL_SECONDS", new=ttl_seconds),
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            self._restart_client(clear_persistence=False)
+            waiting_status = self.client.get("/api/tasks/autodrive/global").json()
+
+            self.assertTrue(waiting_status["enabled"])
+            self.assertEqual(waiting_status["status"], "waiting_for_lease")
+            self.assertEqual(waiting_status["lastReason"], "global_auto_drive_lease_held_by_other_process")
+            self.assertFalse(waiting_status["lease"]["ownedByCurrentProcess"])
+            self.assertFalse(waiting_status["lease"]["stale"])
+
+            tasks = self.client.get("/api/tasks").json()["tasks"]
+            root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
+            self.assertEqual(root_two_children, [])
+
+            time.sleep(ttl_seconds + 0.4)
+
+            self._restart_client(clear_persistence=False)
+            recovered_status = self.client.get("/api/tasks/autodrive/global").json()
+
+        self.assertTrue(recovered_status["enabled"])
+        self.assertEqual(recovered_status["status"], "idle")
+        self.assertEqual(recovered_status["lastReason"], "no_high_value_action")
+        self.assertTrue(recovered_status["lease"]["ownedByCurrentProcess"])
+        self.assertFalse(recovered_status["lease"]["stale"])
 
         tasks = self.client.get("/api/tasks").json()["tasks"]
         root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
@@ -970,9 +1118,11 @@ class HarnessApiTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _write_foreign_global_lease(self, *, stale: bool) -> None:
+    def _write_foreign_global_lease(self, *, stale: bool | None = None, age_seconds: float | None = None) -> None:
         lease_path = TMP_ROOT / GLOBAL_AUTO_DRIVE_LEASE_FILENAME
-        heartbeat_at = datetime.now(UTC) - timedelta(seconds=30 if stale else 1)
+        if age_seconds is None:
+            age_seconds = 30.0 if stale else 1.0
+        heartbeat_at = datetime.now(UTC) - timedelta(seconds=age_seconds)
         payload = {
             "ownerId": "foreign-host:4321:foreign",
             "pid": 4321,
@@ -1234,6 +1384,93 @@ class HarnessApiTests(unittest.TestCase):
                 )
             )
         return "taskroot0002"
+
+    async def _seed_failed_root_with_generic_child(self) -> str:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskrootfg01",
+                    title="优先处理 root 失败任务",
+                    description="failed root 不应被 generic child 抢跑。",
+                    repo_path="D:/Repos/KAM",
+                    status="failed",
+                    priority="high",
+                    labels=["dogfood", "dispatcher"],
+                    metadata={
+                        "recommendedPrompt": "先修复当前 root 失败任务并重新验证。",
+                        "recommendedAgent": "codex",
+                        "acceptanceChecks": ["修复失败", "重新验证"],
+                        "suggestedRefs": [],
+                    },
+                )
+            )
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskchildfg1",
+                    title="generic child follow-up",
+                    description="这张 child 不应抢在 failed root 前面。",
+                    repo_path="D:/Repos/KAM",
+                    status="open",
+                    priority="high",
+                    labels=["dogfood", "dispatcher"],
+                    metadata={
+                        "parentTaskId": "taskrootfg01",
+                        "sourceTaskId": "taskrootfg01",
+                        "planningReason": "task_next_step",
+                        "recommendedPrompt": "继续推进 generic child follow-up。",
+                        "recommendedAgent": "codex",
+                        "acceptanceChecks": ["继续推进"],
+                        "suggestedRefs": [],
+                    },
+                )
+            )
+        return "taskrootfg01"
+
+    async def _seed_retryable_child_for_parent(self, parent_task_id: str) -> str:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskadptc001",
+                    title="等待后续修复的 child task",
+                    description="这里有失败 run，但继续时应该先 adopt 已通过结果。",
+                    repo_path="D:/Repos/KAM",
+                    status="in_progress",
+                    priority="high",
+                    labels=["dogfood", "child"],
+                    metadata={
+                        "parentTaskId": parent_task_id,
+                        "sourceTaskId": parent_task_id,
+                        "planningReason": "failed_run_follow_up",
+                        "recommendedPrompt": "修复失败 child task 并重新验证。",
+                        "recommendedAgent": "codex",
+                        "acceptanceChecks": ["修复失败", "重新验证"],
+                        "suggestedRefs": [],
+                    },
+                )
+            )
+            await conn.execute(
+                ContextSnapshot.__table__.insert().values(
+                    id="snapadptc01",
+                    task_id="taskadptc001",
+                    summary="Child retry snapshot",
+                    content="## Task\n标题：等待后续修复的 child task",
+                    focus="这里本来可以 retry，但应先 adopt 已通过结果。",
+                )
+            )
+            await conn.execute(
+                TaskRun.__table__.insert().values(
+                    id="runadptc001",
+                    task_id="taskadptc001",
+                    agent="codex",
+                    status="failed",
+                    task="修复失败 child task 并重新验证。",
+                    result_summary="执行失败：AssertionError: retry me later",
+                    changed_files=["backend/services/task_dispatcher.py"],
+                    check_passed=False,
+                    raw_output="AssertionError: retry me later",
+                )
+            )
+        return "taskadptc001"
 
     async def _seed_parent_selection_gap(self) -> None:
         async with engine.begin() as conn:

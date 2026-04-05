@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from db import get_db
 from models import ContextSnapshot, ReviewCompare, Task, TaskRef, TaskRun, TaskRunArtifact
+from services.run_engine import wait_for_background_runs
 from services.task_autodrive import reset_autodrive_runtime_state
 
 
@@ -47,6 +48,7 @@ async def seed_harness(payload: SeedHarnessRequest, db: AsyncSession = Depends(g
 
     if payload.reset:
         reset_autodrive_runtime_state(clear_persistence=True)
+        await wait_for_background_runs()
         await _reset_dev_data(db)
 
     existing = await db.get(Task, "task-harness-cutover")

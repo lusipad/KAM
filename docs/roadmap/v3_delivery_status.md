@@ -8,11 +8,11 @@
 - dogfood 验证基线：已稳定
 - 最小 harness backend：已接上
 - 默认前端入口：已切到 task-first workbench
-- task self-planning：已具备可执行 child task 能力
-- task self-dispatch：已具备最小可用能力
-- task self-continue：已具备最小可用能力
+- task self-planning：已具备显式信号排序和可执行 child task 能力
+- task self-dispatch：已具备显式优先级调度
+- task self-continue：已具备显式优先级调度
 - task family auto-drive：已具备当前任务族级别的 opt-in 无人值守能力
-- global backlog auto-drive：已具备跨 family、可重启恢复、带最小跨进程 lease/dedupe 的无人值守能力
+- global backlog auto-drive：已具备跨 family、可重启恢复、跨进程 lease/dedupe，以及 cold-start chaos 回归覆盖的无人值守能力
 - V3 legacy runtime：已退场
 
 ## 已完成
@@ -42,6 +42,8 @@
 - planner 生成的 child task 会自动带上推荐 Prompt、验收检查项和建议 refs，并可直接开跑
 - KAM 已可从现有任务池里自动接下一张任务；没有可跑 child task 时会先拆一张再开跑
 - KAM 已可围绕当前 task family 自动继续推进：优先 `adopt / retry / plan_and_dispatch / stop`
+- `dispatch-next / continue` 已切成显式 ranking：会稳定区分 `adopt / retry / existing runnable task / parent planning`，并优先处理强信号失败任务而不是弱 generic child
+- planner follow-up 已切成显式 source ranking：会优先使用最新 terminal run / compare 信号，不再让旧失败 run 压过更新的通过结果
 - KAM 已可对当前 task family 开启自动托管：run 完成后会继续复用 `continue_task()`，直到显式 `stop`
 - 新增 `/api/tasks/{task_id}/autodrive/start` 与 `/api/tasks/{task_id}/autodrive/stop`
 - KAM 已可开启全局无人值守：会跨 task family 继续接活，而不是只停留在单个 root task 上
@@ -53,6 +55,7 @@
 - global auto-drive 状态面板已返回结构化 lease / health 字段，能直接看到 owner、heartbeat、stale 与最近状态更新时间
 - 已补真实多进程 lease 回归：验证第二个进程会被 active owner 挡住，owner 释放后新的进程可以接管
 - 已补真实 crash failover 回归：持有 lease 的子进程被强制 kill 后，TTL 到期前仍会阻挡其他进程，TTL 到期后可自动接管
+- 已补 cold-start chaos 回归：覆盖 `persisted enabled + stale lease reclaim`，以及 `persisted enabled + foreign lease wait -> TTL 后二次冷启动接管`
 - global auto-drive supervisor 若被意外 cancel，只要全局开关仍开启，就会自动拉起新的 loop
 - 前端已新增全局无人值守状态面板与开关
 - 新增 harness smoke
@@ -66,10 +69,8 @@
 
 ### 需要继续推进
 
-- 把 task self-planning 从当前启发式继续做硬：引入更稳定的 repo/task 信号排序和更细的完成定义
-- 把 next-task / continue 调度策略继续做硬：完成定义、重试策略，以及失败任务、待 adopt 任务与新任务之间的排序
-- 把当前 global auto-drive 继续做硬：更多 OS-level crash / cold-start chaos 场景回归，以及更细的恢复可观测性仍未做
 - 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
+- 如果后续要上更长时间无人值守，仍可继续补更细的恢复可观测性，但它已不是当前交付阻塞项
 
 ### 明确不优先做
 
@@ -81,7 +82,7 @@
 ## 当前建议
 
 - 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
-- 下一步优先把 next-task / continue 调度策略继续做硬，同时按 OS-level crash / cold-start 补更多 chaos 回归
+- 继续以 `verify-local.ps1` + 默认真实 `codex` smoke 作为主门禁，围绕当前 ranking 策略持续 dogfood
 - 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档

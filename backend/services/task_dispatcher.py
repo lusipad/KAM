@@ -56,6 +56,16 @@ class TaskContinueResult:
         }
 
 
+@dataclass(frozen=True)
+class _ContinueCandidate:
+    action: str
+    task: Task
+    rank: tuple[int, ...]
+    run: TaskRun | None = None
+    source: str | None = None
+    planned_from_task_id: str | None = None
+
+
 class TaskDispatcherService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -133,9 +143,22 @@ class TaskDispatcherService:
                 scope_task_id=scope_task_id,
             )
 
-        adopt_candidate = self._pick_latest_adoptable_run(scoped_tasks)
-        if adopt_candidate is not None:
-            adopt_task, adopt_run = adopt_candidate
+        candidate = self._pick_continue_candidate(
+            scoped_tasks,
+            create_plan_if_needed=create_plan_if_needed,
+        )
+        if candidate is None:
+            return TaskContinueResult(
+                action="stop",
+                reason="no_high_value_action",
+                summary="当前没有更高价值的自动下一步，先停在这里。",
+                task=scope_root,
+                scope_task_id=scope_task_id,
+            )
+
+        if candidate.action == "adopt" and candidate.run is not None:
+            adopt_task = candidate.task
+            adopt_run = candidate.run
             adopt_result = await RunEngine(self.db).adopt_run(adopt_run.id)
             refreshed_task = await self.db.get(Task, adopt_task.id)
             refreshed_run = await self.db.get(TaskRun, adopt_run.id)
@@ -159,9 +182,9 @@ class TaskDispatcherService:
                 error=str(adopt_result.get("error") or "adopt_failed"),
             )
 
-        retry_candidate = self._pick_retry_candidate(scoped_tasks)
-        if retry_candidate is not None:
-            retry_task, failed_run = retry_candidate
+        if candidate.action == "retry" and candidate.run is not None:
+            retry_task = candidate.task
+            failed_run = candidate.run
             failed_run_id = failed_run.id
             if retry_task.status == "open":
                 retry_task.status = "in_progress"
@@ -178,28 +201,30 @@ class TaskDispatcherService:
                     scope_task_id=scope_task_id,
                 )
 
-        dispatched = await self.dispatch_next(create_plan_if_needed=create_plan_if_needed, task_id=task_id)
-        if dispatched is not None:
+        dispatched = await self.dispatch_next(
+            create_plan_if_needed=candidate.action == "plan_parent",
+            task_id=task_id,
+        )
+        if dispatched is None:
             return TaskContinueResult(
-                action="plan_and_dispatch",
-                reason="dispatched_next_runnable_task",
-                summary=(
-                    f"已先拆后跑：{dispatched.task.title}"
-                    if dispatched.source == "planned_task"
-                    else f"已接着推进现成任务：{dispatched.task.title}"
-                ),
-                task=dispatched.task,
-                run=dispatched.run,
-                source=dispatched.source,
-                planned_from_task_id=dispatched.planned_from_task_id,
+                action="stop",
+                reason="no_high_value_action",
+                summary="当前没有更高价值的自动下一步，先停在这里。",
+                task=scope_root,
                 scope_task_id=scope_task_id,
             )
-
         return TaskContinueResult(
-            action="stop",
-            reason="no_high_value_action",
-            summary="当前没有更高价值的自动下一步，先停在这里。",
-            task=scope_root,
+            action="plan_and_dispatch",
+            reason="dispatched_next_runnable_task",
+            summary=(
+                f"已先拆后跑：{dispatched.task.title}"
+                if dispatched.source == "planned_task"
+                else f"已接着推进现成任务：{dispatched.task.title}"
+            ),
+            task=dispatched.task,
+            run=dispatched.run,
+            source=dispatched.source,
+            planned_from_task_id=dispatched.planned_from_task_id,
             scope_task_id=scope_task_id,
         )
 
@@ -294,10 +319,82 @@ class TaskDispatcherService:
             return None
         candidates.sort(
             key=lambda item: (
-                self._priority_rank(item[0].priority),
+                self._retry_candidate_signal_rank(item[0], item[1]),
                 -item[1].created_at.timestamp(),
+                -item[0].updated_at.timestamp(),
             )
         )
+        return candidates[0]
+
+    def _pick_continue_candidate(
+        self,
+        tasks: list[Task],
+        *,
+        create_plan_if_needed: bool,
+    ) -> _ContinueCandidate | None:
+        candidates: list[_ContinueCandidate] = []
+
+        adopt_candidate = self._pick_latest_adoptable_run(tasks)
+        if adopt_candidate is not None:
+            adopt_task, adopt_run = adopt_candidate
+            candidates.append(
+                _ContinueCandidate(
+                    action="adopt",
+                    task=adopt_task,
+                    run=adopt_run,
+                    rank=(
+                        self._continue_action_rank("adopt"),
+                        self._planning_reason_rank(adopt_task.metadata_ or {}),
+                        self._scope_rank(adopt_task),
+                        self._priority_rank(adopt_task.priority),
+                        -adopt_run.created_at.timestamp(),
+                    ),
+                )
+            )
+
+        retry_candidate = self._pick_retry_candidate(tasks)
+        if retry_candidate is not None:
+            retry_task, retry_run = retry_candidate
+            candidates.append(
+                _ContinueCandidate(
+                    action="retry",
+                    task=retry_task,
+                    run=retry_run,
+                    rank=(
+                        self._continue_action_rank("retry"),
+                        self._retry_candidate_signal_rank(retry_task, retry_run),
+                        self._priority_rank(retry_task.priority),
+                        -retry_run.created_at.timestamp(),
+                    ),
+                )
+            )
+
+        existing = self._pick_existing_runnable_task(tasks)
+        if existing is not None:
+            candidates.append(
+                _ContinueCandidate(
+                    action="dispatch_existing",
+                    task=existing,
+                    source="existing_task",
+                    rank=(self._continue_action_rank("dispatch_existing"), *self._existing_task_sort_key(existing)),
+                )
+            )
+        elif create_plan_if_needed:
+            parent = self._pick_parent_for_planning(tasks)
+            if parent is not None:
+                candidates.append(
+                    _ContinueCandidate(
+                        action="plan_parent",
+                        task=parent,
+                        source="planned_task",
+                        planned_from_task_id=parent.id,
+                        rank=(self._continue_action_rank("plan_parent"), *self._parent_task_sort_key(parent)),
+                    )
+                )
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item.rank)
         return candidates[0]
 
     def _is_runnable_existing_task(self, task: Task) -> bool:
@@ -330,21 +427,23 @@ class TaskDispatcherService:
             return False
         return self._consecutive_failed_runs(task) < 2
 
-    def _existing_task_sort_key(self, task: Task) -> tuple[int, int, int, float]:
+    def _existing_task_sort_key(self, task: Task) -> tuple[int, int, int, int, int, float]:
         latest_run = task.runs[-1] if task.runs else None
         run_rank = 0 if latest_run is not None and latest_run.status == "failed" else 1
-        child_rank = 0 if (task.metadata_ or {}).get("parentTaskId") else 1
         return (
             run_rank,
-            child_rank,
+            self._task_status_rank(task.status),
+            self._planning_reason_rank(task.metadata_ or {}),
+            self._scope_rank(task),
             self._priority_rank(task.priority),
             -task.updated_at.timestamp(),
         )
 
-    def _parent_task_sort_key(self, task: Task) -> tuple[int, int, float]:
-        status_rank = 0 if task.status == "in_progress" else 1
+    def _parent_task_sort_key(self, task: Task) -> tuple[int, int, int, float]:
+        latest_run = task.runs[-1] if task.runs else None
         return (
-            status_rank,
+            self._parent_planning_signal_rank(task, latest_run),
+            self._task_status_rank(task.status),
             self._priority_rank(task.priority),
             -task.updated_at.timestamp(),
         )
@@ -369,6 +468,60 @@ class TaskDispatcherService:
     def _recommended_agent(self, metadata: dict[str, object]) -> str:
         value = metadata.get("recommendedAgent")
         return "claude-code" if value == "claude-code" else "codex"
+
+    def _continue_action_rank(self, action: str) -> int:
+        if action == "adopt":
+            return 0
+        if action == "retry":
+            return 1
+        if action == "dispatch_existing":
+            return 2
+        if action == "plan_parent":
+            return 3
+        return 4
+
+    def _scope_rank(self, task: Task) -> int:
+        return 0 if (task.metadata_ or {}).get("parentTaskId") else 1
+
+    def _task_status_rank(self, status: str | None) -> int:
+        normalized = (status or "").strip().lower()
+        if normalized == "failed":
+            return 0
+        if normalized == "in_progress":
+            return 1
+        if normalized == "open":
+            return 2
+        return 3
+
+    def _planning_reason_rank(self, metadata: dict[str, object]) -> int:
+        reason = str(metadata.get("planningReason") or "").strip()
+        if reason == "failed_run_follow_up":
+            return 0
+        if reason == "passed_run_not_adopted":
+            return 1
+        if reason == "review_compare_follow_up":
+            return 2
+        if reason == "task_next_step":
+            return 3
+        return 4
+
+    def _retry_candidate_signal_rank(self, task: Task, run: TaskRun) -> int:
+        latest_run = task.runs[-1] if task.runs else None
+        latest_failed_rank = 0 if latest_run is not None and latest_run.id == run.id else 1
+        return (
+            latest_failed_rank * 100
+            + self._task_status_rank(task.status) * 10
+            + self._planning_reason_rank(task.metadata_ or {})
+        )
+
+    def _parent_planning_signal_rank(self, task: Task, latest_run: TaskRun | None) -> int:
+        if latest_run is not None and latest_run.status == "failed":
+            return 0
+        if latest_run is not None and latest_run.status == "passed" and latest_run.adopted_at is None:
+            return 1
+        if task.status == "failed":
+            return 2
+        return 3
 
     def _scope_root_task_id(self, tasks: list[Task], task_id: str | None) -> str | None:
         if task_id is None:
