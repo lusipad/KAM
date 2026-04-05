@@ -180,7 +180,7 @@ class PRReviewMonitorTests(unittest.TestCase):
                 patch.object(pr_review_monitor, "_ensure_base_clone"),
                 patch.object(pr_review_monitor, "_resolve_github_token", return_value="token"),
                 patch.object(pr_review_monitor, "GitHubPRAdapter", return_value=FakeAdapter(current_state, changes, actions)),
-                patch.object(pr_review_monitor, "_enqueue_task_to_harness", return_value={"id": "taskkam0001"}),
+                patch.object(pr_review_monitor, "_enqueue_task_to_harness", return_value={"id": "taskkam0001"}) as mocked_enqueue,
                 patch.object(
                     pr_review_monitor,
                     "_start_harness_global_autodrive",
@@ -192,12 +192,20 @@ class PRReviewMonitorTests(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             mocked_resolve_codex.assert_not_called()
+            enqueue_args = mocked_enqueue.call_args.args
+            self.assertEqual(enqueue_args[0], "http://127.0.0.1:8000/api")
+            payload = enqueue_args[1]
+            self.assertEqual(payload["metadata"]["sourceKind"], "github_pr_review_comments")
+            self.assertEqual(payload["metadata"]["sourceDedupKey"], "github_pr_review_comments:lusipad/KAM:4518")
+            self.assertTrue(any(ref.get("metadata", {}).get("intakeSourceKind") == "github_pr_review_comments" for ref in payload["refs"]))
             saved_state = json.loads((output_dir / "state.json").read_text(encoding="utf-8"))
             summary = json.loads((output_dir / "last-run.json").read_text(encoding="utf-8"))
             self.assertEqual(saved_state, current_state)
             self.assertEqual(summary["status"], "enqueued")
             self.assertEqual(summary["taskMode"], "harness_queue")
             self.assertEqual(summary["taskId"], "taskkam0001")
+            self.assertEqual(summary["message"], "检测到新评论，已同步到 KAM 任务池。")
+            self.assertNotIn("taskAction", summary)
             self.assertTrue(summary["autodrive"]["enabled"])
 
 

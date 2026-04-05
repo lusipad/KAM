@@ -197,6 +197,7 @@ pwsh -File .\install-pr-review-monitor.ps1 -Repo lusipad/KAM -PullRequest 4518
 ```
 
 默认模式会把新评论写入本机正在运行的 KAM backend（默认 `http://127.0.0.1:8000/api`），由 KAM 自己接单、执行并回推到 PR 分支。
+如果同一个 `repo + PR` 已经存在尚未实际执行的 review 任务，KAM intake 会优先刷新原任务而不是重复创建并行任务；一旦该任务已经产生 run，后续评论会进入新的后继任务。
 
 如果你要保留旧的“监控脚本直接跑 Codex”旁路，可显式切回：
 

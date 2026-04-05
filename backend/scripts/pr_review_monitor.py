@@ -333,6 +333,8 @@ def _build_harness_task_payload(
     create_run: dict[str, Any],
 ) -> dict[str, Any]:
     review_comments = list(changes.get("review_comments", []))
+    source_kind = "github_pr_review_comments"
+    source_dedup_key = f"{source_kind}:{repo}:{pull_number}"
     summarized_comments = []
     for item in review_comments[:5]:
         body = " ".join(str(item.get("body", "")).split())
@@ -354,7 +356,14 @@ def _build_harness_task_payload(
     refs: list[dict[str, Any]] = []
     pull_url = meta.get("pullUrl")
     if isinstance(pull_url, str) and pull_url.strip():
-        refs.append({"kind": "url", "label": f"{repo} PR #{pull_number}", "value": pull_url.strip()})
+        refs.append(
+            {
+                "kind": "url",
+                "label": f"{repo} PR #{pull_number}",
+                "value": pull_url.strip(),
+                "metadata": {"intakeSourceKind": source_kind},
+            }
+        )
 
     unique_paths: list[str] = []
     for item in review_comments:
@@ -367,7 +376,7 @@ def _build_harness_task_payload(
                 "kind": "file",
                 "label": f"PR 文件 · {path}",
                 "value": path,
-                "metadata": {"source": "github_review_comment"},
+                "metadata": {"source": "github_review_comment", "intakeSourceKind": source_kind},
             }
         )
 
@@ -380,7 +389,7 @@ def _build_harness_task_payload(
                     "kind": "url",
                     "label": f"Review comment #{comment_id}",
                     "value": comment_url.strip(),
-                    "metadata": {"commentId": comment_id},
+                    "metadata": {"commentId": comment_id, "intakeSourceKind": source_kind},
                 }
             )
 
@@ -388,7 +397,8 @@ def _build_harness_task_payload(
     metadata: dict[str, Any] = {
         "recommendedPrompt": params.get("task"),
         "recommendedAgent": params.get("agent", "codex"),
-        "sourceKind": "github_pr_review_comments",
+        "sourceKind": source_kind,
+        "sourceDedupKey": source_dedup_key,
         "sourceRepo": repo,
         "sourcePullNumber": pull_number,
         "sourceMeta": meta,
@@ -528,7 +538,7 @@ def main() -> int:
                 summary["task"] = create_run["params"]["task"]
                 summary["taskId"] = created_task.get("id")
                 summary["status"] = "enqueued"
-                summary["message"] = "检测到新评论，已写入 KAM 任务池。"
+                summary["message"] = "检测到新评论，已同步到 KAM 任务池。"
                 _write_json(state_path, current_state)
                 try:
                     summary["autodrive"] = _start_harness_global_autodrive(args.kam_url)

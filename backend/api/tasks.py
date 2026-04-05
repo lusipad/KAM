@@ -137,6 +137,23 @@ async def stop_global_autodrive(db: AsyncSession = Depends(get_db)):
 
 @router.post("")
 async def create_task(payload: TaskCreate, db: AsyncSession = Depends(get_db)):
+    metadata = dict(payload.metadata or {}) or None
+    dedup_key = _source_dedup_key(metadata)
+    if dedup_key:
+        reusable_task = await _find_reusable_source_task(db, dedup_key)
+        if reusable_task is not None:
+            reusable_task.title = payload.title.strip()
+            reusable_task.description = payload.description.strip() if payload.description else None
+            reusable_task.repo_path = payload.repoPath.strip() if payload.repoPath else None
+            reusable_task.priority = payload.priority.strip()
+            reusable_task.labels = _merge_labels(reusable_task.labels or [], payload.labels)
+            reusable_task.metadata_ = _merge_task_metadata(reusable_task.metadata_ or {}, metadata)
+            await _refresh_source_refs(db, reusable_task, payload.refs, metadata)
+            reusable_task.updated_at = now()
+            await db.commit()
+            await db.refresh(reusable_task)
+            return reusable_task.to_dict()
+
     task = Task(
         title=payload.title.strip(),
         description=payload.description.strip() if payload.description else None,
@@ -144,23 +161,89 @@ async def create_task(payload: TaskCreate, db: AsyncSession = Depends(get_db)):
         status=payload.status.strip(),
         priority=payload.priority.strip(),
         labels=[label.strip() for label in payload.labels if label.strip()],
-        metadata_=dict(payload.metadata or {}) or None,
+        metadata_=metadata,
     )
     db.add(task)
     await db.flush()
-    for ref_payload in payload.refs:
+    _add_task_refs(db, task.id, payload.refs)
+    await db.commit()
+    await db.refresh(task)
+    return task.to_dict()
+
+
+def _source_dedup_key(metadata: dict[str, Any] | None) -> str | None:
+    if not metadata:
+        return None
+    value = metadata.get("sourceDedupKey")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _merge_labels(existing: list[str], incoming: list[str]) -> list[str]:
+    merged: list[str] = []
+    for raw in [*existing, *incoming]:
+        label = raw.strip()
+        if label and label not in merged:
+            merged.append(label)
+    return merged
+
+
+def _merge_task_metadata(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(existing)
+    merged.update(incoming)
+    return merged
+
+
+def _task_is_terminal(task: Task) -> bool:
+    return task.status in {"archived", "done", "verified", "blocked"}
+
+
+def _task_is_reusable_for_source_update(task: Task) -> bool:
+    if _task_is_terminal(task):
+        return False
+    return not task.runs and task.status in {"open", "in_progress"}
+
+
+async def _find_reusable_source_task(db: AsyncSession, dedup_key: str) -> Task | None:
+    result = await db.execute(
+        select(Task)
+        .where(Task.archived_at.is_(None))
+        .options(selectinload(Task.refs), selectinload(Task.runs))
+        .order_by(desc(Task.updated_at))
+    )
+    for task in result.scalars():
+        if _source_dedup_key(task.metadata_ or {}) != dedup_key:
+            continue
+        if _task_is_reusable_for_source_update(task):
+            return task
+    return None
+
+
+async def _refresh_source_refs(
+    db: AsyncSession,
+    task: Task,
+    refs: list[TaskRefCreate],
+    metadata: dict[str, Any],
+) -> None:
+    intake_source_kind = str(metadata.get("sourceKind") or "").strip()
+    existing_refs = list(task.refs)
+    for ref in existing_refs:
+        ref_source_kind = str((ref.metadata_ or {}).get("intakeSourceKind") or "").strip()
+        if intake_source_kind and ref_source_kind == intake_source_kind:
+            await db.delete(ref)
+    _add_task_refs(db, task.id, refs)
+
+
+def _add_task_refs(db: AsyncSession, task_id: str, refs: list[TaskRefCreate]) -> None:
+    for ref_payload in refs:
         db.add(
             TaskRef(
-                task_id=task.id,
+                task_id=task_id,
                 kind=ref_payload.kind.strip(),
                 label=ref_payload.label.strip(),
                 value=ref_payload.value.strip(),
                 metadata_=ref_payload.metadata,
             )
         )
-    await db.commit()
-    await db.refresh(task)
-    return task.to_dict()
 
 
 @router.get("/{task_id}")
