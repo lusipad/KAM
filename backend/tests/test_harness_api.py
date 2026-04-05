@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -39,6 +40,7 @@ from services.task_autodrive import (  # noqa: E402
     GLOBAL_AUTO_DRIVE_LEASE_FILENAME,
     GLOBAL_AUTO_DRIVE_STATE_FILENAME,
     GlobalAutoDriveService,
+    _GLOBAL_STATE,
     reset_autodrive_runtime_state,
 )
 
@@ -623,6 +625,87 @@ class HarnessApiTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_global_autodrive_lease_blocks_second_process_until_owner_releases(self):
+        owner = self._spawn_global_lease_probe_process(sleep_seconds=3.0, release_on_exit=True)
+        try:
+            first = self._read_global_lease_probe_result(owner)
+            self.assertTrue(first["acquired"])
+            self.assertTrue(first["lease"]["ownedByCurrentProcess"])
+
+            contender = self._run_global_lease_probe_process()
+            self.assertFalse(contender["acquired"])
+            self.assertEqual(contender["lease"]["hostname"], first["lease"]["hostname"])
+            self.assertEqual(contender["lease"]["pid"], first["lease"]["pid"])
+            self.assertFalse(contender["lease"]["ownedByCurrentProcess"])
+
+            owner.wait(timeout=5)
+            self.assertEqual(owner.returncode, 0)
+
+            takeover = self._run_global_lease_probe_process()
+            self.assertTrue(takeover["acquired"])
+            self.assertTrue(takeover["lease"]["ownedByCurrentProcess"])
+        finally:
+            if owner.poll() is None:
+                owner.terminate()
+                owner.wait(timeout=5)
+            if owner.stdout is not None:
+                owner.stdout.close()
+            if owner.stderr is not None:
+                owner.stderr.close()
+
+    def test_global_autodrive_watchdog_restarts_cancelled_supervisor(self):
+        async def scenario():
+            async def steady_continue_task(_service, *, task_id, create_plan_if_needed):
+                return SimpleNamespace(
+                    action="stop",
+                    reason="no_high_value_action",
+                    summary="当前没有更高价值的下一步。",
+                    task=None,
+                    scope_task_id=None,
+                    run=None,
+                    error=None,
+                )
+
+            with (
+                patch.object(type(config.settings), "is_test_env", new_callable=PropertyMock, return_value=False),
+                patch("services.task_autodrive.GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS", new=0.05),
+                patch("services.task_dispatcher.TaskDispatcherService.continue_task", new=steady_continue_task),
+            ):
+                service = GlobalAutoDriveService()
+                await service.start()
+
+                deadline = asyncio.get_running_loop().time() + 1.0
+                original_task = None
+                while asyncio.get_running_loop().time() < deadline:
+                    original_task = _GLOBAL_STATE.task
+                    if original_task is not None and not original_task.done():
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    self.fail("global autodrive did not start a production supervisor task")
+
+                original_task.cancel()
+
+                deadline = asyncio.get_running_loop().time() + 1.0
+                restarted_task = None
+                while asyncio.get_running_loop().time() < deadline:
+                    restarted_task = _GLOBAL_STATE.task
+                    if restarted_task is not None and restarted_task is not original_task and not restarted_task.done():
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    self.fail("global autodrive watchdog did not restart the cancelled supervisor")
+
+                status = await service.get_status()
+                self.assertTrue(status.enabled)
+                self.assertTrue(status.running)
+                self.assertIn(status.last_reason, {"global_auto_drive_restarting", "no_high_value_action"})
+
+                stop_result = await service.stop()
+                self.assertFalse(stop_result.enabled)
+
+        asyncio.run(scenario())
+
     def test_startup_marks_inflight_runs_as_failed(self):
         task = self.client.post(
             "/api/tasks",
@@ -879,6 +962,82 @@ class HarnessApiTests(unittest.TestCase):
         if not lease_path.exists():
             return None
         return json.loads(lease_path.read_text(encoding="utf-8"))
+
+    def _spawn_global_lease_probe_process(self, *, sleep_seconds: float, release_on_exit: bool) -> subprocess.Popen[str]:
+        env = self._global_lease_probe_env(sleep_seconds=sleep_seconds, release_on_exit=release_on_exit)
+        return subprocess.Popen(
+            [sys.executable, "-u", "-c", self._global_lease_probe_script()],
+            cwd=str(BACKEND_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+
+    def _run_global_lease_probe_process(self) -> dict[str, object]:
+        env = self._global_lease_probe_env(sleep_seconds=0.0, release_on_exit=False)
+        completed = subprocess.run(
+            [sys.executable, "-u", "-c", self._global_lease_probe_script()],
+            cwd=str(BACKEND_ROOT),
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+        return json.loads(completed.stdout.strip())
+
+    def _read_global_lease_probe_result(self, process: subprocess.Popen[str]) -> dict[str, object]:
+        assert process.stdout is not None
+        line = process.stdout.readline().strip()
+        if not line:
+            stderr = process.stderr.read().strip() if process.stderr is not None else ""
+            self.fail(f"lease probe produced no stdout: {stderr}")
+        return json.loads(line)
+
+    def _global_lease_probe_env(self, *, sleep_seconds: float, release_on_exit: bool) -> dict[str, str]:
+        env = os.environ.copy()
+        env["DATABASE_URL"] = f"sqlite+aiosqlite:///{(TMP_ROOT / 'kam-harness.db').as_posix()}"
+        env["STORAGE_PATH"] = str(TMP_ROOT)
+        env["RUN_ROOT"] = str(TMP_ROOT / "runs")
+        env["APP_ENV"] = "test"
+        env["KAM_TEST_LEASE_SLEEP"] = str(sleep_seconds)
+        env["KAM_TEST_LEASE_RELEASE"] = "1" if release_on_exit else "0"
+        return env
+
+    def _global_lease_probe_script(self) -> str:
+        return textwrap.dedent(
+            f"""
+            import json
+            import os
+            import sys
+            import time
+            from pathlib import Path
+
+            backend_root = Path(r\"{BACKEND_ROOT}\")
+            if str(backend_root) not in sys.path:
+                sys.path.insert(0, str(backend_root))
+
+            from services.task_autodrive import (
+                _acquire_or_refresh_global_lease,
+                _read_global_lease_status,
+                _release_global_lease_if_owned,
+            )
+
+            acquired, _payload = _acquire_or_refresh_global_lease()
+            print(json.dumps({{"acquired": acquired, "lease": _read_global_lease_status()}}, ensure_ascii=False), flush=True)
+
+            sleep_seconds = float(os.environ.get("KAM_TEST_LEASE_SLEEP", "0"))
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+
+            if os.environ.get("KAM_TEST_LEASE_RELEASE") == "1":
+                _release_global_lease_if_owned()
+            """
+        )
 
     async def _seed_retryable_child_task(self) -> tuple[str, str]:
         async with engine.begin() as conn:

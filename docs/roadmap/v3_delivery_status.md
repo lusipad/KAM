@@ -51,6 +51,8 @@
 - global auto-drive 已增加本地文件 lease：并发 KAM 进程会做 owner 去重、fresh lease 等待、stale lease 回收，避免重复接同一批活
 - global auto-drive loop 遇到调度异常后会自动重试，而不是保持 enabled 但后台 supervisor 已退出
 - global auto-drive 状态面板已返回结构化 lease / health 字段，能直接看到 owner、heartbeat、stale 与最近状态更新时间
+- 已补真实多进程 lease 回归：验证第二个进程会被 active owner 挡住，owner 释放后新的进程可以接管
+- global auto-drive supervisor 若被意外 cancel，只要全局开关仍开启，就会自动拉起新的 loop
 - 前端已新增全局无人值守状态面板与开关
 - 新增 harness smoke
 - 新增 opt-in 真实 agent smoke（默认覆盖 `codex` 的临时 git repo 改动、Lore commit 和 adopt 链路）
@@ -66,7 +68,7 @@
 - 把 task self-planning 从当前启发式继续做硬：引入更稳定的 repo/task 信号排序和更细的完成定义
 - 把真实 `codex` 仓库改动链路稳固成默认 smoke 门禁
 - 把 next-task / continue 调度策略继续做硬：完成定义、重试策略，以及失败任务、待 adopt 任务与新任务之间的排序
-- 把当前 global auto-drive 继续做硬：更完整的 watchdog / health surface、真实多进程并发启动下的 race 证明、以及更细的恢复可观测性仍未做
+- 把当前 global auto-drive 继续做硬：更多 crash / chaos 场景回归，以及更细的恢复可观测性仍未做
 - 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
 
 ### 明确不优先做

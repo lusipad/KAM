@@ -377,9 +377,32 @@ def schedule_global_autodrive() -> bool:
     def _cleanup(done_task: asyncio.Task[None]) -> None:
         if _GLOBAL_STATE.task is done_task:
             _GLOBAL_STATE.task = None
+        if settings.is_test_env or not is_global_autodrive_enabled():
+            return
+        _update_global_state(
+            status="running",
+            summary="全局无人值守 supervisor 中断，正在自动重启。",
+            action="stop",
+            reason="global_auto_drive_restarting",
+            current_task_id=None,
+            current_scope_task_id=None,
+            current_run_id=None,
+            error="",
+        )
+        loop = done_task.get_loop()
+        if loop.is_closed():
+            return
+        loop.create_task(_restart_global_autodrive_after_delay())
 
     background_task.add_done_callback(_cleanup)
     return True
+
+
+async def _restart_global_autodrive_after_delay() -> None:
+    await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
+    if not is_global_autodrive_enabled() or is_global_autodrive_running():
+        return
+    await ensure_global_autodrive()
 
 
 async def _run_scope_autodrive(scope_task_id: str) -> bool:
