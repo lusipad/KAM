@@ -94,6 +94,14 @@ pwsh -File .\verify-local.ps1 -RunRealAgentSmoke -RealSmokeAgent codex
 
 `codex` 是当前默认 agent。`claude-code` 仍保留为可选执行目标和额外 smoke 目标，但不是默认主门禁。
 
+如果你要显式验证 `claude-code` 这条可选 lane：
+
+```powershell
+pwsh -File .\verify-local.ps1 -RunRealAgentSmoke -RealSmokeAgent claude-code
+```
+
+这条链路现在会先做 `claude auth status` readiness 预检，未登录时会在真实 smoke 开始前直接失败。
+
 如果你要直接看 task-first 界面：
 
 ```powershell

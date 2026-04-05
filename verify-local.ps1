@@ -61,16 +61,10 @@ function Assert-RealAgentSmokeReady {
         [string]$Agent
     )
 
-    if ($Agent -eq "codex") {
-        $codexCommand = Get-Command codex -ErrorAction SilentlyContinue
-        if (-not $codexCommand) {
-            throw "默认真实 agent smoke 需要可用的 codex 命令。若当前只想跑快速本地回归，请显式传入 -SkipRealAgentSmoke。"
-        }
-
-        & $codexCommand.Source login status *> $null
-        if ($LASTEXITCODE -ne 0) {
-            throw "默认真实 agent smoke 需要可用的 codex 登录态。若当前只想跑快速本地回归，请显式传入 -SkipRealAgentSmoke。"
-        }
+    $helperPath = Join-Path $RootDir "backend\\scripts\\agent_readiness.py"
+    $output = & $Python $helperPath --agent $Agent 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw (($output | Out-String).Trim())
     }
 }
 
@@ -101,6 +95,11 @@ try {
         "-NoProfile",
         "-Command",
         "& '$Python' -m unittest backend.tests.test_task_planner_api -v"
+    ) $RootDir
+    Invoke-CheckedProcess "Agent readiness 回归" $Pwsh @(
+        "-NoProfile",
+        "-Command",
+        "& '$Python' -m unittest backend.tests.test_agent_readiness -v"
     ) $RootDir
     Invoke-CheckedProcess "Run Engine Lore 回归" $Pwsh @(
         "-NoProfile",

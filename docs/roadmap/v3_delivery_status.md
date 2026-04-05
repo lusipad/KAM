@@ -62,6 +62,7 @@
 - 前端已新增全局无人值守状态面板与开关
 - 新增 harness smoke
 - `verify-local.ps1` 已默认纳入真实 `codex` agent smoke，覆盖临时 git repo 改动、Lore commit 和 adopt 链路
+- `claude-code` 作为可选 real smoke lane 已补 readiness 预检，会在 `claude auth status` 未就绪时提前失败，而不是跑到中途才报错
 - 新增 `POST /api/dev/seed-harness`
 - 移除旧 `projects / threads / home / watchers / memory` 运行时入口
 - 移除 V3 前端组件、类型层和验证基线

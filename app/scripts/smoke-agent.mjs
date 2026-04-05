@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
-import { backendDir, outputDir, startBackend, stopBackend, waitForHealth } from './smoke-support.mjs'
+import { backendDir, outputDir, resolvePython, startBackend, stopBackend, waitForHealth } from './smoke-support.mjs'
 
 
 const port = process.env.KAM_SMOKE_PORT || '8011'
@@ -114,7 +114,16 @@ function smokePrompt() {
 }
 
 
+function assertAgentReady() {
+  const python = resolvePython()
+  const helperPath = path.join(backendDir, 'scripts', 'agent_readiness.py')
+  runChecked(python, [helperPath, '--agent', agent])
+}
+
+
 async function main() {
+  assertAgentReady()
+
   const smokeDb = path.join(backendDir, 'storage', `smoke-agent-${agent}.db`)
   fs.rmSync(smokeDb, { force: true })
   const repoFixture = createTempRepo()
