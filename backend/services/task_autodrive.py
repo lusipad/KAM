@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -26,6 +29,8 @@ AUTO_DRIVE_MAX_STEPS = 8
 GLOBAL_AUTO_DRIVE_MAX_STEPS = 12
 GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS = 1.0
 GLOBAL_AUTO_DRIVE_DISABLED_SUMMARY = "当前还没有开启全局无人值守。"
+GLOBAL_AUTO_DRIVE_RECOVERED_SUMMARY = "已恢复全局无人值守，KAM 会继续跨 task family 接活。"
+GLOBAL_AUTO_DRIVE_STATE_FILENAME = "autodrive-global-state.json"
 
 
 @dataclass
@@ -222,6 +227,7 @@ class GlobalAutoDriveService:
         if not _GLOBAL_STATE.enabled:
             _reset_global_autodrive_state(enabled=True)
         _GLOBAL_STATE.enabled = True
+        await asyncio.to_thread(_persist_global_autodrive_enabled, True)
         _update_global_state(
             status="running",
             summary="已开启全局无人值守，KAM 会继续跨 task family 接活。",
@@ -238,6 +244,7 @@ class GlobalAutoDriveService:
 
     async def stop(self) -> GlobalAutoDriveControlResult:
         _GLOBAL_STATE.enabled = False
+        await asyncio.to_thread(_persist_global_autodrive_enabled, False)
         _update_global_state(
             status="disabled",
             summary="已停止全局无人值守。",
@@ -601,9 +608,25 @@ def _pending_tasks_for_current_loop() -> list[asyncio.Future[None]]:
     return [task for task in tasks if not task.done() and task.get_loop() is current_loop]
 
 
-def reset_autodrive_runtime_state() -> None:
+async def recover_autodrive_runtime_state() -> None:
+    if await asyncio.to_thread(_load_persisted_global_autodrive_enabled):
+        _reset_global_autodrive_state(enabled=True)
+        _update_global_state(status="running", summary=GLOBAL_AUTO_DRIVE_RECOVERED_SUMMARY, error="")
+        await ensure_global_autodrive()
+        return
+
+    if settings.is_test_env:
+        return
+
+    for scope_task_id in await _list_enabled_scope_task_ids():
+        await ensure_scope_autodrive(scope_task_id)
+
+
+def reset_autodrive_runtime_state(*, clear_persistence: bool = False) -> None:
     _STATE.scopes.clear()
     _reset_global_autodrive_state(enabled=False)
+    if clear_persistence:
+        _persist_global_autodrive_enabled(False)
 
 
 def _reset_global_autodrive_state(*, enabled: bool) -> None:
@@ -622,3 +645,57 @@ def _reset_global_autodrive_state(*, enabled: bool) -> None:
     _GLOBAL_STATE.current_run_id = None
     _GLOBAL_STATE.loop_count = 0
     _GLOBAL_STATE.error = None
+
+
+async def _list_enabled_scope_task_ids() -> list[str]:
+    async with async_session() as session:
+        result = await session.execute(
+            select(Task).where(Task.archived_at.is_(None)).order_by(Task.updated_at.desc())
+        )
+        tasks = list(result.scalars())
+
+    scope_task_ids: list[str] = []
+    seen_scope_ids: set[str] = set()
+    for task in tasks:
+        metadata = task.metadata_ or {}
+        if metadata.get(AUTO_DRIVE_ENABLED_KEY) is not True:
+            continue
+        if task.status in {"archived", "done", "verified", "blocked"}:
+            continue
+        scope_task_id = task.id
+        if scope_task_id in seen_scope_ids:
+            continue
+        seen_scope_ids.add(scope_task_id)
+        scope_task_ids.append(scope_task_id)
+    return scope_task_ids
+
+
+def _global_autodrive_state_path() -> Path:
+    return settings.storage_dir / GLOBAL_AUTO_DRIVE_STATE_FILENAME
+
+
+def _load_persisted_global_autodrive_enabled() -> bool:
+    state_path = _global_autodrive_state_path()
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+    return payload.get("enabled") is True
+
+
+def _persist_global_autodrive_enabled(enabled: bool) -> None:
+    state_path = _global_autodrive_state_path()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    if not enabled:
+        state_path.unlink(missing_ok=True)
+        return
+
+    payload = {
+        "enabled": True,
+        "updatedAt": now().isoformat(),
+    }
+    temp_path = state_path.with_suffix(f"{state_path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(state_path)

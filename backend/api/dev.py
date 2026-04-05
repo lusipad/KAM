@@ -46,7 +46,7 @@ async def seed_harness(payload: SeedHarnessRequest, db: AsyncSession = Depends(g
     _require_non_production()
 
     if payload.reset:
-        reset_autodrive_runtime_state()
+        reset_autodrive_runtime_state(clear_persistence=True)
         await _reset_dev_data(db)
 
     existing = await db.get(Task, "task-harness-cutover")

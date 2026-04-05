@@ -12,7 +12,7 @@
 - task self-dispatch：已具备最小可用能力
 - task self-continue：已具备最小可用能力
 - task family auto-drive：已具备当前任务族级别的 opt-in 无人值守能力
-- global backlog auto-drive：已具备进程内、跨 family 的最小无人值守能力
+- global backlog auto-drive：已具备进程内、跨 family、可重启恢复的最小无人值守能力
 - V3 legacy runtime：已退场
 
 ## 已完成
@@ -47,6 +47,7 @@
 - KAM 已可开启全局无人值守：会跨 task family 继续接活，而不是只停留在单个 root task 上
 - 新增 `/api/tasks/autodrive/global`、`/api/tasks/autodrive/global/start` 与 `/api/tasks/autodrive/global/stop`
 - run 完成后会优先回到 global auto-drive；若未开启 global，才回落到当前 task family auto-drive
+- 服务重启后会恢复 persisted global auto-drive，并把重启前残留的 `pending/running` runs 标记为中断失败，避免假活跃 run 卡死调度
 - 前端已新增全局无人值守状态面板与开关
 - 新增 harness smoke
 - 新增 opt-in 真实 agent smoke（默认覆盖 `codex` 的临时 git repo 改动、Lore commit 和 adopt 链路）
@@ -62,7 +63,7 @@
 - 把 task self-planning 从当前启发式继续做硬：引入更稳定的 repo/task 信号排序和更细的完成定义
 - 把真实 `codex` 仓库改动链路稳固成默认 smoke 门禁
 - 把 next-task / continue 调度策略继续做硬：完成定义、重试策略，以及失败任务、待 adopt 任务与新任务之间的排序
-- 把当前 global auto-drive 从进程内能力继续做硬：重启恢复、跨进程 lease / dedupe、以及更稳的 supervisor 生命周期仍未做
+- 把当前 global auto-drive 从单进程能力继续做硬：跨进程 lease / dedupe、以及更稳的 supervisor 生命周期仍未做
 - 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
 
 ### 明确不优先做
@@ -75,7 +76,7 @@
 ## 当前建议
 
 - 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
-- 下一步优先把 global auto-drive 做到可恢复、可去重、可长期运行，再把真实 `codex` 改仓库链路做成更硬的门禁
+- 下一步优先把 global auto-drive 做到可去重、可长期运行、可跨进程安全接活，再把真实 `codex` 改仓库链路做成更硬的门禁
 - 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档

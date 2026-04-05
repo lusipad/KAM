@@ -10,6 +10,8 @@ from fastapi.responses import FileResponse
 from api import api_router
 from config import settings
 from db import init_db
+from services.run_engine import recover_interrupted_runs
+from services.task_autodrive import recover_autodrive_runtime_state
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +23,8 @@ RESERVED_BACKEND_PREFIXES = ("api", "docs", "redoc", "openapi.json", "health")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await recover_interrupted_runs()
+    await recover_autodrive_runtime_state()
     yield
 
 

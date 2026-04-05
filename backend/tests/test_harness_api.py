@@ -38,12 +38,12 @@ class HarnessApiTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.client.__enter__()
-        reset_autodrive_runtime_state()
+        reset_autodrive_runtime_state(clear_persistence=True)
         asyncio.run(self._truncate_tables())
 
     def tearDown(self):
         asyncio.run(wait_for_background_runs())
-        reset_autodrive_runtime_state()
+        reset_autodrive_runtime_state(clear_persistence=True)
         self.client.__exit__(None, None, None)
         asyncio.run(engine.dispose())
 
@@ -479,6 +479,55 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(status["status"], "disabled")
         self.assertEqual(status["summary"], "当前还没有开启全局无人值守。")
 
+    def test_startup_recovers_persisted_global_autodrive_after_restart(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+        second_root_id = asyncio.run(self._seed_secondary_root_task())
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：restart recovery"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            start_response = self.client.post("/api/tasks/autodrive/global/start")
+            self.assertEqual(start_response.status_code, 200)
+
+            self._restart_client(clear_persistence=False)
+
+            status = self.client.get("/api/tasks/autodrive/global").json()
+
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["status"], "idle")
+        self.assertEqual(status["lastReason"], "no_high_value_action")
+
+        tasks = self.client.get("/api/tasks").json()["tasks"]
+        root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
+        self.assertGreaterEqual(len(root_two_children), 1)
+
+    def test_startup_marks_inflight_runs_as_failed(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "重启后收口 in-flight run",
+                "repoPath": "D:/Repos/KAM",
+                "status": "in_progress",
+                "priority": "high",
+            },
+        ).json()
+        asyncio.run(self._seed_running_run(task["id"]))
+
+        self._restart_client(clear_persistence=True)
+
+        detail = self.client.get(f"/api/tasks/{task['id']}").json()
+        self.assertEqual(len(detail["runs"]), 1)
+        self.assertEqual(detail["runs"][0]["status"], "failed")
+        self.assertEqual(detail["runs"][0]["resultSummary"], "执行中断：服务重启前的 run 未完成，已标记为 failed。")
+        self.assertIn("Harness run interrupted before completion", detail["runs"][0]["rawOutput"])
+
     def test_dispatch_next_tries_later_parent_when_first_parent_has_no_new_follow_up(self):
         asyncio.run(self._seed_parent_selection_gap())
 
@@ -683,6 +732,13 @@ class HarnessApiTests(unittest.TestCase):
             encoding="utf-8",
             errors="replace",
         )
+
+    def _restart_client(self, *, clear_persistence: bool) -> None:
+        self.client.__exit__(None, None, None)
+        asyncio.run(engine.dispose())
+        reset_autodrive_runtime_state(clear_persistence=clear_persistence)
+        self.client = TestClient(app)
+        self.client.__enter__()
 
     async def _seed_retryable_child_task(self) -> tuple[str, str]:
         async with engine.begin() as conn:

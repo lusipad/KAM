@@ -35,11 +35,11 @@ class TaskPlannerApiTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.client.__enter__()
-        reset_autodrive_runtime_state()
+        reset_autodrive_runtime_state(clear_persistence=True)
         asyncio.run(self._truncate_tables())
 
     def tearDown(self):
-        reset_autodrive_runtime_state()
+        reset_autodrive_runtime_state(clear_persistence=True)
         self.client.__exit__(None, None, None)
         asyncio.run(engine.dispose())
 

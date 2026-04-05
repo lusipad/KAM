@@ -465,3 +465,32 @@ async def wait_for_background_runs(timeout: float = 5.0) -> None:
             break
     remaining = deadline - asyncio.get_event_loop().time()
     await wait_for_background_autodrive(timeout=max(0.0, remaining))
+
+
+async def recover_interrupted_runs() -> int:
+    async with async_session() as session:
+        result = await session.execute(
+            select(TaskRun)
+            .where(TaskRun.status.in_(("pending", "running")))
+            .options(selectinload(TaskRun.task_rel))
+        )
+        stale_runs = list(result.scalars())
+        if not stale_runs:
+            return 0
+
+        recovered_count = 0
+        for run in stale_runs:
+            if run.id in _STATE.tasks and not _STATE.tasks[run.id].done():
+                continue
+            interruption_line = "Harness run interrupted before completion; marked failed during startup recovery."
+            run.status = "failed"
+            run.check_passed = False
+            run.result_summary = "执行中断：服务重启前的 run 未完成，已标记为 failed。"
+            run.raw_output = f"{run.raw_output or ''}\n{interruption_line}".strip()
+            if run.task_rel is not None:
+                run.task_rel.updated_at = now()
+            recovered_count += 1
+
+        if recovered_count:
+            await session.commit()
+        return recovered_count
