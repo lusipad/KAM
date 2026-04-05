@@ -193,29 +193,18 @@ def _merge_task_metadata(existing: dict[str, Any], incoming: dict[str, Any]) -> 
     return merged
 
 
-def _task_is_terminal(task: Task) -> bool:
-    return task.status in {"archived", "done", "verified", "blocked"}
-
-
-def _task_is_reusable_for_source_update(task: Task) -> bool:
-    if _task_is_terminal(task):
-        return False
-    return not task.runs and task.status in {"open", "in_progress"}
-
-
 async def _find_reusable_source_task(db: AsyncSession, dedup_key: str) -> Task | None:
     result = await db.execute(
         select(Task)
         .where(Task.archived_at.is_(None))
-        .options(selectinload(Task.refs), selectinload(Task.runs))
+        .where(Task.status.in_(("open", "in_progress")))
+        .where(Task.metadata_["sourceDedupKey"].as_string() == dedup_key)
+        .where(~Task.runs.any())
+        .options(selectinload(Task.refs))
         .order_by(desc(Task.updated_at))
+        .limit(1)
     )
-    for task in result.scalars():
-        if _source_dedup_key(task.metadata_ or {}) != dedup_key:
-            continue
-        if _task_is_reusable_for_source_update(task):
-            return task
-    return None
+    return result.scalars().first()
 
 
 async def _refresh_source_refs(

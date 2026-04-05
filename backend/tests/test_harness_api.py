@@ -263,6 +263,82 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(len(detail["refs"]), 2)
         self.assertEqual(detail["refs"][1]["label"], "Review comment #2")
 
+    def test_create_task_reuse_keeps_manual_refs_while_refreshing_source_refs(self):
+        first = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "处理 PR review 评论",
+                "description": "第一轮评论。",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+                "labels": ["dogfood", "github"],
+                "metadata": {
+                    "recommendedPrompt": "处理第一轮评论。",
+                    "recommendedAgent": "codex",
+                    "sourceKind": "github_pr_review_comments",
+                    "sourceDedupKey": "github_pr_review_comments:lusipad/KAM:4518",
+                },
+                "refs": [
+                    {
+                        "kind": "url",
+                        "label": "PR",
+                        "value": "https://github.com/lusipad/KAM/pull/4518",
+                        "metadata": {"intakeSourceKind": "github_pr_review_comments"},
+                    },
+                    {
+                        "kind": "url",
+                        "label": "Review comment #1",
+                        "value": "https://github.com/lusipad/KAM/pull/4518#discussion_r1",
+                        "metadata": {"intakeSourceKind": "github_pr_review_comments", "commentId": 1},
+                    },
+                ],
+            },
+        ).json()
+
+        manual_ref = self.client.post(
+            f"/api/tasks/{first['id']}/refs",
+            json={"kind": "file", "label": "Manual note", "value": "backend/services/run_engine.py"},
+        ).json()
+        self.assertEqual(manual_ref["label"], "Manual note")
+
+        self.client.post(
+            "/api/tasks",
+            json={
+                "title": "处理 PR review 评论",
+                "description": "第二轮评论。",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+                "labels": ["dogfood", "github"],
+                "metadata": {
+                    "recommendedPrompt": "处理第二轮评论。",
+                    "recommendedAgent": "codex",
+                    "sourceKind": "github_pr_review_comments",
+                    "sourceDedupKey": "github_pr_review_comments:lusipad/KAM:4518",
+                },
+                "refs": [
+                    {
+                        "kind": "url",
+                        "label": "PR",
+                        "value": "https://github.com/lusipad/KAM/pull/4518",
+                        "metadata": {"intakeSourceKind": "github_pr_review_comments"},
+                    },
+                    {
+                        "kind": "url",
+                        "label": "Review comment #2",
+                        "value": "https://github.com/lusipad/KAM/pull/4518#discussion_r2",
+                        "metadata": {"intakeSourceKind": "github_pr_review_comments", "commentId": 2},
+                    },
+                ],
+            },
+        )
+
+        detail = self.client.get(f"/api/tasks/{first['id']}").json()
+        self.assertEqual(len(detail["refs"]), 3)
+        self.assertEqual([ref["label"] for ref in detail["refs"]], ["Manual note", "PR", "Review comment #2"])
+        self.assertEqual(detail["refs"][0]["value"], "backend/services/run_engine.py")
+
     def test_create_task_creates_follow_up_when_same_source_task_is_already_running(self):
         first = self.client.post(
             "/api/tasks",
