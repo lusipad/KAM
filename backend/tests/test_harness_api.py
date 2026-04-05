@@ -10,7 +10,8 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import PropertyMock, patch
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -29,6 +30,7 @@ os.environ["RUN_ROOT"] = str(TMP_ROOT / "runs")
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["APP_ENV"] = "test"
 
+import config  # noqa: E402
 from db import engine  # noqa: E402
 from main import app  # noqa: E402
 from models import ContextSnapshot, Task, TaskRun  # noqa: E402
@@ -36,6 +38,7 @@ from services.run_engine import RunEngine, wait_for_background_runs  # noqa: E40
 from services.task_autodrive import (  # noqa: E402
     GLOBAL_AUTO_DRIVE_LEASE_FILENAME,
     GLOBAL_AUTO_DRIVE_STATE_FILENAME,
+    GlobalAutoDriveService,
     reset_autodrive_runtime_state,
 )
 
@@ -563,6 +566,55 @@ class HarnessApiTests(unittest.TestCase):
         tasks = self.client.get("/api/tasks").json()["tasks"]
         root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
         self.assertGreaterEqual(len(root_two_children), 1)
+
+    def test_global_autodrive_recovers_after_dispatch_exception(self):
+        async def scenario():
+            attempts = 0
+
+            async def flaky_continue_task(_service, *, task_id, create_plan_if_needed):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise RuntimeError("dispatcher boom")
+                return SimpleNamespace(
+                    action="stop",
+                    reason="no_high_value_action",
+                    summary="已恢复并回到轮询空闲。",
+                    task=None,
+                    scope_task_id=None,
+                    run=None,
+                    error=None,
+                )
+
+            with (
+                patch.object(type(config.settings), "is_test_env", new_callable=PropertyMock, return_value=False),
+                patch("services.task_autodrive.GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS", new=0.05),
+                patch("services.task_dispatcher.TaskDispatcherService.continue_task", new=flaky_continue_task),
+            ):
+                service = GlobalAutoDriveService()
+                start_result = await service.start()
+                self.assertTrue(start_result.enabled)
+
+                deadline = asyncio.get_running_loop().time() + 1.5
+                status = None
+                while asyncio.get_running_loop().time() < deadline:
+                    status = await service.get_status()
+                    if status.status == "idle" and status.last_reason == "no_high_value_action" and attempts >= 2:
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    self.fail("global autodrive did not recover after dispatch exception")
+
+                self.assertIsNotNone(status)
+                self.assertEqual(status.status, "idle")
+                self.assertEqual(status.last_reason, "no_high_value_action")
+                self.assertGreaterEqual(attempts, 2)
+                self.assertFalse(status.error)
+
+                stop_result = await service.stop()
+                self.assertFalse(stop_result.enabled)
+
+        asyncio.run(scenario())
 
     def test_startup_marks_inflight_runs_as_failed(self):
         task = self.client.post(

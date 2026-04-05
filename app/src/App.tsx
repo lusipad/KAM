@@ -140,6 +140,9 @@ function autoDriveStatusLabel(value: string | null) {
   if (value === 'running') {
     return '执行中'
   }
+  if (value === 'waiting_for_lease') {
+    return '等待 lease'
+  }
   if (value === 'waiting_for_run') {
     return '等待 run'
   }
@@ -159,11 +162,17 @@ function autoDriveStatusLabel(value: string | null) {
 }
 
 function autoDriveReasonLabel(value: string | null) {
+  if (value === 'global_auto_drive_lease_held_by_other_process') {
+    return '另一实例正在持有全局 lease'
+  }
   if (value === 'no_high_value_action') {
     return '当前没有更高价值的下一步'
   }
   if (value === 'scope_has_active_run') {
     return '当前仍有 run 在执行'
+  }
+  if (value === 'global_auto_drive_error') {
+    return '调度异常，系统会自动重试'
   }
   if (value === 'global_auto_drive_stopped') {
     return '已手动停止全局无人值守'

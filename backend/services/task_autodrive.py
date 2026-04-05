@@ -471,70 +471,80 @@ async def _run_global_autodrive() -> bool:
 
     try:
         while is_global_autodrive_enabled():
-            lease_acquired, current_lease = await asyncio.to_thread(_acquire_or_refresh_global_lease)
-            if not lease_acquired:
+            try:
+                lease_acquired, current_lease = await asyncio.to_thread(_acquire_or_refresh_global_lease)
+                if not lease_acquired:
+                    _update_global_state(
+                        status="waiting_for_lease",
+                        summary=_global_lease_waiting_summary(current_lease),
+                        action="stop",
+                        reason="global_auto_drive_lease_held_by_other_process",
+                        current_task_id=None,
+                        current_scope_task_id=None,
+                        current_run_id=None,
+                        error="",
+                    )
+                    if settings.is_test_env:
+                        return True
+                    await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
+                    continue
+
+                decision: Any | None = None
+                for _ in range(GLOBAL_AUTO_DRIVE_MAX_STEPS):
+                    if not is_global_autodrive_enabled():
+                        return True
+                    async with async_session() as session:
+                        from services.task_dispatcher import TaskDispatcherService
+
+                        decision = await TaskDispatcherService(session).continue_task(
+                            task_id=None,
+                            create_plan_if_needed=True,
+                        )
+                    _update_global_state_from_decision(decision)
+                    await asyncio.to_thread(_refresh_global_lease_if_owned)
+
+                    if settings.is_test_env:
+                        if not _should_continue_immediately(decision):
+                            return True
+                    elif not _should_continue_immediately(decision):
+                        break
+
+                    await asyncio.sleep(0)
+                else:
+                    _update_global_state(
+                        status="paused",
+                        summary="全局无人值守达到单轮步数上限，稍后继续轮询。",
+                        action="stop",
+                        reason="global_auto_drive_step_limit_reached",
+                        error="",
+                    )
+                    if settings.is_test_env:
+                        return True
+                    await asyncio.to_thread(_refresh_global_lease_if_owned)
+                    await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
+                    continue
+
+                if settings.is_test_env:
+                    return True
+                await asyncio.to_thread(_refresh_global_lease_if_owned)
+                await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
                 _update_global_state(
-                    status="waiting_for_lease",
-                    summary=_global_lease_waiting_summary(current_lease),
+                    status="error",
+                    summary=f"全局无人值守异常中断：{type(exc).__name__}，稍后自动重试。",
                     action="stop",
-                    reason="global_auto_drive_lease_held_by_other_process",
+                    reason="global_auto_drive_error",
                     current_task_id=None,
                     current_scope_task_id=None,
                     current_run_id=None,
-                    error="",
+                    error=f"{type(exc).__name__}: {exc}",
                 )
                 if settings.is_test_env:
                     return True
                 await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
-                continue
 
-            decision: Any | None = None
-            for _ in range(GLOBAL_AUTO_DRIVE_MAX_STEPS):
-                if not is_global_autodrive_enabled():
-                    return True
-                async with async_session() as session:
-                    from services.task_dispatcher import TaskDispatcherService
-
-                    decision = await TaskDispatcherService(session).continue_task(
-                        task_id=None,
-                        create_plan_if_needed=True,
-                    )
-                _update_global_state_from_decision(decision)
-                await asyncio.to_thread(_refresh_global_lease_if_owned)
-
-                if settings.is_test_env:
-                    if not _should_continue_immediately(decision):
-                        return True
-                elif not _should_continue_immediately(decision):
-                    break
-
-                await asyncio.sleep(0)
-            else:
-                _update_global_state(
-                    status="paused",
-                    summary="全局无人值守达到单轮步数上限，稍后继续轮询。",
-                    action="stop",
-                    reason="global_auto_drive_step_limit_reached",
-                    error="",
-                )
-                if settings.is_test_env:
-                    return True
-                await asyncio.to_thread(_refresh_global_lease_if_owned)
-                await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
-                continue
-
-            if settings.is_test_env:
-                return True
-            await asyncio.to_thread(_refresh_global_lease_if_owned)
-            await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
-
-        return True
-    except Exception as exc:
-        _update_global_state(
-            status="error",
-            summary=f"全局无人值守异常中断：{type(exc).__name__}",
-            error=f"{type(exc).__name__}: {exc}",
-        )
         return True
     finally:
         should_release_lease = not (
