@@ -21,9 +21,11 @@ V3 workspace 已经从运行时、前端主入口、验证基线和数据库 hea
   - `GET /api/runs/{run_id}/artifacts`
   - `POST /api/reviews/{task_id}/compare`
   - `POST /api/tasks/{task_id}/plan`
+  - `POST /api/tasks/dispatch-next`
 - harness run 已是 task-native 存储
 - 默认前端入口已切成 task-first workbench
 - 当前 task 已可基于 run、compare、snapshot、refs 和 artifacts 自动拆出可执行的 follow-up tasks
+- KAM 已可从任务池里自动接下一张任务；若当前没有可跑 child task，会先拆一张再开跑
 - 开发态提供 harness demo 播种接口：`POST /api/dev/seed-harness`
 
 ## 目录
@@ -97,6 +99,8 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body 
 ```
 
 进入界面后，点击“让 KAM 自己排工作”会基于当前 task 的 run、compare、snapshot、refs 和 artifacts 自动拆出下一轮 follow-up tasks。拆出的子任务会自动带上推荐 Prompt、验收检查项和建议 refs，并支持直接开跑下一张任务。
+
+点击“让 KAM 接下一张”时，KAM 会优先从现有任务池里挑选带推荐 Prompt 的可跑任务；如果当前还没有这样的 child task，就会先从最合适的父任务拆一张，再直接发起 run。
 
 ## 关键命令
 

@@ -100,3 +100,10 @@ export interface TaskPlanResponse {
   suggestions: TaskPlanSuggestion[]
   tasks: TaskRecord[]
 }
+
+export interface TaskDispatchResponse {
+  task: TaskRecord
+  run: RunRecord
+  source: string
+  plannedFromTaskId: string | null
+}

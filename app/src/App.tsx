@@ -8,6 +8,7 @@ import {
   createTaskCompare,
   createTaskRun,
   deleteTaskRef,
+  dispatchNextTask,
   getErrorMessage,
   getRunArtifacts,
   getTask,
@@ -173,6 +174,7 @@ function App() {
   const [creatingSnapshot, setCreatingSnapshot] = useState(false)
   const [creatingCompare, setCreatingCompare] = useState(false)
   const [creatingPlan, setCreatingPlan] = useState(false)
+  const [dispatchingNext, setDispatchingNext] = useState(false)
   const [savingTask, setSavingTask] = useState(false)
   const [snapshotFocus, setSnapshotFocus] = useState('')
   const [refDraft, setRefDraft] = useState({ kind: 'file', label: '', value: '' })
@@ -455,6 +457,39 @@ function App() {
     await executeTaskRun(plannedTask.id, planning.recommendedAgent, planning.recommendedPrompt)
   }, [executeTaskRun, pushToast])
 
+  const handleDispatchNext = useCallback(async () => {
+    if (dispatchingNext) {
+      return
+    }
+    setDispatchingNext(true)
+    try {
+      const dispatched = await dispatchNextTask({ createPlanIfNeeded: true })
+      setSelectedTaskId(dispatched.task.id)
+      await Promise.all([refreshTasks(), refreshTask(dispatched.task.id)])
+      setSelectedRunId(dispatched.run.id)
+      setPanelOpen(true)
+
+      const planning = readPlanningMetadata(dispatched.task.metadata)
+      if (planning.recommendedPrompt) {
+        setRunPrompt(planning.recommendedPrompt)
+        setRunAgent(planning.recommendedAgent)
+      }
+
+      pushToast({
+        id: `dispatch-next-${dispatched.run.id}`,
+        message:
+          dispatched.source === 'planned_task'
+            ? `KAM 已先拆后跑：${dispatched.task.title}`
+            : `KAM 已接手下一张任务：${dispatched.task.title}`,
+        tone: 'green',
+      })
+    } catch (error) {
+      onError(error, '让 KAM 接下一张任务失败。')
+    } finally {
+      setDispatchingNext(false)
+    }
+  }, [dispatchingNext, onError, pushToast, refreshTask, refreshTasks])
+
   const handleAdoptRun = useCallback(async (runId: string) => {
     try {
       await adoptRun(runId)
@@ -530,6 +565,9 @@ function App() {
         selectedTaskId ? (
           <div className="task-main-shell">
             <div className="task-main-actions">
+              <button type="button" className="button-primary" disabled={dispatchingNext} onClick={handleDispatchNext}>
+                {dispatchingNext ? 'KAM 接任务中…' : '让 KAM 接下一张'}
+              </button>
               <button type="button" className="button-secondary" onClick={() => setSelectedTaskId(null)}>
                 新建任务
               </button>

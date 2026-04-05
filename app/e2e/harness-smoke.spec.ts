@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test'
 
+test.describe.configure({ mode: 'serial' })
+
 
 test.beforeEach(async ({ page }) => {
   const response = await page.request.post('/api/dev/seed-harness', {
@@ -48,6 +50,17 @@ test('can let KAM plan follow-up tasks from the current task', async ({ page }) 
   await expect(page.locator('.file-chip').filter({ hasText: '来源 · 采纳收口' }).first()).toBeVisible()
   await expect(page.getByRole('button', { name: '用推荐 Prompt 开跑' })).toBeVisible()
   await expect(page.locator('.task-list-row').filter({ hasText: '[file] 候选文件' }).first()).toBeVisible()
+  await expect(page.locator('.run-card').filter({ hasText: '已完成 mock run：收口父任务' }).first()).toBeVisible()
+})
+
+test('can let KAM dispatch the next runnable task from the queue', async ({ page }) => {
+  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: '让 KAM 接下一张' }).click()
+
+  await expect(page.locator('.feed-card-title').filter({ hasText: '采纳并验证：' }).first()).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: '状态 · in_progress' }).first()).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: '来源 · 采纳收口' }).first()).toBeVisible()
   await expect(page.locator('.run-card').filter({ hasText: '已完成 mock run：收口父任务' }).first()).toBeVisible()
 })
 

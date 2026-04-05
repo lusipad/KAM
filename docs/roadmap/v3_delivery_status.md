@@ -9,6 +9,7 @@
 - 最小 harness backend：已接上
 - 默认前端入口：已切到 task-first workbench
 - task self-planning：已具备可执行 child task 能力
+- task self-dispatch：已具备最小可用能力
 - V3 legacy runtime：已退场
 
 ## 已完成
@@ -29,11 +30,13 @@
   - `/api/runs/{run_id}/artifacts`
   - `/api/reviews/{task_id}/compare`
   - `/api/tasks/{task_id}/plan`
+  - `/api/tasks/dispatch-next`
 - harness run 已切成 task-native runtime，不再依赖 bridge project/thread
 - 后端启动建库已切到 Alembic 升级链
 - 默认前端主入口改为 task-first workbench
 - 当前 task 已可基于 run、compare、snapshot、refs 和 artifacts 自动拆出并创建可执行的 follow-up tasks
 - planner 生成的 child task 会自动带上推荐 Prompt、验收检查项和建议 refs，并可直接开跑
+- KAM 已可从现有任务池里自动接下一张任务；没有可跑 child task 时会先拆一张再开跑
 - 新增 harness smoke
 - 新增 opt-in 真实 agent smoke（默认覆盖 `codex` 的临时 git repo 改动、Lore commit 和 adopt 链路）
 - 新增 `POST /api/dev/seed-harness`
@@ -47,6 +50,7 @@
 
 - 把 task self-planning 从当前启发式继续做硬：引入更稳定的 repo/task 信号排序和更细的完成定义
 - 把真实 `codex` 仓库改动链路稳固成默认 smoke 门禁
+- 把 next-task 调度策略继续做硬：完成定义、重试策略、以及失败任务与新任务之间的排序
 - 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
 
 ### 明确不优先做

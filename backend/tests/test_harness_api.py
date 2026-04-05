@@ -138,6 +138,67 @@ class HarnessApiTests(unittest.TestCase):
         artifacts = self.client.get("/api/runs/task-run-2/artifacts").json()["artifacts"]
         self.assertTrue(any(item["type"] == "stdout" for item in artifacts))
 
+    def test_dispatch_next_plans_then_runs_child_task(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：dispatch next"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post("/api/tasks/dispatch-next", json={"createPlanIfNeeded": True})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "planned_task")
+        self.assertEqual(payload["plannedFromTaskId"], "task-harness-cutover")
+        self.assertEqual(payload["task"]["status"], "in_progress")
+        self.assertEqual(payload["run"]["status"], "passed")
+        self.assertEqual(payload["run"]["taskId"], payload["task"]["id"])
+        self.assertEqual(payload["task"]["metadata"]["parentTaskId"], "task-harness-cutover")
+
+        detail = self.client.get(f"/api/tasks/{payload['task']['id']}").json()
+        self.assertEqual(detail["status"], "in_progress")
+        self.assertEqual(len(detail["runs"]), 1)
+
+    def test_dispatch_next_prefers_existing_runnable_child_task(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+        planned = self.client.post(
+            "/api/tasks/task-harness-cutover/plan",
+            json={"createTasks": True, "limit": 2},
+        ).json()
+        child_ids = [item["id"] for item in planned["tasks"]]
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：existing child dispatch"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post("/api/tasks/dispatch-next", json={"createPlanIfNeeded": False})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "existing_task")
+        self.assertIn(payload["task"]["id"], child_ids)
+        self.assertEqual(payload["run"]["status"], "passed")
+        self.assertEqual(payload["task"]["metadata"]["parentTaskId"], "task-harness-cutover")
+
+    def test_dispatch_next_returns_conflict_when_no_task_available(self):
+        response = self.client.post("/api/tasks/dispatch-next", json={"createPlanIfNeeded": False})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], "当前没有可自动接手的任务")
+
     def test_startup_applies_alembic_head(self):
         version = asyncio.run(self._get_alembic_version())
         self.assertEqual(version, self._get_alembic_head())

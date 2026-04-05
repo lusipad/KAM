@@ -1,4 +1,5 @@
 import type {
+  TaskDispatchResponse,
   ReviewCompareRecord,
   RunArtifactRecord,
   RunRecord,
@@ -147,6 +148,13 @@ export function createTaskCompare(taskId: string, payload: { runIds: string[]; t
 
 export function planTaskFollowUps(taskId: string, payload?: { createTasks?: boolean; limit?: number }) {
   return request<TaskPlanResponse>(`/tasks/${taskId}/plan`, {
+    method: 'POST',
+    body: JSON.stringify(payload ?? {}),
+  })
+}
+
+export function dispatchNextTask(payload?: { createPlanIfNeeded?: boolean }) {
+  return request<TaskDispatchResponse>('/tasks/dispatch-next', {
     method: 'POST',
     body: JSON.stringify(payload ?? {}),
   })

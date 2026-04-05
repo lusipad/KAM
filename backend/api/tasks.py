@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from db import get_db
 from models import Task, TaskRef, TaskRun, now
+from services.task_dispatcher import TaskDispatcherService
 from services.run_engine import RunEngine
 from services.task_planner import TaskPlannerService
 from services.task_context import TaskContextService
@@ -58,6 +59,10 @@ class TaskPlanCreate(BaseModel):
     limit: int = Field(default=3, ge=1, le=5)
 
 
+class TaskDispatchCreate(BaseModel):
+    createPlanIfNeeded: bool = True
+
+
 @router.get("")
 async def list_tasks(
     include_archived: bool = Query(default=False),
@@ -68,6 +73,14 @@ async def list_tasks(
         stmt = stmt.where(Task.archived_at.is_(None))
     result = await db.execute(stmt)
     return {"tasks": [task.to_dict() for task in result.scalars()]}
+
+
+@router.post("/dispatch-next")
+async def dispatch_next_task(payload: TaskDispatchCreate, db: AsyncSession = Depends(get_db)):
+    dispatched = await TaskDispatcherService(db).dispatch_next(create_plan_if_needed=payload.createPlanIfNeeded)
+    if dispatched is None:
+        raise HTTPException(status_code=409, detail="当前没有可自动接手的任务")
+    return dispatched.to_dict()
 
 
 @router.post("")
