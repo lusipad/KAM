@@ -12,6 +12,7 @@ import {
   getRunArtifacts,
   getTask,
   listTasks,
+  planTaskFollowUps,
   resolveTaskContext,
   retryRun,
   updateTask,
@@ -21,7 +22,7 @@ import { TaskSidebar } from '@/features/tasks/TaskSidebar'
 import { TaskWorkbench } from '@/features/tasks/TaskWorkbench'
 import { AppShell } from '@/layout/AppShell'
 import type { ToastItem } from '@/layout/Toast'
-import type { RunArtifactRecord, TaskDetail, TaskRecord } from '@/types/harness'
+import type { RunArtifactRecord, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
 
 function inferTaskPayload(prompt: string) {
   const compact = prompt.trim().replace(/\s+/g, ' ')
@@ -120,9 +121,12 @@ function App() {
   const [addingRef, setAddingRef] = useState(false)
   const [creatingSnapshot, setCreatingSnapshot] = useState(false)
   const [creatingCompare, setCreatingCompare] = useState(false)
+  const [creatingPlan, setCreatingPlan] = useState(false)
   const [savingTask, setSavingTask] = useState(false)
   const [snapshotFocus, setSnapshotFocus] = useState('')
   const [refDraft, setRefDraft] = useState({ kind: 'file', label: '', value: '' })
+  const [plannedTasks, setPlannedTasks] = useState<TaskRecord[]>([])
+  const [planSuggestions, setPlanSuggestions] = useState<TaskPlanSuggestion[]>([])
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const pushToast = useCallback((toast: ToastItem) => {
@@ -189,10 +193,17 @@ function App() {
       setTask(null)
       setTaskDraft(toTaskDraft(null))
       setArtifacts([])
+      setPlannedTasks([])
+      setPlanSuggestions([])
       return
     }
     void refreshTask(selectedTaskId)
   }, [refreshTask, selectedTaskId])
+
+  useEffect(() => {
+    setPlannedTasks([])
+    setPlanSuggestions([])
+  }, [selectedTaskId])
 
   useEffect(() => {
     if (!selectedTaskId || !task?.runs.some((run) => run.status === 'pending' || run.status === 'running')) {
@@ -324,6 +335,36 @@ function App() {
     }
   }, [creatingCompare, onError, refreshTask, task])
 
+  const handleCreatePlan = useCallback(async () => {
+    if (!task || creatingPlan) {
+      return
+    }
+    setCreatingPlan(true)
+    try {
+      const plan = await planTaskFollowUps(task.id, { createTasks: true, limit: 3 })
+      await Promise.all([refreshTasks(), refreshTask(task.id)])
+      setPlannedTasks(plan.tasks)
+      setPlanSuggestions(plan.suggestions)
+      if (plan.tasks.length) {
+        pushToast({
+          id: `task-plan-${task.id}`,
+          message: `KAM 已拆出 ${plan.tasks.length} 个后续任务。`,
+          tone: 'green',
+        })
+      } else {
+        pushToast({
+          id: `task-plan-${task.id}-noop`,
+          message: '当前没有新的后续任务需要拆出。',
+          tone: 'amber',
+        })
+      }
+    } catch (error) {
+      onError(error, '让 KAM 自己排工作失败。')
+    } finally {
+      setCreatingPlan(false)
+    }
+  }, [creatingPlan, onError, pushToast, refreshTask, refreshTasks, task])
+
   const handleAdoptRun = useCallback(async (runId: string) => {
     try {
       await adoptRun(runId)
@@ -421,11 +462,15 @@ function App() {
               addingRef={addingRef}
               creatingSnapshot={creatingSnapshot}
               creatingCompare={creatingCompare}
+              creatingPlan={creatingPlan}
               savingTask={savingTask}
+              plannedTasks={plannedTasks}
+              planSuggestions={planSuggestions}
               onRunPromptChange={setRunPrompt}
               onRunAgentChange={setRunAgent}
               onTaskDraftChange={setTaskDraft}
               onSaveTask={handleSaveTask}
+              onCreatePlan={handleCreatePlan}
               onCreateRun={handleCreateRun}
               onRefDraftChange={setRefDraft}
               onAddRef={handleAddRef}
@@ -437,6 +482,7 @@ function App() {
                 setSelectedRunId(runId)
                 setPanelOpen(true)
               }}
+              onOpenPlannedTask={(taskId) => setSelectedTaskId(taskId)}
               onAdoptRun={handleAdoptRun}
               onRetryRun={handleRetryRun}
             />

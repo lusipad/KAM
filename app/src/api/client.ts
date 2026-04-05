@@ -1,4 +1,12 @@
-import type { ReviewCompareRecord, RunArtifactRecord, RunRecord, TaskDetail, TaskRecord, TaskRefRecord } from '@/types/harness'
+import type {
+  ReviewCompareRecord,
+  RunArtifactRecord,
+  RunRecord,
+  TaskDetail,
+  TaskPlanResponse,
+  TaskRecord,
+  TaskRefRecord,
+} from '@/types/harness'
 
 const API_BASE = '/api'
 
@@ -134,6 +142,13 @@ export function createTaskCompare(taskId: string, payload: { runIds: string[]; t
   return request<ReviewCompareRecord>(`/reviews/${taskId}/compare`, {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+}
+
+export function planTaskFollowUps(taskId: string, payload?: { createTasks?: boolean; limit?: number }) {
+  return request<TaskPlanResponse>(`/tasks/${taskId}/plan`, {
+    method: 'POST',
+    body: JSON.stringify(payload ?? {}),
   })
 }
 

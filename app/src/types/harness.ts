@@ -54,6 +54,15 @@ export interface ReviewCompareRecord {
   createdAt: string
 }
 
+export interface TaskPlanSuggestion {
+  title: string
+  description: string
+  priority: string
+  labels: string[]
+  metadata: Record<string, unknown>
+  rationale: string
+}
+
 export interface TaskRecord {
   id: string
   title: string
@@ -73,4 +82,10 @@ export interface TaskDetail extends TaskRecord {
   snapshots: ContextSnapshotRecord[]
   runs: RunRecord[]
   reviews: ReviewCompareRecord[]
+}
+
+export interface TaskPlanResponse {
+  taskId: string
+  suggestions: TaskPlanSuggestion[]
+  tasks: TaskRecord[]
 }

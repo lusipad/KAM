@@ -14,6 +14,7 @@ test.beforeEach(async ({ page }) => {
 test('task-first harness workbench is reachable', async ({ page }) => {
   await expect(page).toHaveTitle('KAM Harness')
   await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '让 KAM 自己排工作' }).first()).toBeVisible()
   await expect(page.getByRole('main').getByText('Refs', { exact: true })).toBeVisible()
   await expect(page.getByRole('main').getByText('Context Snapshot', { exact: true })).toBeVisible()
   await expect(page.getByRole('main').getByText('Runs', { exact: true })).toBeVisible()
@@ -29,6 +30,21 @@ test('task-first harness workbench is reachable', async ({ page }) => {
   await expect(page.locator('.memory-title').filter({ hasText: 'Artifacts' })).toBeVisible()
   await expect(page.locator('.task-artifact-card').filter({ hasText: 'stdout' }).first()).toBeVisible()
   await expect(page.locator('.task-artifact-content').filter({ hasText: '前端主入口已切换。' }).first()).toBeVisible()
+})
+
+test('can let KAM plan follow-up tasks from the current task', async ({ page }) => {
+  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: '让 KAM 自己排工作' }).click()
+
+  await expect(page.getByRole('main').getByText('采纳并验证：', { exact: false }).first()).toBeVisible()
+  await expect(page.getByRole('main').getByText('根据 compare 推进：', { exact: false }).first()).toBeVisible()
+  await expect(page.locator('.thread-title').filter({ hasText: '采纳并验证：' }).first()).toBeVisible()
+  await expect(page.locator('.thread-title').filter({ hasText: '根据 compare 推进：' }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: '打开任务' }).first().click()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '采纳并验证：' }).first()).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: '来源 · 采纳收口' }).first()).toBeVisible()
 })
 
 test('mobile keeps task detail and artifact panel reachable', async ({ page }) => {
