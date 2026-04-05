@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from db import get_db
 from models import Task, TaskRef, TaskRun, now
 from services.run_engine import RunEngine
+from services.task_planner import TaskPlannerService
 from services.task_context import TaskContextService
 
 
@@ -50,6 +51,11 @@ class TaskResolveContext(BaseModel):
 class TaskRunCreate(BaseModel):
     agent: str = Field(pattern="^(codex|claude-code)$")
     task: str = Field(min_length=1, max_length=8000)
+
+
+class TaskPlanCreate(BaseModel):
+    createTasks: bool = True
+    limit: int = Field(default=3, ge=1, le=5)
 
 
 @router.get("")
@@ -186,6 +192,15 @@ async def create_task_run(task_id: str, payload: TaskRunCreate, db: AsyncSession
     task.updated_at = now()
     await db.commit()
     return run.to_dict()
+
+
+@router.post("/{task_id}/plan")
+async def plan_task_follow_ups(task_id: str, payload: TaskPlanCreate, db: AsyncSession = Depends(get_db)):
+    planner = TaskPlannerService(db)
+    plan = await planner.plan_follow_ups(task_id, create_tasks=payload.createTasks, limit=payload.limit)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return plan
 
 
 async def _load_task_detail(db: AsyncSession, task_id: str) -> Task | None:
