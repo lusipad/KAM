@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -645,13 +646,37 @@ class HarnessApiTests(unittest.TestCase):
             self.assertTrue(takeover["acquired"])
             self.assertTrue(takeover["lease"]["ownedByCurrentProcess"])
         finally:
-            if owner.poll() is None:
-                owner.terminate()
-                owner.wait(timeout=5)
-            if owner.stdout is not None:
-                owner.stdout.close()
-            if owner.stderr is not None:
-                owner.stderr.close()
+            self._cleanup_global_lease_probe_process(owner, force_kill=False)
+
+    def test_global_autodrive_reclaims_crashed_owner_after_ttl(self):
+        ttl_seconds = 4.0
+        owner = self._spawn_global_lease_probe_process(
+            sleep_seconds=30.0,
+            release_on_exit=False,
+            ttl_seconds=ttl_seconds,
+        )
+        try:
+            first = self._read_global_lease_probe_result(owner)
+            self.assertTrue(first["acquired"])
+            owner_pid = first["lease"]["pid"]
+
+            owner.kill()
+            owner.wait(timeout=5)
+
+            blocked = self._run_global_lease_probe_process(ttl_seconds=ttl_seconds)
+            self.assertFalse(blocked["acquired"])
+            self.assertEqual(blocked["lease"]["pid"], owner_pid)
+            self.assertFalse(blocked["lease"]["ownedByCurrentProcess"])
+            self.assertFalse(blocked["lease"]["stale"])
+
+            time.sleep(ttl_seconds + 0.4)
+
+            takeover = self._run_global_lease_probe_process(ttl_seconds=ttl_seconds)
+            self.assertTrue(takeover["acquired"])
+            self.assertTrue(takeover["lease"]["ownedByCurrentProcess"])
+            self.assertFalse(takeover["lease"]["stale"])
+        finally:
+            self._cleanup_global_lease_probe_process(owner, force_kill=True)
 
     def test_global_autodrive_watchdog_restarts_cancelled_supervisor(self):
         async def scenario():
@@ -963,8 +988,18 @@ class HarnessApiTests(unittest.TestCase):
             return None
         return json.loads(lease_path.read_text(encoding="utf-8"))
 
-    def _spawn_global_lease_probe_process(self, *, sleep_seconds: float, release_on_exit: bool) -> subprocess.Popen[str]:
-        env = self._global_lease_probe_env(sleep_seconds=sleep_seconds, release_on_exit=release_on_exit)
+    def _spawn_global_lease_probe_process(
+        self,
+        *,
+        sleep_seconds: float,
+        release_on_exit: bool,
+        ttl_seconds: float | None = None,
+    ) -> subprocess.Popen[str]:
+        env = self._global_lease_probe_env(
+            sleep_seconds=sleep_seconds,
+            release_on_exit=release_on_exit,
+            ttl_seconds=ttl_seconds,
+        )
         return subprocess.Popen(
             [sys.executable, "-u", "-c", self._global_lease_probe_script()],
             cwd=str(BACKEND_ROOT),
@@ -976,8 +1011,12 @@ class HarnessApiTests(unittest.TestCase):
             env=env,
         )
 
-    def _run_global_lease_probe_process(self) -> dict[str, object]:
-        env = self._global_lease_probe_env(sleep_seconds=0.0, release_on_exit=False)
+    def _run_global_lease_probe_process(self, *, ttl_seconds: float | None = None) -> dict[str, object]:
+        env = self._global_lease_probe_env(
+            sleep_seconds=0.0,
+            release_on_exit=False,
+            ttl_seconds=ttl_seconds,
+        )
         completed = subprocess.run(
             [sys.executable, "-u", "-c", self._global_lease_probe_script()],
             cwd=str(BACKEND_ROOT),
@@ -998,7 +1037,25 @@ class HarnessApiTests(unittest.TestCase):
             self.fail(f"lease probe produced no stdout: {stderr}")
         return json.loads(line)
 
-    def _global_lease_probe_env(self, *, sleep_seconds: float, release_on_exit: bool) -> dict[str, str]:
+    def _cleanup_global_lease_probe_process(self, process: subprocess.Popen[str], *, force_kill: bool) -> None:
+        if process.poll() is None:
+            if force_kill:
+                process.kill()
+            else:
+                process.terminate()
+            process.wait(timeout=5)
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+
+    def _global_lease_probe_env(
+        self,
+        *,
+        sleep_seconds: float,
+        release_on_exit: bool,
+        ttl_seconds: float | None,
+    ) -> dict[str, str]:
         env = os.environ.copy()
         env["DATABASE_URL"] = f"sqlite+aiosqlite:///{(TMP_ROOT / 'kam-harness.db').as_posix()}"
         env["STORAGE_PATH"] = str(TMP_ROOT)
@@ -1006,6 +1063,8 @@ class HarnessApiTests(unittest.TestCase):
         env["APP_ENV"] = "test"
         env["KAM_TEST_LEASE_SLEEP"] = str(sleep_seconds)
         env["KAM_TEST_LEASE_RELEASE"] = "1" if release_on_exit else "0"
+        if ttl_seconds is not None:
+            env["KAM_TEST_LEASE_TTL"] = str(ttl_seconds)
         return env
 
     def _global_lease_probe_script(self) -> str:
@@ -1021,21 +1080,21 @@ class HarnessApiTests(unittest.TestCase):
             if str(backend_root) not in sys.path:
                 sys.path.insert(0, str(backend_root))
 
-            from services.task_autodrive import (
-                _acquire_or_refresh_global_lease,
-                _read_global_lease_status,
-                _release_global_lease_if_owned,
-            )
+            import services.task_autodrive as task_autodrive
 
-            acquired, _payload = _acquire_or_refresh_global_lease()
-            print(json.dumps({{"acquired": acquired, "lease": _read_global_lease_status()}}, ensure_ascii=False), flush=True)
+            ttl_override = os.environ.get("KAM_TEST_LEASE_TTL")
+            if ttl_override:
+                task_autodrive.GLOBAL_AUTO_DRIVE_LEASE_TTL_SECONDS = float(ttl_override)
+
+            acquired, _payload = task_autodrive._acquire_or_refresh_global_lease()
+            print(json.dumps({{"acquired": acquired, "lease": task_autodrive._read_global_lease_status()}}, ensure_ascii=False), flush=True)
 
             sleep_seconds = float(os.environ.get("KAM_TEST_LEASE_SLEEP", "0"))
             if sleep_seconds > 0:
                 time.sleep(sleep_seconds)
 
             if os.environ.get("KAM_TEST_LEASE_RELEASE") == "1":
-                _release_global_lease_if_owned()
+                task_autodrive._release_global_lease_if_owned()
             """
         )
 

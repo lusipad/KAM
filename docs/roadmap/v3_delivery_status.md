@@ -52,6 +52,7 @@
 - global auto-drive loop 遇到调度异常后会自动重试，而不是保持 enabled 但后台 supervisor 已退出
 - global auto-drive 状态面板已返回结构化 lease / health 字段，能直接看到 owner、heartbeat、stale 与最近状态更新时间
 - 已补真实多进程 lease 回归：验证第二个进程会被 active owner 挡住，owner 释放后新的进程可以接管
+- 已补真实 crash failover 回归：持有 lease 的子进程被强制 kill 后，TTL 到期前仍会阻挡其他进程，TTL 到期后可自动接管
 - global auto-drive supervisor 若被意外 cancel，只要全局开关仍开启，就会自动拉起新的 loop
 - 前端已新增全局无人值守状态面板与开关
 - 新增 harness smoke
@@ -68,7 +69,7 @@
 - 把 task self-planning 从当前启发式继续做硬：引入更稳定的 repo/task 信号排序和更细的完成定义
 - 把真实 `codex` 仓库改动链路稳固成默认 smoke 门禁
 - 把 next-task / continue 调度策略继续做硬：完成定义、重试策略，以及失败任务、待 adopt 任务与新任务之间的排序
-- 把当前 global auto-drive 继续做硬：更多 crash / chaos 场景回归，以及更细的恢复可观测性仍未做
+- 把当前 global auto-drive 继续做硬：更多 OS-level crash / cold-start chaos 场景回归，以及更细的恢复可观测性仍未做
 - 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
 
 ### 明确不优先做
@@ -81,7 +82,7 @@
 ## 当前建议
 
 - 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
-- 下一步优先把 global auto-drive 的 watchdog / health surface 做硬，再把真实 `codex` 改仓库链路做成更硬的门禁
+- 下一步优先把真实 `codex` 改仓库链路做成更硬的门禁，同时按 OS-level crash / cold-start 补更多 chaos 回归
 - 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档
