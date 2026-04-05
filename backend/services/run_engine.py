@@ -20,7 +20,11 @@ from db import async_session
 from models import Task, TaskRun, now
 from services.artifact_store import ArtifactStore
 from services.digest import DigestService
-from services.task_autodrive import schedule_autodrive_for_task, wait_for_background_autodrive
+from services.task_autodrive import (
+    schedule_autodrive_for_task,
+    schedule_global_autodrive_if_enabled,
+    wait_for_background_autodrive,
+)
 from services.task_context import TaskContextService
 
 
@@ -215,7 +219,9 @@ class RunEngine:
                 _STATE.initial_artifacts.pop(run_id, None)
                 if auto_drive_task_id is not None:
                     try:
-                        await schedule_autodrive_for_task(auto_drive_task_id)
+                        global_enabled = await schedule_global_autodrive_if_enabled()
+                        if not global_enabled:
+                            await schedule_autodrive_for_task(auto_drive_task_id)
                     except Exception:
                         pass
 

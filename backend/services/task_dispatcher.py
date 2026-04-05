@@ -217,23 +217,29 @@ class TaskDispatcherService:
         if not create_plan_if_needed:
             return None, "existing_task", None
 
-        parent = self._pick_parent_for_planning(tasks)
-        if parent is None:
+        planning_candidates = self._pick_parents_for_planning(tasks)
+        if not planning_candidates:
             return None, "planned_task", None
 
-        _task, _suggestions, created_tasks = await TaskPlannerService(self.db).plan(
-            parent.id,
-            limit=1,
-            create_tasks=True,
-        )
-        if created_tasks:
-            return created_tasks[0], "planned_task", parent.id
+        last_parent_id: str | None = None
+        for parent in planning_candidates:
+            last_parent_id = parent.id
+            _task, _suggestions, created_tasks = await TaskPlannerService(self.db).plan(
+                parent.id,
+                limit=1,
+                create_tasks=True,
+            )
+            if created_tasks:
+                return created_tasks[0], "planned_task", parent.id
 
-        refreshed_tasks = await self._list_tasks()
-        existing = self._pick_existing_runnable_task(self._scope_tasks(refreshed_tasks, task_id))
-        if existing is not None:
-            return existing, "existing_task", None
-        return None, "planned_task", parent.id
+            refreshed_tasks = await self._list_tasks()
+            scoped_refreshed_tasks = self._scope_tasks(refreshed_tasks, task_id)
+            existing = self._pick_existing_runnable_task(scoped_refreshed_tasks)
+            if existing is not None:
+                return existing, "existing_task", None
+            tasks = scoped_refreshed_tasks
+
+        return None, "planned_task", last_parent_id
 
     async def _list_tasks(self) -> list[Task]:
         result = await self.db.execute(
@@ -257,6 +263,11 @@ class TaskDispatcherService:
             return None
         candidates.sort(key=self._parent_task_sort_key)
         return candidates[0]
+
+    def _pick_parents_for_planning(self, tasks: list[Task]) -> list[Task]:
+        candidates = [task for task in tasks if self._is_plannable_parent_task(task)]
+        candidates.sort(key=self._parent_task_sort_key)
+        return candidates
 
     def _pick_latest_adoptable_run(self, tasks: list[Task]) -> tuple[Task, TaskRun] | None:
         candidates: list[tuple[Task, TaskRun]] = []

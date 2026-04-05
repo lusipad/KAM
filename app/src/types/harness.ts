@@ -128,3 +128,17 @@ export interface TaskAutoDriveResponse {
   running: boolean
   summary: string
 }
+
+export interface GlobalAutoDriveResponse {
+  enabled: boolean
+  running: boolean
+  status: string
+  summary: string
+  lastAction: string | null
+  lastReason: string | null
+  currentTaskId: string | null
+  currentScopeTaskId: string | null
+  currentRunId: string | null
+  loopCount: number
+  error: string | null
+}

@@ -28,15 +28,18 @@ os.environ["APP_ENV"] = "test"
 from db import engine  # noqa: E402
 from main import app  # noqa: E402
 from models import ContextSnapshot, ReviewCompare, Task, TaskRef, TaskRun, TaskRunArtifact  # noqa: E402
+from services.task_autodrive import reset_autodrive_runtime_state  # noqa: E402
 
 
 class TaskPlannerApiTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.client.__enter__()
+        reset_autodrive_runtime_state()
         asyncio.run(self._truncate_tables())
 
     def tearDown(self):
+        reset_autodrive_runtime_state()
         self.client.__exit__(None, None, None)
         asyncio.run(engine.dispose())
 

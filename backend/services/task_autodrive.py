@@ -23,6 +23,9 @@ AUTO_DRIVE_LAST_RUN_TASK_ID_KEY = "autoDriveLastRunTaskId"
 AUTO_DRIVE_LAST_ERROR_KEY = "autoDriveLastError"
 
 AUTO_DRIVE_MAX_STEPS = 8
+GLOBAL_AUTO_DRIVE_MAX_STEPS = 12
+GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS = 1.0
+GLOBAL_AUTO_DRIVE_DISABLED_SUMMARY = "当前还没有开启全局无人值守。"
 
 
 @dataclass
@@ -44,11 +47,58 @@ class AutoDriveControlResult:
 
 
 @dataclass
+class GlobalAutoDriveControlResult:
+    enabled: bool
+    running: bool
+    status: str
+    summary: str
+    last_action: str | None = None
+    last_reason: str | None = None
+    current_task_id: str | None = None
+    current_scope_task_id: str | None = None
+    current_run_id: str | None = None
+    loop_count: int = 0
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "enabled": self.enabled,
+            "running": self.running,
+            "status": self.status,
+            "summary": self.summary,
+            "lastAction": self.last_action,
+            "lastReason": self.last_reason,
+            "currentTaskId": self.current_task_id,
+            "currentScopeTaskId": self.current_scope_task_id,
+            "currentRunId": self.current_run_id,
+            "loopCount": self.loop_count,
+            "error": self.error,
+        }
+
+
+@dataclass
 class _AutoDriveState:
     scopes: dict[str, asyncio.Future[None]] = field(default_factory=dict)
 
 
+@dataclass
+class _GlobalAutoDriveState:
+    enabled: bool = False
+    task: asyncio.Future[None] | None = None
+    status: str = "disabled"
+    summary: str = GLOBAL_AUTO_DRIVE_DISABLED_SUMMARY
+    last_action: str | None = None
+    last_reason: str | None = None
+    current_task_id: str | None = None
+    current_scope_task_id: str | None = None
+    current_run_id: str | None = None
+    loop_count: int = 0
+    error: str | None = None
+
+
 _STATE = _AutoDriveState()
+_GLOBAL_STATE = _GlobalAutoDriveState()
+_UNSET = object()
 
 
 class TaskAutoDriveService:
@@ -164,9 +214,72 @@ class TaskAutoDriveService:
         task.metadata_ = metadata
 
 
+class GlobalAutoDriveService:
+    def __init__(self, db: AsyncSession | None = None) -> None:
+        self.db = db
+
+    async def start(self) -> GlobalAutoDriveControlResult:
+        if not _GLOBAL_STATE.enabled:
+            _reset_global_autodrive_state(enabled=True)
+        _GLOBAL_STATE.enabled = True
+        _update_global_state(
+            status="running",
+            summary="已开启全局无人值守，KAM 会继续跨 task family 接活。",
+            error="",
+        )
+        started = await ensure_global_autodrive()
+        return self._build_result(
+            summary_override=(
+                "已开启全局无人值守，KAM 会继续跨 task family 接活。"
+                if started
+                else "全局无人值守已经处于开启状态。"
+            )
+        )
+
+    async def stop(self) -> GlobalAutoDriveControlResult:
+        _GLOBAL_STATE.enabled = False
+        _update_global_state(
+            status="disabled",
+            summary="已停止全局无人值守。",
+            action="stop",
+            reason="global_auto_drive_stopped",
+            current_task_id=None,
+            current_scope_task_id=None,
+            current_run_id=None,
+            error="",
+        )
+        return self._build_result()
+
+    async def get_status(self) -> GlobalAutoDriveControlResult:
+        return self._build_result()
+
+    def _build_result(self, *, summary_override: str | None = None) -> GlobalAutoDriveControlResult:
+        return GlobalAutoDriveControlResult(
+            enabled=_GLOBAL_STATE.enabled,
+            running=is_global_autodrive_running(),
+            status=_GLOBAL_STATE.status,
+            summary=summary_override or _GLOBAL_STATE.summary,
+            last_action=_GLOBAL_STATE.last_action,
+            last_reason=_GLOBAL_STATE.last_reason,
+            current_task_id=_GLOBAL_STATE.current_task_id,
+            current_scope_task_id=_GLOBAL_STATE.current_scope_task_id,
+            current_run_id=_GLOBAL_STATE.current_run_id,
+            loop_count=_GLOBAL_STATE.loop_count,
+            error=_GLOBAL_STATE.error,
+        )
+
+
 def is_scope_autodrive_running(scope_task_id: str) -> bool:
     task = _STATE.scopes.get(scope_task_id)
-    return task is not None and not task.done()
+    return _is_background_task_running(task)
+
+
+def is_global_autodrive_enabled() -> bool:
+    return _GLOBAL_STATE.enabled
+
+
+def is_global_autodrive_running() -> bool:
+    return _is_background_task_running(_GLOBAL_STATE.task)
 
 
 async def schedule_autodrive_for_task(task_id: str | None) -> str | None:
@@ -182,18 +295,35 @@ async def schedule_autodrive_for_task(task_id: str | None) -> str | None:
     return scope_task_id
 
 
+async def schedule_global_autodrive_if_enabled() -> bool:
+    if not is_global_autodrive_enabled():
+        return False
+    await ensure_global_autodrive()
+    return True
+
+
 async def ensure_scope_autodrive(scope_task_id: str) -> bool:
     current = _STATE.scopes.get(scope_task_id)
-    if current is not None and not current.done():
+    if _is_background_task_running(current):
         return False
     if settings.is_test_env:
         return await _run_scope_autodrive(scope_task_id)
     return schedule_scope_autodrive(scope_task_id)
 
 
+async def ensure_global_autodrive() -> bool:
+    if not is_global_autodrive_enabled():
+        return False
+    if is_global_autodrive_running():
+        return False
+    if settings.is_test_env:
+        return await _run_global_autodrive()
+    return schedule_global_autodrive()
+
+
 def schedule_scope_autodrive(scope_task_id: str) -> bool:
     current = _STATE.scopes.get(scope_task_id)
-    if current is not None and not current.done():
+    if _is_background_task_running(current):
         return False
 
     background_task = asyncio.create_task(_run_scope_autodrive(scope_task_id))
@@ -203,6 +333,21 @@ def schedule_scope_autodrive(scope_task_id: str) -> bool:
         current_task = _STATE.scopes.get(scope_task_id)
         if current_task is done_task:
             _STATE.scopes.pop(scope_task_id, None)
+
+    background_task.add_done_callback(_cleanup)
+    return True
+
+
+def schedule_global_autodrive() -> bool:
+    if is_global_autodrive_running():
+        return False
+
+    background_task = asyncio.create_task(_run_global_autodrive())
+    _GLOBAL_STATE.task = background_task
+
+    def _cleanup(done_task: asyncio.Task[None]) -> None:
+        if _GLOBAL_STATE.task is done_task:
+            _GLOBAL_STATE.task = None
 
     background_task.add_done_callback(_cleanup)
     return True
@@ -296,6 +441,125 @@ async def _run_scope_autodrive(scope_task_id: str) -> bool:
             _STATE.scopes.pop(scope_task_id, None)
 
 
+async def _run_global_autodrive() -> bool:
+    if settings.is_test_env:
+        marker = asyncio.get_running_loop().create_future()
+        marker.set_result(None)
+        _GLOBAL_STATE.task = marker
+
+    try:
+        while is_global_autodrive_enabled():
+            decision: Any | None = None
+            for _ in range(GLOBAL_AUTO_DRIVE_MAX_STEPS):
+                if not is_global_autodrive_enabled():
+                    return True
+                async with async_session() as session:
+                    from services.task_dispatcher import TaskDispatcherService
+
+                    decision = await TaskDispatcherService(session).continue_task(
+                        task_id=None,
+                        create_plan_if_needed=True,
+                    )
+                _update_global_state_from_decision(decision)
+
+                if settings.is_test_env:
+                    if not _should_continue_immediately(decision):
+                        return True
+                elif not _should_continue_immediately(decision):
+                    break
+
+                await asyncio.sleep(0)
+            else:
+                _update_global_state(
+                    status="paused",
+                    summary="全局无人值守达到单轮步数上限，稍后继续轮询。",
+                    action="stop",
+                    reason="global_auto_drive_step_limit_reached",
+                    error="",
+                )
+                if settings.is_test_env:
+                    return True
+                await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
+                continue
+
+            if settings.is_test_env:
+                return True
+            await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
+
+        return True
+    except Exception as exc:
+        _update_global_state(
+            status="error",
+            summary=f"全局无人值守异常中断：{type(exc).__name__}",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return True
+    finally:
+        if settings.is_test_env:
+            _GLOBAL_STATE.task = None
+
+
+def _update_global_state_from_decision(decision: Any) -> None:
+    status = "running"
+    if decision.action == "stop":
+        if decision.reason == "scope_has_active_run":
+            status = "waiting_for_run"
+        else:
+            status = "idle"
+    elif decision.run is not None and decision.run.status in {"pending", "running"}:
+        status = "waiting_for_run"
+
+    _update_global_state(
+        status=status,
+        summary=decision.summary,
+        action=decision.action,
+        reason=decision.reason,
+        current_task_id=decision.task.id if decision.task is not None else None,
+        current_scope_task_id=decision.scope_task_id,
+        current_run_id=decision.run.id if decision.run is not None else None,
+        increment_loop_count=True,
+        error=decision.error or "",
+    )
+
+
+def _update_global_state(
+    *,
+    status: str | None = None,
+    summary: str | None = None,
+    action: str | None = None,
+    reason: str | None = None,
+    current_task_id: str | None | object = _UNSET,
+    current_scope_task_id: str | None | object = _UNSET,
+    current_run_id: str | None | object = _UNSET,
+    increment_loop_count: bool = False,
+    error: str | None = None,
+) -> None:
+    if status is not None:
+        _GLOBAL_STATE.status = status
+    if summary is not None:
+        _GLOBAL_STATE.summary = summary
+    if action is not None:
+        _GLOBAL_STATE.last_action = action
+    if reason is not None:
+        _GLOBAL_STATE.last_reason = reason
+    if current_task_id is not _UNSET:
+        _GLOBAL_STATE.current_task_id = current_task_id if isinstance(current_task_id, str) and current_task_id else None
+    if current_scope_task_id is not _UNSET:
+        _GLOBAL_STATE.current_scope_task_id = (
+            current_scope_task_id if isinstance(current_scope_task_id, str) and current_scope_task_id else None
+        )
+    if current_run_id is not _UNSET:
+        _GLOBAL_STATE.current_run_id = current_run_id if isinstance(current_run_id, str) and current_run_id else None
+    if increment_loop_count:
+        _GLOBAL_STATE.loop_count += 1
+    if error is not None:
+        _GLOBAL_STATE.error = error or None
+
+
+def _is_background_task_running(task: asyncio.Future[None] | None) -> bool:
+    return task is not None and not task.done()
+
+
 def _should_continue_immediately(decision: Any) -> bool:
     if decision.action == "adopt":
         return True
@@ -309,12 +573,7 @@ def _should_continue_immediately(decision: Any) -> bool:
 async def wait_for_background_autodrive(timeout: float = 5.0) -> None:
     deadline = asyncio.get_event_loop().time() + timeout
     while True:
-        current_loop = asyncio.get_running_loop()
-        pending = [
-            task
-            for task in _STATE.scopes.values()
-            if not task.done() and task.get_loop() is current_loop
-        ]
+        pending = _pending_tasks_for_current_loop()
         if not pending:
             return
         remaining = deadline - asyncio.get_event_loop().time()
@@ -332,3 +591,34 @@ async def wait_for_background_autodrive(timeout: float = 5.0) -> None:
             task.cancel()
         await asyncio.gather(*still_pending, return_exceptions=True)
         return
+
+
+def _pending_tasks_for_current_loop() -> list[asyncio.Future[None]]:
+    current_loop = asyncio.get_running_loop()
+    tasks = list(_STATE.scopes.values())
+    if _GLOBAL_STATE.task is not None:
+        tasks.append(_GLOBAL_STATE.task)
+    return [task for task in tasks if not task.done() and task.get_loop() is current_loop]
+
+
+def reset_autodrive_runtime_state() -> None:
+    _STATE.scopes.clear()
+    _reset_global_autodrive_state(enabled=False)
+
+
+def _reset_global_autodrive_state(*, enabled: bool) -> None:
+    _GLOBAL_STATE.enabled = enabled
+    _GLOBAL_STATE.task = None
+    _GLOBAL_STATE.status = "running" if enabled else "disabled"
+    _GLOBAL_STATE.summary = (
+        "已开启全局无人值守，KAM 会继续跨 task family 接活。"
+        if enabled
+        else GLOBAL_AUTO_DRIVE_DISABLED_SUMMARY
+    )
+    _GLOBAL_STATE.last_action = None
+    _GLOBAL_STATE.last_reason = None
+    _GLOBAL_STATE.current_task_id = None
+    _GLOBAL_STATE.current_scope_task_id = None
+    _GLOBAL_STATE.current_run_id = None
+    _GLOBAL_STATE.loop_count = 0
+    _GLOBAL_STATE.error = None

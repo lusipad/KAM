@@ -11,12 +11,15 @@ import {
   deleteTaskRef,
   dispatchNextTask,
   getErrorMessage,
+  getGlobalAutoDriveStatus,
   getRunArtifacts,
   getTask,
   listTasks,
   planTaskFollowUps,
   resolveTaskContext,
+  startGlobalAutoDrive,
   startTaskAutoDrive,
+  stopGlobalAutoDrive,
   stopTaskAutoDrive,
   retryRun,
   updateTask,
@@ -26,7 +29,15 @@ import { TaskSidebar } from '@/features/tasks/TaskSidebar'
 import { TaskWorkbench } from '@/features/tasks/TaskWorkbench'
 import { AppShell } from '@/layout/AppShell'
 import type { ToastItem } from '@/layout/Toast'
-import type { RunArtifactRecord, SuggestedTaskRefRecord, TaskContinueResponse, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
+import type {
+  GlobalAutoDriveResponse,
+  RunArtifactRecord,
+  SuggestedTaskRefRecord,
+  TaskContinueResponse,
+  TaskDetail,
+  TaskPlanSuggestion,
+  TaskRecord,
+} from '@/types/harness'
 
 function inferTaskPayload(prompt: string) {
   const compact = prompt.trim().replace(/\s+/g, ' ')
@@ -125,6 +136,44 @@ function parseAutoDriveStatus(value: unknown) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function autoDriveStatusLabel(value: string | null) {
+  if (value === 'running') {
+    return '执行中'
+  }
+  if (value === 'waiting_for_run') {
+    return '等待 run'
+  }
+  if (value === 'idle') {
+    return '已停机'
+  }
+  if (value === 'disabled') {
+    return '已关闭'
+  }
+  if (value === 'paused') {
+    return '已暂停'
+  }
+  if (value === 'error') {
+    return '异常'
+  }
+  return value
+}
+
+function autoDriveReasonLabel(value: string | null) {
+  if (value === 'no_high_value_action') {
+    return '当前没有更高价值的下一步'
+  }
+  if (value === 'scope_has_active_run') {
+    return '当前仍有 run 在执行'
+  }
+  if (value === 'global_auto_drive_stopped') {
+    return '已手动停止全局无人值守'
+  }
+  if (value === 'global_auto_drive_step_limit_reached') {
+    return '达到单轮步数上限'
+  }
+  return value
+}
+
 function shouldPollTask(detail: TaskDetail | null) {
   if (!detail) {
     return false
@@ -137,6 +186,10 @@ function shouldPollTask(detail: TaskDetail | null) {
   }
   const status = parseAutoDriveStatus(detail.metadata.autoDriveStatus)
   return status === 'running' || status === 'waiting_for_run'
+}
+
+function shouldPollGlobalAutoDrive(status: GlobalAutoDriveResponse | null) {
+  return Boolean(status && (status.enabled || status.running))
 }
 
 function readPlanningMetadata(metadata: Record<string, unknown> | null | undefined) {
@@ -202,12 +255,14 @@ function App() {
   const [dispatchingNext, setDispatchingNext] = useState(false)
   const [continuingTask, setContinuingTask] = useState(false)
   const [managingAutoDrive, setManagingAutoDrive] = useState(false)
+  const [managingGlobalAutoDrive, setManagingGlobalAutoDrive] = useState(false)
   const [savingTask, setSavingTask] = useState(false)
   const [snapshotFocus, setSnapshotFocus] = useState('')
   const [refDraft, setRefDraft] = useState({ kind: 'file', label: '', value: '' })
   const [plannedTasks, setPlannedTasks] = useState<TaskRecord[]>([])
   const [planSuggestions, setPlanSuggestions] = useState<TaskPlanSuggestion[]>([])
   const [continueDecision, setContinueDecision] = useState<TaskContinueResponse | null>(null)
+  const [globalAutoDrive, setGlobalAutoDrive] = useState<GlobalAutoDriveResponse | null>(null)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const pushToast = useCallback((toast: ToastItem) => {
@@ -236,6 +291,12 @@ function App() {
     })
     return data.tasks
   }, [includeArchived])
+
+  const refreshGlobalAutoDrive = useCallback(async () => {
+    const status = await getGlobalAutoDriveStatus()
+    setGlobalAutoDrive(status)
+    return status
+  }, [])
 
   const refreshTask = useCallback(async (taskId: string) => {
     setLoading(true)
@@ -270,6 +331,10 @@ function App() {
   }, [refreshTasks])
 
   useEffect(() => {
+    void refreshGlobalAutoDrive()
+  }, [refreshGlobalAutoDrive])
+
+  useEffect(() => {
     if (!selectedTaskId) {
       setTask(null)
       setTaskDraft(toTaskDraft(null))
@@ -295,6 +360,20 @@ function App() {
     }, 2000)
     return () => window.clearInterval(timer)
   }, [refreshTask, refreshTasks, selectedTaskId, task])
+
+  useEffect(() => {
+    if (!shouldPollGlobalAutoDrive(globalAutoDrive)) {
+      return
+    }
+    const timer = window.setInterval(() => {
+      const refreshers: Promise<unknown>[] = [refreshGlobalAutoDrive(), refreshTasks()]
+      if (selectedTaskId) {
+        refreshers.push(refreshTask(selectedTaskId))
+      }
+      void Promise.all(refreshers)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [globalAutoDrive, refreshGlobalAutoDrive, refreshTask, refreshTasks, selectedTaskId])
 
   const handleCreateTask = useCallback(async () => {
     if (!taskPrompt.trim() || creatingTask) {
@@ -597,6 +676,57 @@ function App() {
     }
   }, [managingAutoDrive, onError, pushToast, refreshTask, refreshTasks, task])
 
+  const handleStartGlobalAutoDrive = useCallback(async () => {
+    if (managingGlobalAutoDrive) {
+      return
+    }
+    setManagingGlobalAutoDrive(true)
+    try {
+      const result = await startGlobalAutoDrive()
+      setContinueDecision(null)
+      setGlobalAutoDrive(result)
+      const refreshers: Promise<unknown>[] = [refreshGlobalAutoDrive(), refreshTasks()]
+      if (selectedTaskId) {
+        refreshers.push(refreshTask(selectedTaskId))
+      }
+      await Promise.all(refreshers)
+      pushToast({
+        id: `global-autodrive-start-${Date.now()}`,
+        message: result.summary,
+        tone: 'green',
+      })
+    } catch (error) {
+      onError(error, '开启全局无人值守失败。')
+    } finally {
+      setManagingGlobalAutoDrive(false)
+    }
+  }, [managingGlobalAutoDrive, onError, pushToast, refreshGlobalAutoDrive, refreshTask, refreshTasks, selectedTaskId])
+
+  const handleStopGlobalAutoDrive = useCallback(async () => {
+    if (managingGlobalAutoDrive) {
+      return
+    }
+    setManagingGlobalAutoDrive(true)
+    try {
+      const result = await stopGlobalAutoDrive()
+      setGlobalAutoDrive(result)
+      const refreshers: Promise<unknown>[] = [refreshGlobalAutoDrive(), refreshTasks()]
+      if (selectedTaskId) {
+        refreshers.push(refreshTask(selectedTaskId))
+      }
+      await Promise.all(refreshers)
+      pushToast({
+        id: `global-autodrive-stop-${Date.now()}`,
+        message: result.summary,
+        tone: 'amber',
+      })
+    } catch (error) {
+      onError(error, '停止全局无人值守失败。')
+    } finally {
+      setManagingGlobalAutoDrive(false)
+    }
+  }, [managingGlobalAutoDrive, onError, pushToast, refreshGlobalAutoDrive, refreshTask, refreshTasks, selectedTaskId])
+
   const handleAdoptRun = useCallback(async (runId: string) => {
     try {
       await adoptRun(runId)
@@ -641,6 +771,19 @@ function App() {
     [selectedRunId, task],
   )
   const autoDriveEnabled = useMemo(() => parseAutoDriveEnabled(task?.metadata.autoDriveEnabled), [task])
+  const globalAutoDriveEnabled = useMemo(() => globalAutoDrive?.enabled === true, [globalAutoDrive])
+  const globalCurrentTaskTitle = useMemo(() => {
+    if (!globalAutoDrive?.currentTaskId) {
+      return null
+    }
+    return tasks.find((item) => item.id === globalAutoDrive.currentTaskId)?.title ?? globalAutoDrive.currentTaskId
+  }, [globalAutoDrive, tasks])
+  const globalScopeTaskTitle = useMemo(() => {
+    if (!globalAutoDrive?.currentScopeTaskId) {
+      return null
+    }
+    return tasks.find((item) => item.id === globalAutoDrive.currentScopeTaskId)?.title ?? globalAutoDrive.currentScopeTaskId
+  }, [globalAutoDrive, tasks])
 
   const breadcrumb = useMemo(() => (task ? `Tasks / ${task.title}` : 'Tasks'), [task])
   const selectedRunLabel = useMemo(() => {
@@ -670,8 +813,49 @@ function App() {
       toasts={toasts}
       panel={<TaskPanel artifacts={artifacts} snapshots={task?.snapshots ?? []} reviews={task?.reviews ?? []} selectedRunLabel={selectedRunLabel} />}
       main={
-        selectedTaskId ? (
-          <div className="task-main-shell">
+        <div className="task-main-shell">
+          <section className="feed-card">
+            <div className="feed-card-head">
+              <div className="feed-card-title-stack">
+                <div className="feed-card-title">全局无人值守</div>
+                <div className="feed-card-subtle">{globalAutoDrive?.summary ?? '当前还没有开启全局无人值守。'}</div>
+              </div>
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={managingGlobalAutoDrive}
+                onClick={globalAutoDriveEnabled ? handleStopGlobalAutoDrive : handleStartGlobalAutoDrive}
+              >
+                {managingGlobalAutoDrive
+                  ? globalAutoDriveEnabled
+                    ? '停止中…'
+                    : '启动中…'
+                  : globalAutoDriveEnabled
+                    ? '停止全局无人值守'
+                    : '开启全局无人值守'}
+              </button>
+            </div>
+            <div className="task-chip-row">
+              <span className="file-chip">状态 · {globalAutoDriveEnabled ? '已开启' : '未开启'}</span>
+              {globalAutoDrive?.status ? <span className="file-chip">阶段 · {autoDriveStatusLabel(globalAutoDrive.status)}</span> : null}
+              {globalAutoDrive?.lastAction ? <span className="file-chip">动作 · {globalAutoDrive.lastAction}</span> : null}
+              {globalAutoDrive?.lastReason ? (
+                <span className="file-chip">原因 · {autoDriveReasonLabel(globalAutoDrive.lastReason)}</span>
+              ) : null}
+              {typeof globalAutoDrive?.loopCount === 'number' ? <span className="file-chip">轮次 · {globalAutoDrive.loopCount}</span> : null}
+            </div>
+            {globalCurrentTaskTitle || globalScopeTaskTitle || globalAutoDrive?.currentRunId || globalAutoDrive?.error ? (
+              <div className="task-chip-row">
+                {globalCurrentTaskTitle ? <span className="file-chip">当前任务 · {globalCurrentTaskTitle}</span> : null}
+                {globalScopeTaskTitle ? <span className="file-chip">当前 scope · {globalScopeTaskTitle}</span> : null}
+                {globalAutoDrive?.currentRunId ? <span className="file-chip">当前 Run · {globalAutoDrive.currentRunId}</span> : null}
+                {globalAutoDrive?.error ? <span className="file-chip">错误 · {globalAutoDrive.error}</span> : null}
+              </div>
+            ) : null}
+          </section>
+
+          {selectedTaskId ? (
+            <>
             <div className="task-main-actions">
               <button type="button" className="button-primary" disabled={dispatchingNext} onClick={handleDispatchNext}>
                 {dispatchingNext ? 'KAM 接任务中…' : '让 KAM 接下一张'}
@@ -744,10 +928,11 @@ function App() {
               onAdoptRun={handleAdoptRun}
               onRetryRun={handleRetryRun}
             />
-          </div>
-        ) : (
-          <EmptyTaskState value={taskPrompt} onChange={setTaskPrompt} onSubmit={handleCreateTask} isBusy={creatingTask} />
-        )
+            </>
+          ) : (
+            <EmptyTaskState value={taskPrompt} onChange={setTaskPrompt} onSubmit={handleCreateTask} isBusy={creatingTask} />
+          )}
+        </div>
       }
     />
   )

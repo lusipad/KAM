@@ -107,10 +107,43 @@ test('can enter self-driving mode for the current task family', async ({ page })
   }).toBeTruthy()
 })
 
+test('can enter global self-driving mode across task families', async ({ page }) => {
+  const secondRootResponse = await page.request.post('/api/tasks', {
+    data: {
+      title: '推进第二个 task family',
+      description: '验证 KAM 会跨 family 接活',
+      repoPath: 'D:/Repos/KAM',
+      status: 'in_progress',
+      priority: 'medium',
+      labels: ['dogfood', 'global'],
+    },
+  })
+  expect(secondRootResponse.ok()).toBeTruthy()
+  const secondRoot = await secondRootResponse.json()
+
+  await expect(page.getByRole('button', { name: '开启全局无人值守' })).toBeVisible()
+  await page.getByRole('button', { name: '开启全局无人值守' }).click()
+
+  await expect(page.getByRole('button', { name: '停止全局无人值守' })).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '全局无人值守' }).first()).toBeVisible()
+  await expect.poll(async () => {
+    const response = await page.request.get('/api/tasks/autodrive/global')
+    const payload = await response.json()
+    return payload.lastReason
+  }).toBe('no_high_value_action')
+  await expect.poll(async () => {
+    const response = await page.request.get('/api/tasks')
+    const payload = await response.json()
+    return payload.tasks.filter((item: { metadata: { parentTaskId?: string } }) => item.metadata.parentTaskId === secondRoot.id).length
+  }).toBeGreaterThan(0)
+})
+
 test('mobile keeps task detail and artifact panel reachable', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
 
-  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+  const taskTitle = page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()
+  await taskTitle.scrollIntoViewIfNeeded()
+  await expect(taskTitle).toBeVisible()
   await expect(page.locator('.memory-title').filter({ hasText: 'Artifacts' })).toBeVisible()
   await expect(page.locator('.memory-subtle').filter({ hasText: 'codex · passed' })).toBeVisible()
 })

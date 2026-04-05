@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from db import get_db
 from models import Task, TaskRef, TaskRun, now
 from services.task_dispatcher import TaskDispatcherService
-from services.task_autodrive import TaskAutoDriveService
+from services.task_autodrive import GlobalAutoDriveService, TaskAutoDriveService
 from services.run_engine import RunEngine
 from services.task_planner import TaskPlannerService
 from services.task_context import TaskContextService
@@ -116,6 +116,21 @@ async def stop_task_autodrive(task_id: str, db: AsyncSession = Depends(get_db)):
     if result is None:
         raise HTTPException(status_code=404, detail="任务不存在")
     return result.to_dict()
+
+
+@router.get("/autodrive/global")
+async def get_global_autodrive_status(db: AsyncSession = Depends(get_db)):
+    return (await GlobalAutoDriveService(db).get_status()).to_dict()
+
+
+@router.post("/autodrive/global/start")
+async def start_global_autodrive(db: AsyncSession = Depends(get_db)):
+    return (await GlobalAutoDriveService(db).start()).to_dict()
+
+
+@router.post("/autodrive/global/stop")
+async def stop_global_autodrive(db: AsyncSession = Depends(get_db)):
+    return (await GlobalAutoDriveService(db).stop()).to_dict()
 
 
 @router.post("")

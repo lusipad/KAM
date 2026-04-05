@@ -1,4 +1,5 @@
 import type {
+  GlobalAutoDriveResponse,
   TaskAutoDriveResponse,
   TaskContinueResponse,
   TaskDispatchResponse,
@@ -177,6 +178,22 @@ export function startTaskAutoDrive(taskId: string) {
 
 export function stopTaskAutoDrive(taskId: string) {
   return request<TaskAutoDriveResponse>(`/tasks/${taskId}/autodrive/stop`, {
+    method: 'POST',
+  })
+}
+
+export function getGlobalAutoDriveStatus() {
+  return request<GlobalAutoDriveResponse>('/tasks/autodrive/global')
+}
+
+export function startGlobalAutoDrive() {
+  return request<GlobalAutoDriveResponse>('/tasks/autodrive/global/start', {
+    method: 'POST',
+  })
+}
+
+export function stopGlobalAutoDrive() {
+  return request<GlobalAutoDriveResponse>('/tasks/autodrive/global/stop', {
     method: 'POST',
   })
 }

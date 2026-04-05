@@ -31,16 +31,19 @@ from db import engine  # noqa: E402
 from main import app  # noqa: E402
 from models import ContextSnapshot, Task, TaskRun  # noqa: E402
 from services.run_engine import RunEngine, wait_for_background_runs  # noqa: E402
+from services.task_autodrive import reset_autodrive_runtime_state  # noqa: E402
 
 
 class HarnessApiTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
         self.client.__enter__()
+        reset_autodrive_runtime_state()
         asyncio.run(self._truncate_tables())
 
     def tearDown(self):
         asyncio.run(wait_for_background_runs())
+        reset_autodrive_runtime_state()
         self.client.__exit__(None, None, None)
         asyncio.run(engine.dispose())
 
@@ -406,6 +409,138 @@ class HarnessApiTests(unittest.TestCase):
             self.assertTrue(detail["runs"])
             self.assertEqual(detail["runs"][-1]["status"], "passed")
 
+    def test_global_autodrive_start_advances_across_task_families(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+        second_root_id = asyncio.run(self._seed_secondary_root_task())
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：global auto drive"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post("/api/tasks/autodrive/global/start")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["enabled"])
+        self.assertFalse(payload["running"])
+        self.assertIn("已开启全局无人值守", payload["summary"])
+
+        status = self.client.get("/api/tasks/autodrive/global").json()
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["status"], "idle")
+        self.assertEqual(status["lastAction"], "stop")
+        self.assertEqual(status["lastReason"], "no_high_value_action")
+        self.assertGreaterEqual(status["loopCount"], 3)
+
+        tasks = self.client.get("/api/tasks").json()["tasks"]
+        root_one_children = [item for item in tasks if item["metadata"].get("parentTaskId") == "task-harness-cutover"]
+        root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
+        self.assertGreaterEqual(len(root_one_children), 2)
+        self.assertGreaterEqual(len(root_two_children), 1)
+        self.assertTrue(all(item["status"] == "in_progress" for item in root_two_children))
+        for item in root_two_children:
+            detail = self.client.get(f"/api/tasks/{item['id']}").json()
+            self.assertTrue(detail["runs"])
+            self.assertEqual(detail["runs"][-1]["status"], "passed")
+
+    def test_global_autodrive_stop_disables_supervisor(self):
+        start_response = self.client.post("/api/tasks/autodrive/global/start")
+        self.assertEqual(start_response.status_code, 200)
+
+        response = self.client.post("/api/tasks/autodrive/global/stop")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["enabled"])
+        self.assertFalse(payload["running"])
+        self.assertEqual(payload["status"], "disabled")
+        self.assertEqual(payload["lastReason"], "global_auto_drive_stopped")
+        self.assertEqual(payload["currentTaskId"], None)
+        self.assertIn("已停止全局无人值守", payload["summary"])
+
+        status = self.client.get("/api/tasks/autodrive/global").json()
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["status"], "disabled")
+
+    def test_seed_harness_reset_clears_global_autodrive_runtime_state(self):
+        self.client.post("/api/tasks/autodrive/global/start")
+
+        response = self.client.post("/api/dev/seed-harness", json={"reset": True})
+
+        self.assertEqual(response.status_code, 200)
+        status = self.client.get("/api/tasks/autodrive/global").json()
+        self.assertFalse(status["enabled"])
+        self.assertEqual(status["status"], "disabled")
+        self.assertEqual(status["summary"], "当前还没有开启全局无人值守。")
+
+    def test_dispatch_next_tries_later_parent_when_first_parent_has_no_new_follow_up(self):
+        asyncio.run(self._seed_parent_selection_gap())
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：later parent dispatch"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post("/api/tasks/dispatch-next", json={"createPlanIfNeeded": True})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"], "planned_task")
+        self.assertEqual(payload["plannedFromTaskId"], "taskroot0002")
+        self.assertEqual(payload["task"]["metadata"]["parentTaskId"], "taskroot0002")
+        self.assertEqual(payload["run"]["status"], "passed")
+
+    def test_manual_run_prefers_global_autodrive_scheduler_when_enabled(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "run 完成后优先续全局",
+                "repoPath": "D:/Repos/KAM",
+                "status": "in_progress",
+                "priority": "high",
+            },
+        ).json()
+        schedule_calls: list[str] = []
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：prefer global scheduler"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        async def fake_schedule_global_autodrive_if_enabled():
+            schedule_calls.append("global")
+            return True
+
+        async def fake_schedule_autodrive_for_task(task_id: str | None):
+            schedule_calls.append(f"scope:{task_id}")
+            return task_id
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+            patch("services.run_engine.schedule_global_autodrive_if_enabled", new=fake_schedule_global_autodrive_if_enabled),
+            patch("services.run_engine.schedule_autodrive_for_task", new=fake_schedule_autodrive_for_task),
+        ):
+            response = self.client.post(
+                f"/api/tasks/{task['id']}/runs",
+                json={"agent": "codex", "task": "执行完成后应该优先回到全局调度。"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(schedule_calls, ["global"])
+
     def test_manual_run_does_not_autodrive_without_opt_in(self):
         task = self.client.post(
             "/api/tasks",
@@ -668,5 +803,66 @@ class HarnessApiTests(unittest.TestCase):
                     changed_files=["backend/services/task_dispatcher.py"],
                     check_passed=False,
                     raw_output="AssertionError: retry root",
+                )
+            )
+
+    async def _seed_secondary_root_task(self) -> str:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskroot0002",
+                    title="推进第二个 task family",
+                    description="验证全局无人值守会继续跨 family 接活。",
+                    repo_path="D:/Repos/KAM",
+                    status="in_progress",
+                    priority="medium",
+                    labels=["dogfood", "global"],
+                )
+            )
+        return "taskroot0002"
+
+    async def _seed_parent_selection_gap(self) -> None:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskroot0001",
+                    title="第一个 root 已无新 follow-up",
+                    description="planner 不应卡死在这里。",
+                    repo_path="D:/Repos/KAM",
+                    status="in_progress",
+                    priority="high",
+                    labels=["dogfood", "planner"],
+                )
+            )
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskroot0002",
+                    title="第二个 root 仍可继续推进",
+                    description="planner 应该继续尝试后面的 root。",
+                    repo_path="D:/Repos/KAM",
+                    status="in_progress",
+                    priority="medium",
+                    labels=["dogfood", "planner"],
+                )
+            )
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskrootdone1",
+                    title="已存在的 generic follow-up",
+                    description="用于挡住第一个 root 的 generic 下一步。",
+                    repo_path="D:/Repos/KAM",
+                    status="verified",
+                    priority="medium",
+                    labels=["dogfood", "planner"],
+                    metadata={
+                        "parentTaskId": "taskroot0001",
+                        "sourceTaskId": "taskroot0001",
+                        "sourceKind": "task",
+                        "planningReason": "task_next_step",
+                        "recommendedPrompt": "这个 child 已经存在。",
+                        "recommendedAgent": "codex",
+                        "acceptanceChecks": ["noop"],
+                        "suggestedRefs": [],
+                    },
                 )
             )
