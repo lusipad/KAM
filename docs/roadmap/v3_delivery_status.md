@@ -50,6 +50,7 @@
 - 服务重启后会恢复 persisted global auto-drive，并把重启前残留的 `pending/running` runs 标记为中断失败，避免假活跃 run 卡死调度
 - global auto-drive 已增加本地文件 lease：并发 KAM 进程会做 owner 去重、fresh lease 等待、stale lease 回收，避免重复接同一批活
 - global auto-drive loop 遇到调度异常后会自动重试，而不是保持 enabled 但后台 supervisor 已退出
+- global auto-drive 状态面板已返回结构化 lease / health 字段，能直接看到 owner、heartbeat、stale 与最近状态更新时间
 - 前端已新增全局无人值守状态面板与开关
 - 新增 harness smoke
 - 新增 opt-in 真实 agent smoke（默认覆盖 `codex` 的临时 git repo 改动、Lore commit 和 adopt 链路）

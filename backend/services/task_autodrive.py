@@ -71,6 +71,8 @@ class GlobalAutoDriveControlResult:
     current_run_id: str | None = None
     loop_count: int = 0
     error: str | None = None
+    updated_at: str | None = None
+    lease: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -85,6 +87,8 @@ class GlobalAutoDriveControlResult:
             "currentRunId": self.current_run_id,
             "loopCount": self.loop_count,
             "error": self.error,
+            "updatedAt": self.updated_at,
+            "lease": self.lease,
         }
 
 
@@ -106,6 +110,7 @@ class _GlobalAutoDriveState:
     current_run_id: str | None = None
     loop_count: int = 0
     error: str | None = None
+    updated_at: str | None = None
 
 
 _STATE = _AutoDriveState()
@@ -288,6 +293,8 @@ class GlobalAutoDriveService:
             current_run_id=_GLOBAL_STATE.current_run_id,
             loop_count=_GLOBAL_STATE.loop_count,
             error=_GLOBAL_STATE.error,
+            updated_at=_GLOBAL_STATE.updated_at,
+            lease=_read_global_lease_status(),
         )
 
 
@@ -591,26 +598,38 @@ def _update_global_state(
     increment_loop_count: bool = False,
     error: str | None = None,
 ) -> None:
+    changed = False
     if status is not None:
         _GLOBAL_STATE.status = status
+        changed = True
     if summary is not None:
         _GLOBAL_STATE.summary = summary
+        changed = True
     if action is not None:
         _GLOBAL_STATE.last_action = action
+        changed = True
     if reason is not None:
         _GLOBAL_STATE.last_reason = reason
+        changed = True
     if current_task_id is not _UNSET:
         _GLOBAL_STATE.current_task_id = current_task_id if isinstance(current_task_id, str) and current_task_id else None
+        changed = True
     if current_scope_task_id is not _UNSET:
         _GLOBAL_STATE.current_scope_task_id = (
             current_scope_task_id if isinstance(current_scope_task_id, str) and current_scope_task_id else None
         )
+        changed = True
     if current_run_id is not _UNSET:
         _GLOBAL_STATE.current_run_id = current_run_id if isinstance(current_run_id, str) and current_run_id else None
+        changed = True
     if increment_loop_count:
         _GLOBAL_STATE.loop_count += 1
+        changed = True
     if error is not None:
         _GLOBAL_STATE.error = error or None
+        changed = True
+    if changed:
+        _GLOBAL_STATE.updated_at = now().isoformat()
 
 
 def _is_background_task_running(task: asyncio.Future[None] | None) -> bool:
@@ -702,6 +721,7 @@ def _reset_global_autodrive_state(*, enabled: bool) -> None:
     _GLOBAL_STATE.current_run_id = None
     _GLOBAL_STATE.loop_count = 0
     _GLOBAL_STATE.error = None
+    _GLOBAL_STATE.updated_at = now().isoformat()
 
 
 async def _list_enabled_scope_task_ids() -> list[str]:
@@ -770,6 +790,26 @@ def _load_global_lease_payload() -> dict[str, Any] | None:
         return None
     except (OSError, json.JSONDecodeError, ValueError):
         return None
+
+
+def _read_global_lease_status() -> dict[str, object] | None:
+    payload = _load_global_lease_payload()
+    if payload is None:
+        return None
+    owner_id = payload.get("ownerId")
+    heartbeat_at = payload.get("heartbeatAt")
+    acquired_at = payload.get("acquiredAt")
+    hostname = payload.get("hostname")
+    pid = payload.get("pid")
+    return {
+        "ownerId": owner_id if isinstance(owner_id, str) and owner_id.strip() else None,
+        "pid": pid if isinstance(pid, int) else None,
+        "hostname": hostname if isinstance(hostname, str) and hostname.strip() else None,
+        "acquiredAt": acquired_at if isinstance(acquired_at, str) and acquired_at.strip() else None,
+        "heartbeatAt": heartbeat_at if isinstance(heartbeat_at, str) and heartbeat_at.strip() else None,
+        "ownedByCurrentProcess": _is_current_process_global_lease(payload),
+        "stale": _is_global_lease_stale(payload),
+    }
 
 
 def _acquire_or_refresh_global_lease() -> tuple[bool, dict[str, Any] | None]:

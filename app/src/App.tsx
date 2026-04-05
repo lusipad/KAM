@@ -183,6 +183,33 @@ function autoDriveReasonLabel(value: string | null) {
   return value
 }
 
+function autoDriveLeaseLabel(value: GlobalAutoDriveResponse['lease']) {
+  if (!value) {
+    return null
+  }
+  const owner = value.hostname && value.pid ? `${value.hostname}:${value.pid}` : value.ownerId
+  if (!owner) {
+    return null
+  }
+  return value.ownedByCurrentProcess ? `${owner} · 当前实例` : owner
+}
+
+function autoDriveTimeLabel(value: string | null) {
+  if (!value) {
+    return null
+  }
+  const timestamp = new Date(value)
+  if (Number.isNaN(timestamp.getTime())) {
+    return value
+  }
+  return timestamp.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+}
+
 function shouldPollTask(detail: TaskDetail | null) {
   if (!detail) {
     return false
@@ -793,6 +820,12 @@ function App() {
     }
     return tasks.find((item) => item.id === globalAutoDrive.currentScopeTaskId)?.title ?? globalAutoDrive.currentScopeTaskId
   }, [globalAutoDrive, tasks])
+  const globalLeaseLabel = useMemo(() => autoDriveLeaseLabel(globalAutoDrive?.lease ?? null), [globalAutoDrive?.lease])
+  const globalLeaseHeartbeatLabel = useMemo(
+    () => autoDriveTimeLabel(globalAutoDrive?.lease?.heartbeatAt ?? null),
+    [globalAutoDrive?.lease?.heartbeatAt],
+  )
+  const globalUpdatedAtLabel = useMemo(() => autoDriveTimeLabel(globalAutoDrive?.updatedAt ?? null), [globalAutoDrive?.updatedAt])
 
   const breadcrumb = useMemo(() => (task ? `Tasks / ${task.title}` : 'Tasks'), [task])
   const selectedRunLabel = useMemo(() => {
@@ -852,6 +885,10 @@ function App() {
                 <span className="file-chip">原因 · {autoDriveReasonLabel(globalAutoDrive.lastReason)}</span>
               ) : null}
               {typeof globalAutoDrive?.loopCount === 'number' ? <span className="file-chip">轮次 · {globalAutoDrive.loopCount}</span> : null}
+              {globalLeaseLabel ? <span className="file-chip">Lease · {globalLeaseLabel}</span> : null}
+              {globalAutoDrive?.lease?.stale ? <span className="file-chip">Lease 状态 · stale</span> : null}
+              {globalLeaseHeartbeatLabel ? <span className="file-chip">Lease 心跳 · {globalLeaseHeartbeatLabel}</span> : null}
+              {globalUpdatedAtLabel ? <span className="file-chip">最近更新 · {globalUpdatedAtLabel}</span> : null}
             </div>
             {globalCurrentTaskTitle || globalScopeTaskTitle || globalAutoDrive?.currentRunId || globalAutoDrive?.error ? (
               <div className="task-chip-row">

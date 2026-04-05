@@ -489,6 +489,11 @@ class HarnessApiTests(unittest.TestCase):
         self.assertTrue(status["enabled"])
         self.assertEqual(status["status"], "waiting_for_lease")
         self.assertEqual(status["lastReason"], "global_auto_drive_lease_held_by_other_process")
+        self.assertIsNotNone(status["updatedAt"])
+        self.assertEqual(status["lease"]["hostname"], "foreign-host")
+        self.assertEqual(status["lease"]["pid"], 4321)
+        self.assertFalse(status["lease"]["ownedByCurrentProcess"])
+        self.assertFalse(status["lease"]["stale"])
 
         tasks = self.client.get("/api/tasks").json()["tasks"]
         root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
@@ -516,6 +521,8 @@ class HarnessApiTests(unittest.TestCase):
         self.assertTrue(status["enabled"])
         self.assertEqual(status["status"], "idle")
         self.assertEqual(status["lastReason"], "no_high_value_action")
+        self.assertTrue(status["lease"]["ownedByCurrentProcess"])
+        self.assertFalse(status["lease"]["stale"])
 
         tasks = self.client.get("/api/tasks").json()["tasks"]
         root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]

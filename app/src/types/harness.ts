@@ -129,6 +129,16 @@ export interface TaskAutoDriveResponse {
   summary: string
 }
 
+export interface GlobalAutoDriveLeaseStatus {
+  ownerId: string | null
+  pid: number | null
+  hostname: string | null
+  acquiredAt: string | null
+  heartbeatAt: string | null
+  ownedByCurrentProcess: boolean
+  stale: boolean
+}
+
 export interface GlobalAutoDriveResponse {
   enabled: boolean
   running: boolean
@@ -141,4 +151,6 @@ export interface GlobalAutoDriveResponse {
   currentRunId: string | null
   loopCount: number
   error: string | null
+  updatedAt: string | null
+  lease: GlobalAutoDriveLeaseStatus | null
 }
