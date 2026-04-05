@@ -16,6 +16,8 @@ import {
   listTasks,
   planTaskFollowUps,
   resolveTaskContext,
+  startTaskAutoDrive,
+  stopTaskAutoDrive,
   retryRun,
   updateTask,
 } from '@/api/client'
@@ -115,6 +117,28 @@ function parsePlannerSuggestedRefs(value: unknown): SuggestedTaskRefRecord[] {
   })
 }
 
+function parseAutoDriveEnabled(value: unknown) {
+  return value === true
+}
+
+function parseAutoDriveStatus(value: unknown) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function shouldPollTask(detail: TaskDetail | null) {
+  if (!detail) {
+    return false
+  }
+  if (detail.runs.some((run) => run.status === 'pending' || run.status === 'running')) {
+    return true
+  }
+  if (!parseAutoDriveEnabled(detail.metadata.autoDriveEnabled)) {
+    return false
+  }
+  const status = parseAutoDriveStatus(detail.metadata.autoDriveStatus)
+  return status === 'running' || status === 'waiting_for_run'
+}
+
 function readPlanningMetadata(metadata: Record<string, unknown> | null | undefined) {
   const value = metadata ?? {}
   return {
@@ -177,6 +201,7 @@ function App() {
   const [creatingPlan, setCreatingPlan] = useState(false)
   const [dispatchingNext, setDispatchingNext] = useState(false)
   const [continuingTask, setContinuingTask] = useState(false)
+  const [managingAutoDrive, setManagingAutoDrive] = useState(false)
   const [savingTask, setSavingTask] = useState(false)
   const [snapshotFocus, setSnapshotFocus] = useState('')
   const [refDraft, setRefDraft] = useState({ kind: 'file', label: '', value: '' })
@@ -262,14 +287,14 @@ function App() {
   }, [selectedTaskId])
 
   useEffect(() => {
-    if (!selectedTaskId || !task?.runs.some((run) => run.status === 'pending' || run.status === 'running')) {
+    if (!selectedTaskId || !shouldPollTask(task)) {
       return
     }
     const timer = window.setInterval(() => {
-      void refreshTask(selectedTaskId)
+      void Promise.all([refreshTask(selectedTaskId), refreshTasks()])
     }, 2000)
     return () => window.clearInterval(timer)
-  }, [refreshTask, selectedTaskId, task?.runs])
+  }, [refreshTask, refreshTasks, selectedTaskId, task])
 
   const handleCreateTask = useCallback(async () => {
     if (!taskPrompt.trim() || creatingTask) {
@@ -529,6 +554,49 @@ function App() {
     }
   }, [continuingTask, onError, pushToast, refreshTask, refreshTasks, task])
 
+  const handleStartAutoDrive = useCallback(async () => {
+    if (!task || managingAutoDrive) {
+      return
+    }
+    setManagingAutoDrive(true)
+    try {
+      const result = await startTaskAutoDrive(task.id)
+      setContinueDecision(null)
+      setSelectedTaskId(result.scopeTaskId)
+      await Promise.all([refreshTasks(), refreshTask(result.scopeTaskId)])
+      pushToast({
+        id: `task-autodrive-start-${Date.now()}`,
+        message: result.summary,
+        tone: 'green',
+      })
+    } catch (error) {
+      onError(error, '开启无人值守失败。')
+    } finally {
+      setManagingAutoDrive(false)
+    }
+  }, [managingAutoDrive, onError, pushToast, refreshTask, refreshTasks, task])
+
+  const handleStopAutoDrive = useCallback(async () => {
+    if (!task || managingAutoDrive) {
+      return
+    }
+    setManagingAutoDrive(true)
+    try {
+      const result = await stopTaskAutoDrive(task.id)
+      setSelectedTaskId(result.scopeTaskId)
+      await Promise.all([refreshTasks(), refreshTask(result.scopeTaskId)])
+      pushToast({
+        id: `task-autodrive-stop-${Date.now()}`,
+        message: result.summary,
+        tone: 'amber',
+      })
+    } catch (error) {
+      onError(error, '停止无人值守失败。')
+    } finally {
+      setManagingAutoDrive(false)
+    }
+  }, [managingAutoDrive, onError, pushToast, refreshTask, refreshTasks, task])
+
   const handleAdoptRun = useCallback(async (runId: string) => {
     try {
       await adoptRun(runId)
@@ -572,6 +640,7 @@ function App() {
     () => task?.runs.find((item) => item.id === selectedRunId) ?? task?.runs.at(-1) ?? null,
     [selectedRunId, task],
   )
+  const autoDriveEnabled = useMemo(() => parseAutoDriveEnabled(task?.metadata.autoDriveEnabled), [task])
 
   const breadcrumb = useMemo(() => (task ? `Tasks / ${task.title}` : 'Tasks'), [task])
   const selectedRunLabel = useMemo(() => {
@@ -607,6 +676,16 @@ function App() {
               <button type="button" className="button-primary" disabled={dispatchingNext} onClick={handleDispatchNext}>
                 {dispatchingNext ? 'KAM 接任务中…' : '让 KAM 接下一张'}
               </button>
+              {task ? (
+                <button
+                  type="button"
+                  className="button-secondary"
+                  disabled={managingAutoDrive}
+                  onClick={autoDriveEnabled ? handleStopAutoDrive : handleStartAutoDrive}
+                >
+                  {managingAutoDrive ? (autoDriveEnabled ? '停止中…' : '启动中…') : autoDriveEnabled ? '停止无人值守' : '进入无人值守'}
+                </button>
+              ) : null}
               {task ? (
                 <button type="button" className="button-secondary" disabled={continuingTask} onClick={handleContinueTask}>
                   {continuingTask ? 'KAM 推进中…' : '继续推进当前任务'}

@@ -20,6 +20,7 @@ from db import async_session
 from models import Task, TaskRun, now
 from services.artifact_store import ArtifactStore
 from services.digest import DigestService
+from services.task_autodrive import schedule_autodrive_for_task, wait_for_background_autodrive
 from services.task_context import TaskContextService
 
 
@@ -147,6 +148,7 @@ class RunEngine:
 
     async def _execute_task_run(self, run_id: str) -> None:
         async with _STATE.semaphore:
+            auto_drive_task_id: str | None = None
             try:
                 async with async_session() as session:
                     run = await self._load_task_run(session, run_id)
@@ -165,6 +167,7 @@ class RunEngine:
                         if task_record is not None:
                             task_record.updated_at = now()
                         await session.commit()
+                        auto_drive_task_id = run.task_id
                         return
 
                     worktree_path, command = await self._prepare_task_execution(run, task_record)
@@ -194,6 +197,7 @@ class RunEngine:
                     if task_record is not None:
                         task_record.updated_at = now()
                     await session.commit()
+                    auto_drive_task_id = run.task_id
             except Exception as exc:
                 async with async_session() as session:
                     run = await self._load_task_run(session, run_id)
@@ -205,9 +209,15 @@ class RunEngine:
                         if run.task_rel is not None:
                             run.task_rel.updated_at = now()
                         await session.commit()
+                        auto_drive_task_id = run.task_id
             finally:
                 _STATE.tasks.pop(run_id, None)
                 _STATE.initial_artifacts.pop(run_id, None)
+                if auto_drive_task_id is not None:
+                    try:
+                        await schedule_autodrive_for_task(auto_drive_task_id)
+                    except Exception:
+                        pass
 
     async def _prepare_task_execution(self, run: TaskRun, task_record: Task | None) -> tuple[Path | None, list[str]]:
         repo_path = Path(task_record.repo_path).resolve() if task_record and task_record.repo_path else None
@@ -428,13 +438,24 @@ class RunEngine:
 
 
 async def wait_for_background_runs(timeout: float = 5.0) -> None:
-    pending = list(_STATE.tasks.values())
-    if not pending:
-        return
-    done, still_pending = await asyncio.wait(pending, timeout=timeout)
-    for task in still_pending:
-        task.cancel()
-    if still_pending:
-        await asyncio.gather(*still_pending, return_exceptions=True)
-    if done:
-        await asyncio.gather(*done, return_exceptions=True)
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        pending = [task for task in _STATE.tasks.values() if not task.done()]
+        if not pending:
+            break
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            break
+        done, still_pending = await asyncio.wait(pending, timeout=remaining)
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+        if still_pending:
+            for task in still_pending:
+                task.cancel()
+            await asyncio.gather(*still_pending, return_exceptions=True)
+            break
+    remaining = deadline - asyncio.get_event_loop().time()
+    await wait_for_background_autodrive(timeout=max(0.0, remaining))

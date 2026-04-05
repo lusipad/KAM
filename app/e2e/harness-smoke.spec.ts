@@ -87,6 +87,26 @@ test('can let KAM continue the current task with an automatic decision', async (
   await expect(page.locator('.file-chip').filter({ hasText: '来源 · planned_task' }).first()).toBeVisible()
 })
 
+test('can enter self-driving mode for the current task family', async ({ page }) => {
+  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: '进入无人值守' }).click()
+
+  await expect(page.getByRole('button', { name: '停止无人值守' })).toBeVisible()
+  await expect(page.locator('.task-list-row').filter({ hasText: '无人值守' }).first()).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: '状态 · 已开启' }).first()).toBeVisible()
+  await expect.poll(async () => {
+    const response = await page.request.get('/api/tasks')
+    const payload = await response.json()
+    return payload.tasks.length
+  }).toBe(3)
+  await expect.poll(async () => {
+    const response = await page.request.get('/api/tasks/task-harness-cutover')
+    const payload = await response.json()
+    return ['dispatched_next_runnable_task', 'no_high_value_action'].includes(payload.metadata.autoDriveLastReason)
+  }).toBeTruthy()
+})
+
 test('mobile keeps task detail and artifact panel reachable', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
 

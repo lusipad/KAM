@@ -11,6 +11,7 @@
 - task self-planning：已具备可执行 child task 能力
 - task self-dispatch：已具备最小可用能力
 - task self-continue：已具备最小可用能力
+- task family auto-drive：已具备当前任务族级别的 opt-in 无人值守能力
 - V3 legacy runtime：已退场
 
 ## 已完成
@@ -40,6 +41,8 @@
 - planner 生成的 child task 会自动带上推荐 Prompt、验收检查项和建议 refs，并可直接开跑
 - KAM 已可从现有任务池里自动接下一张任务；没有可跑 child task 时会先拆一张再开跑
 - KAM 已可围绕当前 task family 自动继续推进：优先 `adopt / retry / plan_and_dispatch / stop`
+- KAM 已可对当前 task family 开启自动托管：run 完成后会继续复用 `continue_task()`，直到显式 `stop`
+- 新增 `/api/tasks/{task_id}/autodrive/start` 与 `/api/tasks/{task_id}/autodrive/stop`
 - 新增 harness smoke
 - 新增 opt-in 真实 agent smoke（默认覆盖 `codex` 的临时 git repo 改动、Lore commit 和 adopt 链路）
 - 新增 `POST /api/dev/seed-harness`
@@ -54,6 +57,7 @@
 - 把 task self-planning 从当前启发式继续做硬：引入更稳定的 repo/task 信号排序和更细的完成定义
 - 把真实 `codex` 仓库改动链路稳固成默认 smoke 门禁
 - 把 next-task / continue 调度策略继续做硬：完成定义、重试策略，以及失败任务、待 adopt 任务与新任务之间的排序
+- 把当前 task family 级 auto-drive 往真正的全局无人值守推进：跨 family 接活、重启恢复和更强的并发 lease 仍未做
 - 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
 
 ### 明确不优先做
@@ -66,7 +70,7 @@
 ## 当前建议
 
 - 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
-- 下一步优先把 task self-continue / self-dispatch 做得更可靠，再把真实 `codex` 改仓库链路做成更硬的门禁
+- 下一步优先把 task family auto-drive 做得更可靠，再把真实 `codex` 改仓库链路做成更硬的门禁
 - 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档

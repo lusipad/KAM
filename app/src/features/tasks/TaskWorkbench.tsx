@@ -68,6 +68,10 @@ function metadataText(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+function metadataBoolean(value: unknown) {
+  return value === true
+}
+
 function metadataList(value: unknown) {
   if (!Array.isArray(value)) {
     return []
@@ -172,6 +176,28 @@ function continueReasonLabel(value: string | null) {
   return value
 }
 
+function autoDriveStatusLabel(value: string | null) {
+  if (value === 'running') {
+    return '执行中'
+  }
+  if (value === 'waiting_for_run') {
+    return '等待 run'
+  }
+  if (value === 'idle') {
+    return '已停机'
+  }
+  if (value === 'disabled') {
+    return '已关闭'
+  }
+  if (value === 'paused') {
+    return '已暂停'
+  }
+  if (value === 'error') {
+    return '异常'
+  }
+  return value
+}
+
 export function TaskWorkbench({
   task,
   taskDraft,
@@ -219,6 +245,11 @@ export function TaskWorkbench({
   const recommendedAgent = plannerAgentLabel(metadataText(task?.metadata.recommendedAgent))
   const acceptanceChecks = metadataList(task?.metadata.acceptanceChecks)
   const suggestedRefs = metadataSuggestedRefs(task?.metadata.suggestedRefs)
+  const autoDriveEnabled = metadataBoolean(task?.metadata.autoDriveEnabled)
+  const autoDriveStatus = metadataText(task?.metadata.autoDriveStatus)
+  const autoDriveLastAction = continueActionLabel(metadataText(task?.metadata.autoDriveLastAction))
+  const autoDriveLastReason = continueReasonLabel(metadataText(task?.metadata.autoDriveLastReason))
+  const autoDriveLastSummary = metadataText(task?.metadata.autoDriveLastSummary)
 
   if (loading) {
     return <div className="empty-panel">正在加载任务…</div>
@@ -257,6 +288,22 @@ export function TaskWorkbench({
                 </span>
               ))}
             </div>
+            {autoDriveStatus || autoDriveLastSummary ? (
+              <div className="task-list">
+                <article className="task-list-row">
+                  <div className="task-list-copy">
+                    <strong>无人值守</strong>
+                    <span>{autoDriveLastSummary || '当前任务族已经进入自动托管。'}</span>
+                    <div className="task-chip-row">
+                      <span className="file-chip">状态 · {autoDriveEnabled ? '已开启' : '未开启'}</span>
+                      {autoDriveStatus ? <span className="file-chip">阶段 · {autoDriveStatusLabel(autoDriveStatus)}</span> : null}
+                      {autoDriveLastAction ? <span className="file-chip">动作 · {autoDriveLastAction}</span> : null}
+                      {autoDriveLastReason ? <span className="file-chip">原因 · {autoDriveLastReason}</span> : null}
+                    </div>
+                  </div>
+                </article>
+              </div>
+            ) : null}
             <div className="task-inline-form">
               <input
                 className="watcher-input"

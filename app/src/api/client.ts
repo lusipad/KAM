@@ -1,4 +1,5 @@
 import type {
+  TaskAutoDriveResponse,
   TaskContinueResponse,
   TaskDispatchResponse,
   ReviewCompareRecord,
@@ -165,6 +166,18 @@ export function continueTask(payload?: { taskId?: string | null; createPlanIfNee
   return request<TaskContinueResponse>('/tasks/continue', {
     method: 'POST',
     body: JSON.stringify(payload ?? {}),
+  })
+}
+
+export function startTaskAutoDrive(taskId: string) {
+  return request<TaskAutoDriveResponse>(`/tasks/${taskId}/autodrive/start`, {
+    method: 'POST',
+  })
+}
+
+export function stopTaskAutoDrive(taskId: string) {
+  return request<TaskAutoDriveResponse>(`/tasks/${taskId}/autodrive/stop`, {
+    method: 'POST',
   })
 }
 

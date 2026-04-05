@@ -367,6 +367,98 @@ class HarnessApiTests(unittest.TestCase):
         self.assertIn("还有 run 在执行", payload["summary"])
         self.assertEqual(payload["task"]["id"], task["id"])
 
+    def test_autodrive_start_advances_task_family_until_no_high_value_action(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：auto drive"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post("/api/tasks/task-harness-cutover/autodrive/start")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["scopeTaskId"], "task-harness-cutover")
+        self.assertTrue(payload["enabled"])
+        self.assertFalse(payload["running"])
+        self.assertIn("已开启当前任务族的自动托管", payload["summary"])
+
+        root_detail = self.client.get("/api/tasks/task-harness-cutover").json()
+        root_metadata = root_detail["metadata"]
+        self.assertTrue(root_metadata["autoDriveEnabled"])
+        self.assertEqual(root_metadata["autoDriveStatus"], "idle")
+        self.assertEqual(root_metadata["autoDriveLastAction"], "stop")
+        self.assertEqual(root_metadata["autoDriveLastReason"], "no_high_value_action")
+        self.assertGreaterEqual(root_metadata["autoDriveLoopCount"], 2)
+
+        tasks = self.client.get("/api/tasks").json()["tasks"]
+        child_tasks = [item for item in tasks if item["metadata"].get("parentTaskId") == "task-harness-cutover"]
+        self.assertGreaterEqual(len(child_tasks), 2)
+        self.assertTrue(all(item["status"] == "in_progress" for item in child_tasks))
+        for item in child_tasks:
+            detail = self.client.get(f"/api/tasks/{item['id']}").json()
+            self.assertTrue(detail["runs"])
+            self.assertEqual(detail["runs"][-1]["status"], "passed")
+
+    def test_manual_run_does_not_autodrive_without_opt_in(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "单轮 run 不应自动扩散",
+                "repoPath": "D:/Repos/KAM",
+                "status": "in_progress",
+                "priority": "high",
+            },
+        ).json()
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：single run"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post(
+                f"/api/tasks/{task['id']}/runs",
+                json={"agent": "codex", "task": "只跑这一轮，不要自动继续"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        detail = self.client.get(f"/api/tasks/{task['id']}").json()
+        self.assertEqual(len(detail["runs"]), 1)
+        self.assertEqual(detail["runs"][0]["status"], "passed")
+        self.assertNotIn("autoDriveEnabled", detail["metadata"])
+
+        tasks = self.client.get("/api/tasks").json()["tasks"]
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["id"], task["id"])
+
+    def test_autodrive_stop_disables_scope_metadata(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+
+        response = self.client.post("/api/tasks/task-harness-cutover/autodrive/stop")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["scopeTaskId"], "task-harness-cutover")
+        self.assertFalse(payload["enabled"])
+        self.assertFalse(payload["running"])
+        self.assertIn("已停止当前任务族的自动托管", payload["summary"])
+
+        detail = self.client.get("/api/tasks/task-harness-cutover").json()
+        self.assertFalse(detail["metadata"]["autoDriveEnabled"])
+        self.assertEqual(detail["metadata"]["autoDriveStatus"], "disabled")
+        self.assertEqual(detail["metadata"]["autoDriveLastSummary"], "已停止当前任务族的自动托管。")
+
     def test_startup_applies_alembic_head(self):
         version = asyncio.run(self._get_alembic_version())
         self.assertEqual(version, self._get_alembic_head())

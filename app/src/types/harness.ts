@@ -120,3 +120,11 @@ export interface TaskContinueResponse {
   scopeTaskId: string | null
   error: string | null
 }
+
+export interface TaskAutoDriveResponse {
+  task: TaskRecord
+  scopeTaskId: string
+  enabled: boolean
+  running: boolean
+  summary: string
+}

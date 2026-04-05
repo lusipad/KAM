@@ -2,7 +2,7 @@
 
 当前仓库的主目标已经切到 `task-first software-engineering harness`，并且当前主链路已经进入：
 
-`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare -> Follow-up Planning -> Next-Task Dispatch -> Continue`
+`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare -> Follow-up Planning -> Next-Task Dispatch -> Continue / Auto-Drive`
 
 ## 当前主参考
 
@@ -15,8 +15,12 @@
 当前新增的最小自动闭环能力也以这组文档为准：
 
 - `POST /api/tasks/continue`
+- `POST /api/tasks/{task_id}/autodrive/start`
+- `POST /api/tasks/{task_id}/autodrive/stop`
 - UI 的“继续推进当前任务”
+- UI 的“进入无人值守 / 停止无人值守”
 - 当前动作集合：`adopt / retry / plan_and_dispatch / stop`
+- 当前范围：仅针对选中 `task family` 的自动托管，不扩展成全局任务池调度
 
 ## 过渡与历史资料
 
