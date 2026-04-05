@@ -22,7 +22,7 @@ import { TaskSidebar } from '@/features/tasks/TaskSidebar'
 import { TaskWorkbench } from '@/features/tasks/TaskWorkbench'
 import { AppShell } from '@/layout/AppShell'
 import type { ToastItem } from '@/layout/Toast'
-import type { RunArtifactRecord, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
+import type { RunArtifactRecord, SuggestedTaskRefRecord, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
 
 function inferTaskPayload(prompt: string) {
   const compact = prompt.trim().replace(/\s+/g, ' ')
@@ -70,6 +70,57 @@ function parseLabelsText(value: string) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+function parsePlannerPrompt(value: unknown) {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function parsePlannerAgent(value: unknown): 'codex' | 'claude-code' {
+  return value === 'claude-code' ? 'claude-code' : 'codex'
+}
+
+function parsePlannerAcceptanceChecks(value: unknown) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+}
+
+function parsePlannerSuggestedRefs(value: unknown): SuggestedTaskRefRecord[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') {
+      return []
+    }
+    const candidate = item as Record<string, unknown>
+    const kind = typeof candidate.kind === 'string' ? candidate.kind.trim() : ''
+    const label = typeof candidate.label === 'string' ? candidate.label.trim() : ''
+    const refValue = typeof candidate.value === 'string' ? candidate.value.trim() : ''
+    if (!kind || !label || !refValue) {
+      return []
+    }
+    return [
+      {
+        kind,
+        label,
+        value: refValue,
+        metadata: candidate.metadata && typeof candidate.metadata === 'object' ? (candidate.metadata as Record<string, unknown>) : {},
+      },
+    ]
+  })
+}
+
+function readPlanningMetadata(metadata: Record<string, unknown> | null | undefined) {
+  const value = metadata ?? {}
+  return {
+    recommendedPrompt: parsePlannerPrompt(value.recommendedPrompt),
+    recommendedAgent: parsePlannerAgent(value.recommendedAgent),
+    acceptanceChecks: parsePlannerAcceptanceChecks(value.acceptanceChecks),
+    suggestedRefs: parsePlannerSuggestedRefs(value.suggestedRefs),
+  }
 }
 
 function EmptyTaskState({
@@ -300,23 +351,40 @@ function App() {
     }
   }, [creatingSnapshot, onError, refreshTask, refreshTasks, snapshotFocus, task])
 
-  const handleCreateRun = useCallback(async () => {
-    if (!task || creatingRun || !runPrompt.trim()) {
-      return
+  const executeTaskRun = useCallback(async (
+    taskId: string,
+    agent: 'codex' | 'claude-code',
+    prompt: string,
+    options?: { clearPrompt?: boolean },
+  ) => {
+    const trimmedPrompt = prompt.trim()
+    if (creatingRun || !trimmedPrompt) {
+      return null
     }
     setCreatingRun(true)
     try {
-      const created = await createTaskRun(task.id, { agent: runAgent, task: runPrompt.trim() })
-      await Promise.all([refreshTask(task.id), refreshTasks()])
+      const created = await createTaskRun(taskId, { agent, task: trimmedPrompt })
+      await Promise.all([refreshTask(taskId), refreshTasks()])
+      setSelectedTaskId(taskId)
       setSelectedRunId(created.id)
-      setRunPrompt('')
+      setRunAgent(agent)
+      setRunPrompt(options?.clearPrompt ? '' : trimmedPrompt)
       setPanelOpen(true)
+      return created
     } catch (error) {
       onError(error, '创建 run 失败。')
+      return null
     } finally {
       setCreatingRun(false)
     }
-  }, [creatingRun, onError, refreshTask, refreshTasks, runAgent, runPrompt, task])
+  }, [creatingRun, onError, refreshTask, refreshTasks])
+
+  const handleCreateRun = useCallback(async () => {
+    if (!task) {
+      return
+    }
+    await executeTaskRun(task.id, runAgent, runPrompt, { clearPrompt: true })
+  }, [executeTaskRun, runAgent, runPrompt, task])
 
   const handleCreateCompare = useCallback(async () => {
     if (!task || task.runs.length < 2 || creatingCompare) {
@@ -364,6 +432,28 @@ function App() {
       setCreatingPlan(false)
     }
   }, [creatingPlan, onError, pushToast, refreshTask, refreshTasks, task])
+
+  const handleOpenPlannedTask = useCallback((plannedTask: TaskRecord) => {
+    const planning = readPlanningMetadata(plannedTask.metadata)
+    setSelectedTaskId(plannedTask.id)
+    if (planning.recommendedPrompt) {
+      setRunPrompt(planning.recommendedPrompt)
+      setRunAgent(planning.recommendedAgent)
+    }
+  }, [])
+
+  const handleRunPlannedTask = useCallback(async (plannedTask: TaskRecord | TaskDetail) => {
+    const planning = readPlanningMetadata(plannedTask.metadata)
+    if (!planning.recommendedPrompt) {
+      pushToast({
+        id: `task-plan-run-missing-${plannedTask.id}`,
+        message: '这张任务还没有可直接执行的推荐 Prompt。',
+        tone: 'amber',
+      })
+      return
+    }
+    await executeTaskRun(plannedTask.id, planning.recommendedAgent, planning.recommendedPrompt)
+  }, [executeTaskRun, pushToast])
 
   const handleAdoptRun = useCallback(async (runId: string) => {
     try {
@@ -471,6 +561,11 @@ function App() {
               onTaskDraftChange={setTaskDraft}
               onSaveTask={handleSaveTask}
               onCreatePlan={handleCreatePlan}
+              onRunRecommendedTask={() => {
+                if (task) {
+                  void handleRunPlannedTask(task)
+                }
+              }}
               onCreateRun={handleCreateRun}
               onRefDraftChange={setRefDraft}
               onAddRef={handleAddRef}
@@ -482,7 +577,8 @@ function App() {
                 setSelectedRunId(runId)
                 setPanelOpen(true)
               }}
-              onOpenPlannedTask={(taskId) => setSelectedTaskId(taskId)}
+              onOpenPlannedTask={handleOpenPlannedTask}
+              onRunPlannedTask={handleRunPlannedTask}
               onAdoptRun={handleAdoptRun}
               onRetryRun={handleRetryRun}
             />

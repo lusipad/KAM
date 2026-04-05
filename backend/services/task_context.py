@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -11,7 +12,13 @@ class TaskContextService:
         self.db = db
 
     async def build_snapshot(self, task_id: str, *, focus: str | None = None) -> ContextSnapshot | None:
-        task = await self.db.get(Task, task_id, options=[selectinload(Task.refs)])
+        result = await self.db.execute(
+            select(Task)
+            .where(Task.id == task_id)
+            .options(selectinload(Task.refs))
+            .execution_options(populate_existing=True)
+        )
+        task = result.scalars().first()
         if task is None:
             return None
 

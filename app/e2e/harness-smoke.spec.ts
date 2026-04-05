@@ -41,10 +41,14 @@ test('can let KAM plan follow-up tasks from the current task', async ({ page }) 
   await expect(page.getByRole('main').getByText('根据 compare 推进：', { exact: false }).first()).toBeVisible()
   await expect(page.locator('.thread-title').filter({ hasText: '采纳并验证：' }).first()).toBeVisible()
   await expect(page.locator('.thread-title').filter({ hasText: '根据 compare 推进：' }).first()).toBeVisible()
+  await expect(page.getByRole('button', { name: '直接开跑' }).first()).toBeVisible()
 
-  await page.getByRole('button', { name: '打开任务' }).first().click()
+  await page.getByRole('button', { name: '直接开跑' }).first().click()
   await expect(page.locator('.feed-card-title').filter({ hasText: '采纳并验证：' }).first()).toBeVisible()
   await expect(page.locator('.file-chip').filter({ hasText: '来源 · 采纳收口' }).first()).toBeVisible()
+  await expect(page.getByRole('button', { name: '用推荐 Prompt 开跑' })).toBeVisible()
+  await expect(page.locator('.task-list-row').filter({ hasText: '[file] 候选文件' }).first()).toBeVisible()
+  await expect(page.locator('.run-card').filter({ hasText: '已完成 mock run：收口父任务' }).first()).toBeVisible()
 })
 
 test('mobile keeps task detail and artifact panel reachable', async ({ page }) => {

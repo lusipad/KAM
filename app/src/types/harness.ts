@@ -54,6 +54,13 @@ export interface ReviewCompareRecord {
   createdAt: string
 }
 
+export interface SuggestedTaskRefRecord {
+  kind: string
+  label: string
+  value: string
+  metadata: Record<string, unknown>
+}
+
 export interface TaskPlanSuggestion {
   title: string
   description: string
@@ -61,6 +68,10 @@ export interface TaskPlanSuggestion {
   labels: string[]
   metadata: Record<string, unknown>
   rationale: string
+  recommendedPrompt: string
+  recommendedAgent: string
+  acceptanceChecks: string[]
+  suggestedRefs: SuggestedTaskRefRecord[]
 }
 
 export interface TaskRecord {

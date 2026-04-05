@@ -23,7 +23,7 @@ V3 workspace 已经从运行时、前端主入口、验证基线和数据库 hea
   - `POST /api/tasks/{task_id}/plan`
 - harness run 已是 task-native 存储
 - 默认前端入口已切成 task-first workbench
-- 当前 task 已可基于 run、compare 和上下文自动拆出并创建 follow-up tasks
+- 当前 task 已可基于 run、compare、snapshot、refs 和 artifacts 自动拆出可执行的 follow-up tasks
 - 开发态提供 harness demo 播种接口：`POST /api/dev/seed-harness`
 
 ## 目录
@@ -96,7 +96,7 @@ pwsh -File .\verify-local.ps1 -RunRealAgentSmoke -RealSmokeAgent codex
 Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body (@{ reset = $true } | ConvertTo-Json) -ContentType 'application/json'
 ```
 
-进入界面后，点击“让 KAM 自己排工作”会基于当前 task 的 run 和 compare 自动拆出下一轮 follow-up tasks，并可直接切到子任务继续推进。
+进入界面后，点击“让 KAM 自己排工作”会基于当前 task 的 run、compare、snapshot、refs 和 artifacts 自动拆出下一轮 follow-up tasks。拆出的子任务会自动带上推荐 Prompt、验收检查项和建议 refs，并支持直接开跑下一张任务。
 
 ## 关键命令
 

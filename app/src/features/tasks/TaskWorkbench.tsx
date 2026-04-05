@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 import { PromptComposer } from '@/components/PromptComposer'
 import { formatRelativeTime } from '@/lib/ui'
 import { TaskRunCard } from '@/features/tasks/TaskRunCard'
-import type { RunRecord, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
+import type { RunRecord, SuggestedTaskRefRecord, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
 
 type TaskWorkbenchProps = {
   task: TaskDetail | null
@@ -41,6 +41,7 @@ type TaskWorkbenchProps = {
   }) => void
   onSaveTask: () => void
   onCreatePlan: () => void
+  onRunRecommendedTask: () => void
   onCreateRun: () => void
   onRefDraftChange: (draft: { kind: string; label: string; value: string }) => void
   onAddRef: () => void
@@ -49,7 +50,8 @@ type TaskWorkbenchProps = {
   onCreateSnapshot: () => void
   onCreateCompare: () => void
   onSelectRun: (runId: string) => void
-  onOpenPlannedTask: (taskId: string) => void
+  onOpenPlannedTask: (task: TaskRecord) => void
+  onRunPlannedTask: (task: TaskRecord) => void
   onAdoptRun: (runId: string) => void
   onRetryRun: (runId: string) => void
 }
@@ -63,6 +65,39 @@ function latestRunLabel(run: RunRecord | null) {
 
 function metadataText(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function metadataList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+}
+
+function metadataSuggestedRefs(value: unknown): SuggestedTaskRefRecord[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') {
+      return []
+    }
+    const candidate = item as Record<string, unknown>
+    const kind = typeof candidate.kind === 'string' ? candidate.kind.trim() : ''
+    const label = typeof candidate.label === 'string' ? candidate.label.trim() : ''
+    const refValue = typeof candidate.value === 'string' ? candidate.value.trim() : ''
+    if (!kind || !label || !refValue) {
+      return []
+    }
+    return [
+      {
+        kind,
+        label,
+        value: refValue,
+        metadata: candidate.metadata && typeof candidate.metadata === 'object' ? (candidate.metadata as Record<string, unknown>) : {},
+      },
+    ]
+  })
 }
 
 function planningReasonLabel(reason: string | null) {
@@ -83,6 +118,16 @@ function planningReasonLabel(reason: string | null) {
 
 function firstLine(value: string) {
   return value.split('\n').find((line) => line.trim()) ?? value
+}
+
+function plannerAgentLabel(value: string | null) {
+  if (value === 'codex') {
+    return 'Codex'
+  }
+  if (value === 'claude-code') {
+    return 'Claude Code'
+  }
+  return null
 }
 
 export function TaskWorkbench({
@@ -107,6 +152,7 @@ export function TaskWorkbench({
   onTaskDraftChange,
   onSaveTask,
   onCreatePlan,
+  onRunRecommendedTask,
   onCreateRun,
   onRefDraftChange,
   onAddRef,
@@ -116,6 +162,7 @@ export function TaskWorkbench({
   onCreateCompare,
   onSelectRun,
   onOpenPlannedTask,
+  onRunPlannedTask,
   onAdoptRun,
   onRetryRun,
 }: TaskWorkbenchProps) {
@@ -125,6 +172,10 @@ export function TaskWorkbench({
   )
   const parentTaskId = metadataText(task?.metadata.parentTaskId)
   const currentPlanningReason = planningReasonLabel(metadataText(task?.metadata.planningReason))
+  const recommendedPrompt = metadataText(task?.metadata.recommendedPrompt)
+  const recommendedAgent = plannerAgentLabel(metadataText(task?.metadata.recommendedAgent))
+  const acceptanceChecks = metadataList(task?.metadata.acceptanceChecks)
+  const suggestedRefs = metadataSuggestedRefs(task?.metadata.suggestedRefs)
 
   if (loading) {
     return <div className="empty-panel">正在加载任务…</div>
@@ -206,6 +257,40 @@ export function TaskWorkbench({
               onChange={(event) => onTaskDraftChange({ ...taskDraft, description: event.target.value })}
               placeholder="任务描述"
             />
+            {recommendedPrompt || acceptanceChecks.length || suggestedRefs.length ? (
+              <div className="task-list">
+                <article className="task-list-row">
+                  <div className="task-list-copy">
+                    <strong>下一轮执行建议</strong>
+                    {recommendedAgent ? <span>推荐 Agent · {recommendedAgent}</span> : null}
+                    {recommendedPrompt ? <pre className="task-plan-prompt">{recommendedPrompt}</pre> : null}
+                    {acceptanceChecks.length ? (
+                      <div className="task-guidance-list">
+                        {acceptanceChecks.map((item) => (
+                          <span key={item}>验收 · {item}</span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {suggestedRefs.length ? (
+                      <div className="task-chip-row">
+                        {suggestedRefs.slice(0, 4).map((ref) => (
+                          <span key={`${ref.kind}-${ref.value}`} className="file-chip">
+                            {ref.label}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  {recommendedPrompt ? (
+                    <div className="task-list-actions">
+                      <button type="button" className="button-primary" disabled={creatingRun} onClick={onRunRecommendedTask}>
+                        用推荐 Prompt 开跑
+                      </button>
+                    </div>
+                  ) : null}
+                </article>
+              </div>
+            ) : null}
           </section>
 
           <section className="feed-card">
@@ -233,6 +318,10 @@ export function TaskWorkbench({
                   const plannedReason = planningReasonLabel(metadataText(plannedTask.metadata.planningReason))
                   const sourceRunId = metadataText(plannedTask.metadata.sourceRunId)
                   const sourceCompareId = metadataText(plannedTask.metadata.sourceCompareId)
+                  const plannedPrompt = metadataText(plannedTask.metadata.recommendedPrompt) ?? suggestion?.recommendedPrompt ?? null
+                  const plannedAgent = plannerAgentLabel(metadataText(plannedTask.metadata.recommendedAgent) ?? suggestion?.recommendedAgent ?? null)
+                  const plannedChecks = metadataList(plannedTask.metadata.acceptanceChecks)
+                  const plannedRefs = metadataSuggestedRefs(plannedTask.metadata.suggestedRefs)
                   return (
                     <article key={plannedTask.id} className="task-list-row">
                       <div className="task-list-copy">
@@ -243,12 +332,37 @@ export function TaskWorkbench({
                           {plannedReason ? <span className="file-chip">原因 · {plannedReason}</span> : null}
                           {sourceRunId ? <span className="file-chip">Run · {sourceRunId}</span> : null}
                           {sourceCompareId ? <span className="file-chip">Compare · {sourceCompareId}</span> : null}
+                          {plannedAgent ? <span className="file-chip">Agent · {plannedAgent}</span> : null}
                         </div>
+                        {plannedPrompt ? <pre className="task-plan-prompt">{firstLine(plannedPrompt)}</pre> : null}
+                        {plannedChecks.length ? (
+                          <div className="task-guidance-list">
+                            {plannedChecks.slice(0, 2).map((item) => (
+                              <span key={item}>验收 · {item}</span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {plannedRefs.length ? (
+                          <div className="task-chip-row">
+                            {plannedRefs.slice(0, 3).map((ref) => (
+                              <span key={`${ref.kind}-${ref.value}`} className="file-chip">
+                                {ref.label}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                         {suggestion?.rationale ? <span>{suggestion.rationale}</span> : null}
                       </div>
-                      <button type="button" className="button-secondary" onClick={() => onOpenPlannedTask(plannedTask.id)}>
-                        打开任务
-                      </button>
+                      <div className="task-list-actions">
+                        <button type="button" className="button-secondary" onClick={() => onOpenPlannedTask(plannedTask)}>
+                          打开任务
+                        </button>
+                        {plannedPrompt ? (
+                          <button type="button" className="button-primary" disabled={creatingRun} onClick={() => onRunPlannedTask(plannedTask)}>
+                            直接开跑
+                          </button>
+                        ) : null}
+                      </div>
                     </article>
                   )
                 })}
@@ -257,6 +371,7 @@ export function TaskWorkbench({
               <div className="task-list">
                 {planSuggestions.map((suggestion) => {
                   const plannedReason = planningReasonLabel(metadataText(suggestion.metadata.planningReason))
+                  const plannedAgent = plannerAgentLabel(suggestion.recommendedAgent)
                   return (
                     <article key={`${suggestion.title}-${suggestion.rationale}`} className="task-list-row">
                       <div className="task-list-copy">
@@ -265,7 +380,25 @@ export function TaskWorkbench({
                         <div className="task-chip-row">
                           <span className="file-chip">优先级 · {suggestion.priority}</span>
                           {plannedReason ? <span className="file-chip">原因 · {plannedReason}</span> : null}
+                          {plannedAgent ? <span className="file-chip">Agent · {plannedAgent}</span> : null}
                         </div>
+                        {suggestion.recommendedPrompt ? <pre className="task-plan-prompt">{firstLine(suggestion.recommendedPrompt)}</pre> : null}
+                        {suggestion.acceptanceChecks.length ? (
+                          <div className="task-guidance-list">
+                            {suggestion.acceptanceChecks.slice(0, 2).map((item) => (
+                              <span key={item}>验收 · {item}</span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {suggestion.suggestedRefs.length ? (
+                          <div className="task-chip-row">
+                            {suggestion.suggestedRefs.slice(0, 3).map((ref) => (
+                              <span key={`${ref.kind}-${ref.value}`} className="file-chip">
+                                {ref.label}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                         <span>{suggestion.rationale}</span>
                       </div>
                     </article>
