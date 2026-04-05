@@ -107,3 +107,16 @@ export interface TaskDispatchResponse {
   source: string
   plannedFromTaskId: string | null
 }
+
+export interface TaskContinueResponse {
+  action: 'adopt' | 'retry' | 'plan_and_dispatch' | 'stop'
+  reason: string
+  summary: string
+  task: TaskRecord | null
+  run: RunRecord | null
+  source: string | null
+  plannedFromTaskId: string | null
+  adoptedAt: string | null
+  scopeTaskId: string | null
+  error: string | null
+}

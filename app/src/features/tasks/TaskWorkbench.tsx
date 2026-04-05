@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 import { PromptComposer } from '@/components/PromptComposer'
 import { formatRelativeTime } from '@/lib/ui'
 import { TaskRunCard } from '@/features/tasks/TaskRunCard'
-import type { RunRecord, SuggestedTaskRefRecord, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
+import type { RunRecord, SuggestedTaskRefRecord, TaskContinueResponse, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
 
 type TaskWorkbenchProps = {
   task: TaskDetail | null
@@ -26,6 +26,7 @@ type TaskWorkbenchProps = {
   creatingSnapshot: boolean
   creatingCompare: boolean
   creatingPlan: boolean
+  continueDecision: TaskContinueResponse | null
   savingTask: boolean
   plannedTasks: TaskRecord[]
   planSuggestions: TaskPlanSuggestion[]
@@ -130,6 +131,47 @@ function plannerAgentLabel(value: string | null) {
   return null
 }
 
+function continueActionLabel(value: string | null) {
+  if (value === 'adopt') {
+    return '采纳'
+  }
+  if (value === 'retry') {
+    return '重试'
+  }
+  if (value === 'plan_and_dispatch') {
+    return '拆并跑'
+  }
+  if (value === 'stop') {
+    return '停止'
+  }
+  return value
+}
+
+function continueReasonLabel(value: string | null) {
+  if (value === 'latest_passed_run_adopted') {
+    return '已采纳最近通过 run'
+  }
+  if (value === 'latest_failed_run_retried' || value === 'latest_failed_child_run_retried') {
+    return '已重试最近失败 run'
+  }
+  if (value === 'dispatched_next_runnable_task') {
+    return '已挑出下一张可跑任务'
+  }
+  if (value === 'scope_task_terminal') {
+    return '当前任务已收口'
+  }
+  if (value === 'scope_has_active_run') {
+    return '当前仍有 run 在执行'
+  }
+  if (value === 'no_high_value_action') {
+    return '当前没有更高价值的下一步'
+  }
+  if (value === 'adopt_failed') {
+    return '自动采纳失败'
+  }
+  return value
+}
+
 export function TaskWorkbench({
   task,
   taskDraft,
@@ -144,6 +186,7 @@ export function TaskWorkbench({
   creatingSnapshot,
   creatingCompare,
   creatingPlan,
+  continueDecision,
   savingTask,
   plannedTasks,
   planSuggestions,
@@ -292,6 +335,26 @@ export function TaskWorkbench({
               </div>
             ) : null}
           </section>
+
+          {continueDecision && (continueDecision.task?.id === task.id || continueDecision.scopeTaskId === task.id) ? (
+            <section className="feed-card">
+              <div className="feed-card-head">
+                <div className="feed-card-title-stack">
+                  <div className="feed-card-title">自动推进结果</div>
+                  <div className="feed-card-subtle">{continueDecision.summary}</div>
+                </div>
+                <span className="feed-card-badge">{continueActionLabel(continueDecision.action)}</span>
+              </div>
+              <div className="task-chip-row">
+                {continueReasonLabel(continueDecision.reason) ? (
+                  <span className="file-chip">原因 · {continueReasonLabel(continueDecision.reason)}</span>
+                ) : null}
+                {continueDecision.source ? <span className="file-chip">来源 · {continueDecision.source}</span> : null}
+                {continueDecision.plannedFromTaskId ? <span className="file-chip">父任务 · {continueDecision.plannedFromTaskId}</span> : null}
+                {continueDecision.run?.id ? <span className="file-chip">Run · {continueDecision.run.id}</span> : null}
+              </div>
+            </section>
+          ) : null}
 
           <section className="feed-card">
             <div className="feed-card-head">

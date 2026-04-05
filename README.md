@@ -4,7 +4,7 @@ KAM 现在的主目标不是继续做 V3 对话工作台，而是切到一个 `l
 
 当前主链路：
 
-`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare`
+`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare -> Follow-up Planning -> Next-Task Dispatch -> Continue`
 
 V3 workspace 已经从运行时、前端主入口、验证基线和数据库 head 中退场。
 
@@ -22,10 +22,12 @@ V3 workspace 已经从运行时、前端主入口、验证基线和数据库 hea
   - `POST /api/reviews/{task_id}/compare`
   - `POST /api/tasks/{task_id}/plan`
   - `POST /api/tasks/dispatch-next`
+  - `POST /api/tasks/continue`
 - harness run 已是 task-native 存储
 - 默认前端入口已切成 task-first workbench
 - 当前 task 已可基于 run、compare、snapshot、refs 和 artifacts 自动拆出可执行的 follow-up tasks
 - KAM 已可从任务池里自动接下一张任务；若当前没有可跑 child task，会先拆一张再开跑
+- KAM 已可围绕当前 task family 自动继续推进：优先 `adopt / retry / plan_and_dispatch / stop`
 - 开发态提供 harness demo 播种接口：`POST /api/dev/seed-harness`
 
 ## 目录
@@ -102,6 +104,13 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body 
 
 点击“让 KAM 接下一张”时，KAM 会优先从现有任务池里挑选带推荐 Prompt 的可跑任务；如果当前还没有这样的 child task，就会先从最合适的父任务拆一张，再直接发起 run。
 
+点击“继续推进当前任务”时，KAM 会先在当前 task family 内自动判断下一步：
+
+- 有可自动采纳的真实 passed run 时，优先 `adopt`
+- 有失败 child run 时，优先 `retry`
+- 否则尝试 `plan_and_dispatch`
+- 如果当前作用域已收口或仍有 run 在执行，就返回 `stop`
+
 ## 关键命令
 
 后端单测：
@@ -135,7 +144,7 @@ pwsh -File .\install-pr-review-monitor.ps1 -Repo lusipad/KAM -PullRequest 4518
 
 - dogfood-first：先让 KAM 能稳定开发 KAM
 - local-first：先把单机链路做硬，不先追云化
-- task-first：只保留 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
+- task-first：只保留 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare -> Plan -> Dispatch -> Continue`
 - prefer deletion：不为历史长期保留双主线
 - retire V3：旧 `projects / threads / home / watchers / memory` 已退场
 

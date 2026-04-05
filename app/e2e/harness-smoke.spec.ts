@@ -21,6 +21,7 @@ test('task-first harness workbench is reachable', async ({ page }) => {
   await expect(page.getByRole('main').getByText('Context Snapshot', { exact: true })).toBeVisible()
   await expect(page.getByRole('main').getByText('Runs', { exact: true })).toBeVisible()
   await expect(page.getByRole('main').getByText('Compare', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '继续推进当前任务' })).toBeVisible()
   await expect(page.getByRole('main').getByText('[file] PRD')).toBeVisible()
 
   await expect(page.locator('.run-card').first()).toContainText('Task')
@@ -62,6 +63,28 @@ test('can let KAM dispatch the next runnable task from the queue', async ({ page
   await expect(page.locator('.file-chip').filter({ hasText: '状态 · in_progress' }).first()).toBeVisible()
   await expect(page.locator('.file-chip').filter({ hasText: '来源 · 采纳收口' }).first()).toBeVisible()
   await expect(page.locator('.run-card').filter({ hasText: '已完成 mock run：收口父任务' }).first()).toBeVisible()
+})
+
+test('can let KAM continue the current task family', async ({ page }) => {
+  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: '继续推进当前任务' }).click()
+
+  await expect(page.locator('.feed-card-title').filter({ hasText: '采纳并验证：' }).first()).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: '来源 · 采纳收口' }).first()).toBeVisible()
+  await expect(page.locator('.run-card').filter({ hasText: '已完成 mock run：收口父任务' }).first()).toBeVisible()
+})
+
+test('can let KAM continue the current task with an automatic decision', async ({ page }) => {
+  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+
+  await page.getByRole('button', { name: '继续推进当前任务' }).click()
+
+  await expect(page.locator('.feed-card-title').filter({ hasText: '采纳并验证：' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '自动推进结果' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-subtle').filter({ hasText: '已先拆后跑：' }).first()).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: '原因 · 已挑出下一张可跑任务' }).first()).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: '来源 · planned_task' }).first()).toBeVisible()
 })
 
 test('mobile keeps task detail and artifact panel reachable', async ({ page }) => {

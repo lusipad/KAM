@@ -49,6 +49,8 @@ class RunEngine:
         self.db.add(run)
         task_record = await self.db.get(Task, task_id)
         if task_record is not None:
+            if task_record.status in {"open", "failed"}:
+                task_record.status = "in_progress"
             task_record.updated_at = now()
         await self.db.commit()
         await self.db.refresh(run)

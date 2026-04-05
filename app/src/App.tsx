@@ -4,6 +4,7 @@ import {
   addTaskRef,
   adoptRun,
   archiveTask,
+  continueTask,
   createTask,
   createTaskCompare,
   createTaskRun,
@@ -23,7 +24,7 @@ import { TaskSidebar } from '@/features/tasks/TaskSidebar'
 import { TaskWorkbench } from '@/features/tasks/TaskWorkbench'
 import { AppShell } from '@/layout/AppShell'
 import type { ToastItem } from '@/layout/Toast'
-import type { RunArtifactRecord, SuggestedTaskRefRecord, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
+import type { RunArtifactRecord, SuggestedTaskRefRecord, TaskContinueResponse, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
 
 function inferTaskPayload(prompt: string) {
   const compact = prompt.trim().replace(/\s+/g, ' ')
@@ -175,11 +176,13 @@ function App() {
   const [creatingCompare, setCreatingCompare] = useState(false)
   const [creatingPlan, setCreatingPlan] = useState(false)
   const [dispatchingNext, setDispatchingNext] = useState(false)
+  const [continuingTask, setContinuingTask] = useState(false)
   const [savingTask, setSavingTask] = useState(false)
   const [snapshotFocus, setSnapshotFocus] = useState('')
   const [refDraft, setRefDraft] = useState({ kind: 'file', label: '', value: '' })
   const [plannedTasks, setPlannedTasks] = useState<TaskRecord[]>([])
   const [planSuggestions, setPlanSuggestions] = useState<TaskPlanSuggestion[]>([])
+  const [continueDecision, setContinueDecision] = useState<TaskContinueResponse | null>(null)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const pushToast = useCallback((toast: ToastItem) => {
@@ -490,6 +493,42 @@ function App() {
     }
   }, [dispatchingNext, onError, pushToast, refreshTask, refreshTasks])
 
+  const handleContinueTask = useCallback(async () => {
+    if (!task || continuingTask) {
+      return
+    }
+    setContinuingTask(true)
+    try {
+      const continued = await continueTask({ taskId: task.id, createPlanIfNeeded: true })
+      setContinueDecision(continued)
+      const nextTaskId = continued.task?.id ?? task.id
+      await Promise.all([refreshTasks(), refreshTask(nextTaskId)])
+      setSelectedTaskId(nextTaskId)
+      if (continued.run) {
+        setSelectedRunId(continued.run.id)
+        setPanelOpen(true)
+      }
+
+      if (continued.task) {
+        const planning = readPlanningMetadata(continued.task.metadata)
+        if (planning.recommendedPrompt) {
+          setRunPrompt(planning.recommendedPrompt)
+          setRunAgent(planning.recommendedAgent)
+        }
+      }
+
+      pushToast({
+        id: `task-continue-${Date.now()}`,
+        message: continued.summary,
+        tone: continued.action === 'stop' ? 'amber' : 'green',
+      })
+    } catch (error) {
+      onError(error, '继续推进当前任务失败。')
+    } finally {
+      setContinuingTask(false)
+    }
+  }, [continuingTask, onError, pushToast, refreshTask, refreshTasks, task])
+
   const handleAdoptRun = useCallback(async (runId: string) => {
     try {
       await adoptRun(runId)
@@ -568,6 +607,11 @@ function App() {
               <button type="button" className="button-primary" disabled={dispatchingNext} onClick={handleDispatchNext}>
                 {dispatchingNext ? 'KAM 接任务中…' : '让 KAM 接下一张'}
               </button>
+              {task ? (
+                <button type="button" className="button-secondary" disabled={continuingTask} onClick={handleContinueTask}>
+                  {continuingTask ? 'KAM 推进中…' : '继续推进当前任务'}
+                </button>
+              ) : null}
               <button type="button" className="button-secondary" onClick={() => setSelectedTaskId(null)}>
                 新建任务
               </button>
@@ -591,6 +635,7 @@ function App() {
               creatingSnapshot={creatingSnapshot}
               creatingCompare={creatingCompare}
               creatingPlan={creatingPlan}
+              continueDecision={continueDecision}
               savingTask={savingTask}
               plannedTasks={plannedTasks}
               planSuggestions={planSuggestions}

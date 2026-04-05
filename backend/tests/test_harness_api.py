@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,7 @@ os.environ["APP_ENV"] = "test"
 
 from db import engine  # noqa: E402
 from main import app  # noqa: E402
+from models import ContextSnapshot, Task, TaskRun  # noqa: E402
 from services.run_engine import RunEngine, wait_for_background_runs  # noqa: E402
 
 
@@ -199,6 +201,172 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["detail"], "当前没有可自动接手的任务")
 
+    def test_continue_prefers_adopt_for_latest_passed_unadopted_run(self):
+        repo = self._create_git_repo()
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "自动采纳最新通过 run",
+                "repoPath": str(repo),
+                "status": "in_progress",
+                "priority": "high",
+            },
+        ).json()
+
+        async def fake_run_command(_engine, _command, cwd):
+            readme = Path(cwd) / "README.md"
+            readme.write_text("after\n", encoding="utf-8")
+            return 0, "执行完成：可以自动 adopt"
+
+        with patch("services.run_engine.RunEngine._run_command", new=fake_run_command):
+            run = self.client.post(
+                f"/api/tasks/{task['id']}/runs",
+                json={"agent": "codex", "task": "更新 README 并准备采纳"},
+            ).json()
+
+        response = self.client.post(
+            "/api/tasks/continue",
+            json={"taskId": task["id"], "createPlanIfNeeded": True},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["action"], "adopt")
+        self.assertEqual(payload["reason"], "latest_passed_run_adopted")
+        self.assertIn("已采纳最近通过的 run", payload["summary"])
+        self.assertEqual(payload["task"]["id"], task["id"])
+        self.assertEqual(payload["run"]["id"], run["id"])
+        self.assertIsNotNone(payload["run"]["adoptedAt"])
+        self.assertEqual((repo / "README.md").read_text(encoding="utf-8"), "after\n")
+
+    def test_continue_retries_latest_failed_child_run_before_planning_new_work(self):
+        parent_task_id, child_task_id = asyncio.run(self._seed_retryable_child_task())
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：child retry"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post(
+                "/api/tasks/continue",
+                json={"taskId": parent_task_id, "createPlanIfNeeded": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["action"], "retry")
+        self.assertEqual(payload["reason"], "latest_failed_run_retried")
+        self.assertIn("已自动重试最近失败的 run", payload["summary"])
+        self.assertEqual(payload["task"]["id"], child_task_id)
+        self.assertEqual(payload["run"]["status"], "passed")
+
+    def test_continue_retries_latest_failed_run_for_current_task(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "直接重试当前失败任务",
+                "repoPath": "D:/Repos/KAM",
+                "status": "failed",
+                "priority": "high",
+            },
+        ).json()
+        self.client.patch(
+            f"/api/tasks/{task['id']}",
+            json={
+                "status": "failed",
+                "priority": "high",
+            },
+        )
+        asyncio.run(self._seed_retryable_root_task(task["id"]))
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：root retry"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post(
+                "/api/tasks/continue",
+                json={"taskId": task["id"], "createPlanIfNeeded": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["action"], "retry")
+        self.assertEqual(payload["reason"], "latest_failed_run_retried")
+        self.assertEqual(payload["task"]["id"], task["id"])
+        self.assertEqual(payload["run"]["status"], "passed")
+
+    def test_continue_plans_and_dispatches_when_parent_has_no_runnable_child(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：continue dispatch"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post(
+                "/api/tasks/continue",
+                json={"taskId": "task-harness-cutover", "createPlanIfNeeded": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["action"], "plan_and_dispatch")
+        self.assertEqual(payload["source"], "planned_task")
+        self.assertIn("已先拆后跑", payload["summary"])
+        self.assertEqual(payload["plannedFromTaskId"], "task-harness-cutover")
+        self.assertEqual(payload["task"]["metadata"]["parentTaskId"], "task-harness-cutover")
+        self.assertEqual(payload["run"]["status"], "passed")
+
+    def test_continue_stops_when_task_is_terminal(self):
+        task_id = asyncio.run(self._seed_terminal_task())
+
+        response = self.client.post("/api/tasks/continue", json={"taskId": task_id, "createPlanIfNeeded": True})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["action"], "stop")
+        self.assertEqual(payload["reason"], "scope_task_terminal")
+        self.assertIn("已经收口", payload["summary"])
+        self.assertEqual(payload["task"]["id"], task_id)
+
+    def test_continue_stops_when_scope_has_active_run(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "等待当前执行结束",
+                "repoPath": "D:/Repos/KAM",
+                "status": "in_progress",
+                "priority": "high",
+            },
+        ).json()
+
+        asyncio.run(self._seed_running_run(task["id"]))
+
+        response = self.client.post("/api/tasks/continue", json={"taskId": task["id"], "createPlanIfNeeded": True})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["action"], "stop")
+        self.assertEqual(payload["reason"], "scope_has_active_run")
+        self.assertIn("还有 run 在执行", payload["summary"])
+        self.assertEqual(payload["task"]["id"], task["id"])
+
     def test_startup_applies_alembic_head(self):
         version = asyncio.run(self._get_alembic_version())
         self.assertEqual(version, self._get_alembic_head())
@@ -267,3 +435,146 @@ class HarnessApiTests(unittest.TestCase):
         config = Config(str(BACKEND_ROOT / "alembic.ini"))
         config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
         return ScriptDirectory.from_config(config).get_current_head()
+
+    def _create_git_repo(self) -> Path:
+        repo = TMP_ROOT / f"repo-{next(tempfile._get_candidate_names())}"
+        repo.mkdir(parents=True)
+        self._git(repo, "init")
+        self._git(repo, "config", "user.name", "Test User")
+        self._git(repo, "config", "user.email", "test@example.com")
+        (repo / "README.md").write_text("before\n", encoding="utf-8")
+        self._git(repo, "add", "README.md")
+        self._git(repo, "commit", "-m", "Initial commit")
+        return repo
+
+    def _git(self, cwd: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    async def _seed_retryable_child_task(self) -> tuple[str, str]:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskparent01",
+                    title="让 KAM 自动继续推进",
+                    description="父任务等待子任务修复失败。",
+                    repo_path="D:/Repos/KAM",
+                    status="in_progress",
+                    priority="high",
+                    labels=["dogfood", "parent"],
+                )
+            )
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskchild001",
+                    title="修复失败 child task",
+                    description="优先重试失败子任务。",
+                    repo_path=None,
+                    status="in_progress",
+                    priority="high",
+                    labels=["dogfood", "child"],
+                    metadata={
+                        "parentTaskId": "taskparent01",
+                        "sourceTaskId": "taskparent01",
+                        "planningReason": "failed_run_follow_up",
+                        "recommendedPrompt": "修复失败 child task 并重新验证。",
+                        "recommendedAgent": "codex",
+                        "acceptanceChecks": ["修复失败", "重新验证"],
+                        "suggestedRefs": [],
+                    },
+                )
+            )
+            await conn.execute(
+                ContextSnapshot.__table__.insert().values(
+                    id="snapchild001",
+                    task_id="taskchild001",
+                    summary="Child retry snapshot",
+                    content="## Task\n标题：修复失败 child task",
+                    focus="先重试失败 run。",
+                )
+            )
+            await conn.execute(
+                TaskRun.__table__.insert().values(
+                    id="runchild001",
+                    task_id="taskchild001",
+                    agent="codex",
+                    status="failed",
+                    task="修复失败 child task 并重新验证。",
+                    result_summary="执行失败：AssertionError: retry me",
+                    changed_files=["backend/services/task_dispatcher.py"],
+                    check_passed=False,
+                    raw_output="AssertionError: retry me",
+                )
+            )
+        return "taskparent01", "taskchild001"
+
+    async def _seed_terminal_task(self) -> str:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskdone0001",
+                    title="已经收口的任务",
+                    description="不应该继续推进。",
+                    repo_path="D:/Repos/KAM",
+                    status="verified",
+                    priority="medium",
+                    labels=["done"],
+                )
+            )
+        return "taskdone0001"
+
+    async def _seed_running_run(self, task_id: str) -> None:
+        async with engine.begin() as conn:
+            await conn.execute(
+                TaskRun.__table__.insert().values(
+                    id="runactive001",
+                    task_id=task_id,
+                    agent="codex",
+                    status="running",
+                    task="继续执行中",
+                    raw_output="still running",
+                )
+            )
+
+    async def _seed_retryable_root_task(self, task_id: str) -> None:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.update()
+                .where(Task.__table__.c.id == task_id)
+                .values(
+                    metadata={
+                        "recommendedPrompt": "重试当前失败任务并重新验证。",
+                        "recommendedAgent": "codex",
+                        "acceptanceChecks": ["修复失败", "重新验证"],
+                        "suggestedRefs": [],
+                    }
+                )
+            )
+            await conn.execute(
+                ContextSnapshot.__table__.insert().values(
+                    id="snaproot001",
+                    task_id=task_id,
+                    summary="Root retry snapshot",
+                    content="## Task\n标题：直接重试当前失败任务",
+                    focus="先重试当前失败 run。",
+                )
+            )
+            await conn.execute(
+                TaskRun.__table__.insert().values(
+                    id="runroot001",
+                    task_id=task_id,
+                    agent="codex",
+                    status="failed",
+                    task="重试当前失败任务并重新验证。",
+                    result_summary="执行失败：AssertionError: retry root",
+                    changed_files=["backend/services/task_dispatcher.py"],
+                    check_passed=False,
+                    raw_output="AssertionError: retry root",
+                )
+            )

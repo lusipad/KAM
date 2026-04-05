@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -130,6 +131,27 @@ class TaskPlannerApiTests(unittest.TestCase):
         self.assertTrue(suggestion["recommendedPrompt"].startswith("继续推进父任务"))
         self.assertTrue(any(ref["kind"] == "snapshot" for ref in suggestion["suggestedRefs"]))
         self.assertTrue(any(ref["value"] == "docs/product/ai_work_assistant_prd.md" for ref in suggestion["suggestedRefs"]))
+
+    def test_plan_does_not_generate_adopt_follow_up_for_already_adopted_run(self):
+        task_id = asyncio.run(self._seed_adopted_task())
+
+        response = self.client.post(f"/api/tasks/{task_id}/plan", json={"createTasks": False, "limit": 2})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        reasons = [item["metadata"]["planningReason"] for item in payload["suggestions"]]
+        self.assertNotIn("passed_run_not_adopted", reasons)
+        self.assertEqual(reasons, ["task_next_step"])
+
+    def test_plan_does_not_generate_more_follow_ups_for_terminal_parent_task(self):
+        task_id = asyncio.run(self._seed_terminal_task())
+
+        response = self.client.post(f"/api/tasks/{task_id}/plan", json={"createTasks": True, "limit": 2})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["suggestions"], [])
+        self.assertEqual(payload["tasks"], [])
 
     def test_planned_child_task_can_start_run_with_generated_context(self):
         task_id = asyncio.run(self._seed_adopt_and_compare_task())
@@ -319,6 +341,59 @@ class TaskPlannerApiTests(unittest.TestCase):
                 )
             )
         return "tasknext1234"
+
+    async def _seed_adopted_task(self) -> str:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskadpt1234",
+                    title="已采纳的任务",
+                    description="通过 run 已经采纳，不应再产出 adopt follow-up。",
+                    repo_path="D:/Repos/KAM",
+                    status="in_progress",
+                    priority="medium",
+                    labels=["dogfood"],
+                )
+            )
+            await conn.execute(
+                ContextSnapshot.__table__.insert().values(
+                    id="snapadpt1234",
+                    task_id="taskadpt1234",
+                    summary="Adopted snapshot",
+                    content="## Task\n标题：已采纳的任务",
+                    focus="验证 planner 不再建议 adopt。",
+                )
+            )
+            await conn.execute(
+                TaskRun.__table__.insert().values(
+                    id="runadpt1234",
+                    task_id="taskadpt1234",
+                    agent="codex",
+                    status="passed",
+                    task="收口并采纳当前实现",
+                    result_summary="已通过并采纳。",
+                    changed_files=["backend/services/task_planner.py"],
+                    check_passed=True,
+                    raw_output="ok",
+                    adopted_at=datetime(2026, 4, 5, 6, 30, tzinfo=UTC),
+                )
+            )
+        return "taskadpt1234"
+
+    async def _seed_terminal_task(self) -> str:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskterm1234",
+                    title="已完成父任务",
+                    description="terminal task 不应继续拆 follow-up。",
+                    repo_path="D:/Repos/KAM",
+                    status="verified",
+                    priority="high",
+                    labels=["done"],
+                )
+            )
+        return "taskterm1234"
 
     async def _truncate_tables(self):
         async with engine.begin() as conn:

@@ -97,6 +97,8 @@ class TaskPlannerService:
         task = await self._load_task(task_id)
         if task is None:
             return None, [], []
+        if self._is_terminal_task(task):
+            return task, [], []
 
         latest_snapshot = task.snapshots[-1] if task.snapshots else None
         run_artifacts_by_run_id = await self._load_run_artifacts([run.id for run in task.runs])
@@ -705,6 +707,9 @@ class TaskPlannerService:
         if not value:
             return None
         return f"{label}：{value}"
+
+    def _is_terminal_task(self, task: Task) -> bool:
+        return task.status in {"archived", "done", "verified", "blocked"}
 
     def _last_nonempty_line(self, value: str) -> str | None:
         for line in reversed(value.splitlines()):

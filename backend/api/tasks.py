@@ -63,6 +63,11 @@ class TaskDispatchCreate(BaseModel):
     createPlanIfNeeded: bool = True
 
 
+class TaskContinueCreate(BaseModel):
+    taskId: str | None = None
+    createPlanIfNeeded: bool = True
+
+
 @router.get("")
 async def list_tasks(
     include_archived: bool = Query(default=False),
@@ -81,6 +86,19 @@ async def dispatch_next_task(payload: TaskDispatchCreate, db: AsyncSession = Dep
     if dispatched is None:
         raise HTTPException(status_code=409, detail="当前没有可自动接手的任务")
     return dispatched.to_dict()
+
+
+@router.post("/continue")
+async def continue_task(payload: TaskContinueCreate, db: AsyncSession = Depends(get_db)):
+    if payload.taskId is not None:
+        task = await db.get(Task, payload.taskId)
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+    result = await TaskDispatcherService(db).continue_task(
+        task_id=payload.taskId,
+        create_plan_if_needed=payload.createPlanIfNeeded,
+    )
+    return result.to_dict()
 
 
 @router.post("")

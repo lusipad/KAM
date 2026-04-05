@@ -1,4 +1,5 @@
 import type {
+  TaskContinueResponse,
   TaskDispatchResponse,
   ReviewCompareRecord,
   RunArtifactRecord,
@@ -155,6 +156,13 @@ export function planTaskFollowUps(taskId: string, payload?: { createTasks?: bool
 
 export function dispatchNextTask(payload?: { createPlanIfNeeded?: boolean }) {
   return request<TaskDispatchResponse>('/tasks/dispatch-next', {
+    method: 'POST',
+    body: JSON.stringify(payload ?? {}),
+  })
+}
+
+export function continueTask(payload?: { taskId?: string | null; createPlanIfNeeded?: boolean }) {
+  return request<TaskContinueResponse>('/tasks/continue', {
     method: 'POST',
     body: JSON.stringify(payload ?? {}),
   })

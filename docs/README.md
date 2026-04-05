@@ -2,7 +2,7 @@
 
 当前仓库的主目标已经切到 `task-first software-engineering harness`，并且当前主链路已经进入：
 
-`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare -> Follow-up Planning -> Next-Task Dispatch`
+`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare -> Follow-up Planning -> Next-Task Dispatch -> Continue`
 
 ## 当前主参考
 
@@ -11,6 +11,12 @@
 - [roadmap/v3_delivery_status.md](roadmap/v3_delivery_status.md): 当前交付状态、已完成能力和剩余缺口
 - [../.omx/plans/prd-harness-dogfood-cutover.md](../.omx/plans/prd-harness-dogfood-cutover.md): 本地 cutover PRD
 - [../.omx/plans/test-spec-harness-dogfood-cutover.md](../.omx/plans/test-spec-harness-dogfood-cutover.md): 本地 cutover test spec
+
+当前新增的最小自动闭环能力也以这组文档为准：
+
+- `POST /api/tasks/continue`
+- UI 的“继续推进当前任务”
+- 当前动作集合：`adopt / retry / plan_and_dispatch / stop`
 
 ## 过渡与历史资料
 
