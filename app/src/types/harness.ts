@@ -129,6 +129,19 @@ export interface TaskAutoDriveResponse {
   summary: string
 }
 
+export interface AutoDriveEventRecord {
+  recordedAt: string
+  status: string | null
+  action: string | null
+  reason: string | null
+  summary: string | null
+  error: string | null
+  taskId: string | null
+  scopeTaskId: string | null
+  runId: string | null
+  runTaskId: string | null
+}
+
 export interface GlobalAutoDriveLeaseStatus {
   ownerId: string | null
   pid: number | null
@@ -153,4 +166,5 @@ export interface GlobalAutoDriveResponse {
   error: string | null
   updatedAt: string | null
   lease: GlobalAutoDriveLeaseStatus | null
+  recentEvents: AutoDriveEventRecord[]
 }

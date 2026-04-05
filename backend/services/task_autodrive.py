@@ -28,9 +28,12 @@ AUTO_DRIVE_LAST_DECISION_AT_KEY = "autoDriveLastDecisionAt"
 AUTO_DRIVE_LAST_RUN_ID_KEY = "autoDriveLastRunId"
 AUTO_DRIVE_LAST_RUN_TASK_ID_KEY = "autoDriveLastRunTaskId"
 AUTO_DRIVE_LAST_ERROR_KEY = "autoDriveLastError"
+AUTO_DRIVE_RECENT_EVENTS_KEY = "autoDriveRecentEvents"
 
 AUTO_DRIVE_MAX_STEPS = 8
+AUTO_DRIVE_RECENT_EVENTS_MAX = 8
 GLOBAL_AUTO_DRIVE_MAX_STEPS = 12
+GLOBAL_AUTO_DRIVE_RECENT_EVENTS_MAX = 12
 GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS = 1.0
 GLOBAL_AUTO_DRIVE_DISABLED_SUMMARY = "当前还没有开启全局无人值守。"
 GLOBAL_AUTO_DRIVE_RECOVERED_SUMMARY = "已恢复全局无人值守，KAM 会继续跨 task family 接活。"
@@ -58,6 +61,34 @@ class AutoDriveControlResult:
         }
 
 
+@dataclass(frozen=True)
+class AutoDriveEvent:
+    recorded_at: str
+    status: str | None = None
+    action: str | None = None
+    reason: str | None = None
+    summary: str | None = None
+    error: str | None = None
+    task_id: str | None = None
+    scope_task_id: str | None = None
+    run_id: str | None = None
+    run_task_id: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "recordedAt": self.recorded_at,
+            "status": self.status,
+            "action": self.action,
+            "reason": self.reason,
+            "summary": self.summary,
+            "error": self.error,
+            "taskId": self.task_id,
+            "scopeTaskId": self.scope_task_id,
+            "runId": self.run_id,
+            "runTaskId": self.run_task_id,
+        }
+
+
 @dataclass
 class GlobalAutoDriveControlResult:
     enabled: bool
@@ -73,6 +104,7 @@ class GlobalAutoDriveControlResult:
     error: str | None = None
     updated_at: str | None = None
     lease: dict[str, object] | None = None
+    recent_events: list[dict[str, object]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -89,6 +121,7 @@ class GlobalAutoDriveControlResult:
             "error": self.error,
             "updatedAt": self.updated_at,
             "lease": self.lease,
+            "recentEvents": self.recent_events,
         }
 
 
@@ -111,6 +144,7 @@ class _GlobalAutoDriveState:
     loop_count: int = 0
     error: str | None = None
     updated_at: str | None = None
+    recent_events: list[dict[str, object]] = field(default_factory=list)
 
 
 _STATE = _AutoDriveState()
@@ -205,6 +239,16 @@ class TaskAutoDriveService:
         increment_loop_count: bool = False,
     ) -> None:
         metadata = dict(task.metadata_ or {})
+        event = self._build_scope_event(
+            task=task,
+            status=status,
+            action=action,
+            reason=reason,
+            summary=summary,
+            error=error,
+            run_id=run_id,
+            run_task_id=run_task_id,
+        )
         if enabled is not None:
             metadata[AUTO_DRIVE_ENABLED_KEY] = enabled
         if status is not None:
@@ -230,7 +274,40 @@ class TaskAutoDriveService:
                 metadata[AUTO_DRIVE_LAST_ERROR_KEY] = error
             else:
                 metadata.pop(AUTO_DRIVE_LAST_ERROR_KEY, None)
+        if event is not None:
+            metadata[AUTO_DRIVE_RECENT_EVENTS_KEY] = _append_recent_event(
+                metadata.get(AUTO_DRIVE_RECENT_EVENTS_KEY),
+                event.to_dict(),
+                limit=AUTO_DRIVE_RECENT_EVENTS_MAX,
+            )
         task.metadata_ = metadata
+
+    def _build_scope_event(
+        self,
+        *,
+        task: Task,
+        status: str | None,
+        action: str | None,
+        reason: str | None,
+        summary: str | None,
+        error: str | None,
+        run_id: str | None,
+        run_task_id: str | None,
+    ) -> AutoDriveEvent | None:
+        if not any(value is not None for value in (status, action, reason, summary, error, run_id, run_task_id)):
+            return None
+        return AutoDriveEvent(
+            recorded_at=now().isoformat(),
+            status=status,
+            action=action,
+            reason=reason,
+            summary=summary,
+            error=error or None,
+            task_id=task.id,
+            scope_task_id=task.id,
+            run_id=run_id,
+            run_task_id=run_task_id,
+        )
 
 
 class GlobalAutoDriveService:
@@ -295,6 +372,7 @@ class GlobalAutoDriveService:
             error=_GLOBAL_STATE.error,
             updated_at=_GLOBAL_STATE.updated_at,
             lease=_read_global_lease_status(),
+            recent_events=list(_GLOBAL_STATE.recent_events),
         )
 
 
@@ -626,6 +704,7 @@ def _update_global_state(
     error: str | None = None,
 ) -> None:
     changed = False
+    event_payload: dict[str, object] | None = None
     if status is not None:
         _GLOBAL_STATE.status = status
         changed = True
@@ -656,7 +735,25 @@ def _update_global_state(
         _GLOBAL_STATE.error = error or None
         changed = True
     if changed:
-        _GLOBAL_STATE.updated_at = now().isoformat()
+        event_payload = AutoDriveEvent(
+            recorded_at=now().isoformat(),
+            status=_GLOBAL_STATE.status,
+            action=_GLOBAL_STATE.last_action,
+            reason=_GLOBAL_STATE.last_reason,
+            summary=_GLOBAL_STATE.summary,
+            error=_GLOBAL_STATE.error,
+            task_id=_GLOBAL_STATE.current_task_id,
+            scope_task_id=_GLOBAL_STATE.current_scope_task_id,
+            run_id=_GLOBAL_STATE.current_run_id,
+        ).to_dict()
+        _GLOBAL_STATE.recent_events = _append_recent_event(
+            _GLOBAL_STATE.recent_events,
+            event_payload,
+            limit=GLOBAL_AUTO_DRIVE_RECENT_EVENTS_MAX,
+        )
+        _GLOBAL_STATE.updated_at = str(event_payload.get("recordedAt"))
+        if _GLOBAL_STATE.enabled:
+            _persist_global_autodrive_enabled(True)
 
 
 def _is_background_task_running(task: asyncio.Future[None] | None) -> bool:
@@ -705,9 +802,17 @@ def _pending_tasks_for_current_loop() -> list[asyncio.Future[None]]:
 
 
 async def recover_autodrive_runtime_state() -> None:
-    if await asyncio.to_thread(_load_persisted_global_autodrive_enabled):
+    persisted_state = await asyncio.to_thread(_load_persisted_global_autodrive_state)
+    if persisted_state.get("enabled") is True:
         _reset_global_autodrive_state(enabled=True)
-        _update_global_state(status="running", summary=GLOBAL_AUTO_DRIVE_RECOVERED_SUMMARY, error="")
+        _hydrate_global_autodrive_state(persisted_state)
+        _update_global_state(
+            status="running",
+            summary=GLOBAL_AUTO_DRIVE_RECOVERED_SUMMARY,
+            action="start",
+            reason="global_auto_drive_recovered",
+            error="",
+        )
         await ensure_global_autodrive()
         return
 
@@ -749,6 +854,7 @@ def _reset_global_autodrive_state(*, enabled: bool) -> None:
     _GLOBAL_STATE.loop_count = 0
     _GLOBAL_STATE.error = None
     _GLOBAL_STATE.updated_at = now().isoformat()
+    _GLOBAL_STATE.recent_events = []
 
 
 async def _list_enabled_scope_task_ids() -> list[str]:
@@ -782,15 +888,47 @@ def _global_autodrive_lease_path() -> Path:
     return settings.storage_dir / GLOBAL_AUTO_DRIVE_LEASE_FILENAME
 
 
-def _load_persisted_global_autodrive_enabled() -> bool:
+def _serialize_global_autodrive_state() -> dict[str, object]:
+    return {
+        "enabled": _GLOBAL_STATE.enabled,
+        "status": _GLOBAL_STATE.status,
+        "summary": _GLOBAL_STATE.summary,
+        "lastAction": _GLOBAL_STATE.last_action,
+        "lastReason": _GLOBAL_STATE.last_reason,
+        "currentTaskId": _GLOBAL_STATE.current_task_id,
+        "currentScopeTaskId": _GLOBAL_STATE.current_scope_task_id,
+        "currentRunId": _GLOBAL_STATE.current_run_id,
+        "loopCount": _GLOBAL_STATE.loop_count,
+        "error": _GLOBAL_STATE.error,
+        "updatedAt": _GLOBAL_STATE.updated_at,
+        "recentEvents": list(_GLOBAL_STATE.recent_events),
+    }
+
+
+def _hydrate_global_autodrive_state(payload: dict[str, Any]) -> None:
+    _GLOBAL_STATE.status = _safe_text(payload.get("status")) or _GLOBAL_STATE.status
+    _GLOBAL_STATE.summary = _safe_text(payload.get("summary")) or _GLOBAL_STATE.summary
+    _GLOBAL_STATE.last_action = _safe_text(payload.get("lastAction"))
+    _GLOBAL_STATE.last_reason = _safe_text(payload.get("lastReason"))
+    _GLOBAL_STATE.current_task_id = _safe_text(payload.get("currentTaskId"))
+    _GLOBAL_STATE.current_scope_task_id = _safe_text(payload.get("currentScopeTaskId"))
+    _GLOBAL_STATE.current_run_id = _safe_text(payload.get("currentRunId"))
+    loop_count = payload.get("loopCount")
+    _GLOBAL_STATE.loop_count = loop_count if isinstance(loop_count, int) and loop_count >= 0 else _GLOBAL_STATE.loop_count
+    _GLOBAL_STATE.error = _safe_text(payload.get("error"))
+    _GLOBAL_STATE.updated_at = _safe_text(payload.get("updatedAt")) or _GLOBAL_STATE.updated_at
+    _GLOBAL_STATE.recent_events = _normalize_recent_events(payload.get("recentEvents"), GLOBAL_AUTO_DRIVE_RECENT_EVENTS_MAX)
+
+
+def _load_persisted_global_autodrive_state() -> dict[str, Any]:
     state_path = _global_autodrive_state_path()
     try:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return False
+        return {}
     except (OSError, json.JSONDecodeError, ValueError):
-        return False
-    return payload.get("enabled") is True
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _persist_global_autodrive_enabled(enabled: bool) -> None:
@@ -800,13 +938,54 @@ def _persist_global_autodrive_enabled(enabled: bool) -> None:
         state_path.unlink(missing_ok=True)
         return
 
-    payload = {
-        "enabled": True,
-        "updatedAt": now().isoformat(),
-    }
+    payload = _serialize_global_autodrive_state()
     temp_path = state_path.with_suffix(f"{state_path.suffix}.tmp")
     temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temp_path.replace(state_path)
+
+
+def _safe_text(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _normalize_recent_events(value: object, limit: int) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return []
+    events: list[dict[str, object]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        normalized = {
+            "recordedAt": _safe_text(item.get("recordedAt")),
+            "status": _safe_text(item.get("status")),
+            "action": _safe_text(item.get("action")),
+            "reason": _safe_text(item.get("reason")),
+            "summary": _safe_text(item.get("summary")),
+            "error": _safe_text(item.get("error")),
+            "taskId": _safe_text(item.get("taskId")),
+            "scopeTaskId": _safe_text(item.get("scopeTaskId")),
+            "runId": _safe_text(item.get("runId")),
+            "runTaskId": _safe_text(item.get("runTaskId")),
+        }
+        if normalized["recordedAt"] is None:
+            continue
+        events.append(normalized)
+    return events[-limit:]
+
+
+def _append_recent_event(
+    existing: object,
+    event: dict[str, object],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    events = _normalize_recent_events(existing, limit)
+    signature_keys = ("status", "action", "reason", "summary", "error", "taskId", "scopeTaskId", "runId", "runTaskId")
+    if events and all(events[-1].get(key) == event.get(key) for key in signature_keys):
+        events[-1] = event
+        return events[-limit:]
+    events.append(event)
+    return events[-limit:]
 
 
 def _load_global_lease_payload() -> dict[str, Any] | None:

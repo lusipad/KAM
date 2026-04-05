@@ -189,6 +189,22 @@ function autoDriveReasonLabel(value: string | null) {
   return value
 }
 
+function autoDriveActionLabel(value: string | null) {
+  if (value === 'adopt') {
+    return '采纳'
+  }
+  if (value === 'retry') {
+    return '重试'
+  }
+  if (value === 'plan_and_dispatch') {
+    return '拆并跑'
+  }
+  if (value === 'stop') {
+    return '停止'
+  }
+  return value
+}
+
 function autoDriveLeaseLabel(value: GlobalAutoDriveResponse['lease']) {
   if (!value) {
     return null
@@ -902,6 +918,30 @@ function App() {
                 {globalScopeTaskTitle ? <span className="file-chip">当前 scope · {globalScopeTaskTitle}</span> : null}
                 {globalAutoDrive?.currentRunId ? <span className="file-chip">当前 Run · {globalAutoDrive.currentRunId}</span> : null}
                 {globalAutoDrive?.error ? <span className="file-chip">错误 · {globalAutoDrive.error}</span> : null}
+              </div>
+            ) : null}
+            {globalAutoDrive?.recentEvents?.length ? (
+              <div className="task-list">
+                {globalAutoDrive.recentEvents
+                  .slice()
+                  .reverse()
+                  .slice(0, 4)
+                  .map((event) => (
+                    <article key={`${event.recordedAt}-${event.reason ?? event.status ?? 'event'}`} className="task-list-row">
+                      <div className="task-list-copy">
+                        <strong>{event.summary || autoDriveStatusLabel(event.status)}</strong>
+                        <span>{autoDriveTimeLabel(event.recordedAt) || '刚刚'}</span>
+                        <div className="task-chip-row">
+                          {event.status ? <span className="file-chip">阶段 · {autoDriveStatusLabel(event.status)}</span> : null}
+                          {event.action ? <span className="file-chip">动作 · {autoDriveActionLabel(event.action)}</span> : null}
+                          {event.reason ? <span className="file-chip">原因 · {autoDriveReasonLabel(event.reason)}</span> : null}
+                          {event.taskId ? <span className="file-chip">任务 · {event.taskId}</span> : null}
+                          {event.runId ? <span className="file-chip">Run · {event.runId}</span> : null}
+                          {event.error ? <span className="file-chip">错误 · {event.error}</span> : null}
+                        </div>
+                      </div>
+                    </article>
+                  ))}
               </div>
             ) : null}
           </section>

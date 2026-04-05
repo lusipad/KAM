@@ -54,6 +54,7 @@
 - global auto-drive 已增加本地文件 lease：并发 KAM 进程会做 owner 去重、fresh lease 等待、stale lease 回收，避免重复接同一批活
 - global auto-drive loop 遇到调度异常后会自动重试，而不是保持 enabled 但后台 supervisor 已退出
 - global auto-drive 状态面板已返回结构化 lease / health 字段，能直接看到 owner、heartbeat、stale 与最近状态更新时间
+- task family / global auto-drive 已返回 recent events，可直接回看等待、暂停、重启、错误与最近任务切换
 - 已补真实多进程 lease 回归：验证第二个进程会被 active owner 挡住，owner 释放后新的进程可以接管
 - 已补真实 crash failover 回归：持有 lease 的子进程被强制 kill 后，TTL 到期前仍会阻挡其他进程，TTL 到期后可自动接管
 - 已补 cold-start chaos 回归：覆盖 `persisted enabled + stale lease reclaim`，以及 `persisted enabled + foreign lease wait -> TTL 后二次冷启动接管`
@@ -71,7 +72,7 @@
 ### 需要继续推进
 
 - 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
-- 如果后续要上更长时间无人值守，仍可继续补更细的恢复可观测性，但它已不是当前交付阻塞项
+- 如果后续要上更长时间无人值守，仍建议补多小时级别 soak 验证，但它已不是当前交付阻塞项
 
 ### 明确不优先做
 

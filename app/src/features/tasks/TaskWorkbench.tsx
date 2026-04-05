@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 import { PromptComposer } from '@/components/PromptComposer'
 import { formatRelativeTime } from '@/lib/ui'
 import { TaskRunCard } from '@/features/tasks/TaskRunCard'
-import type { RunRecord, SuggestedTaskRefRecord, TaskContinueResponse, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
+import type { AutoDriveEventRecord, RunRecord, SuggestedTaskRefRecord, TaskContinueResponse, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
 
 type TaskWorkbenchProps = {
   task: TaskDetail | null
@@ -100,6 +100,40 @@ function metadataSuggestedRefs(value: unknown): SuggestedTaskRefRecord[] {
         label,
         value: refValue,
         metadata: candidate.metadata && typeof candidate.metadata === 'object' ? (candidate.metadata as Record<string, unknown>) : {},
+      },
+    ]
+  })
+}
+
+function metadataAutoDriveEvents(value: unknown): AutoDriveEventRecord[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') {
+      return []
+    }
+    const candidate = item as Record<string, unknown>
+    const recordedAt = typeof candidate.recordedAt === 'string' ? candidate.recordedAt.trim() : ''
+    if (!recordedAt) {
+      return []
+    }
+    const text = (entry: string) => {
+      const raw = candidate[entry]
+      return typeof raw === 'string' && raw.trim() ? raw.trim() : null
+    }
+    return [
+      {
+        recordedAt,
+        status: text('status'),
+        action: text('action'),
+        reason: text('reason'),
+        summary: text('summary'),
+        error: text('error'),
+        taskId: text('taskId'),
+        scopeTaskId: text('scopeTaskId'),
+        runId: text('runId'),
+        runTaskId: text('runTaskId'),
       },
     ]
   })
@@ -253,6 +287,7 @@ export function TaskWorkbench({
   const autoDriveLastAction = continueActionLabel(metadataText(task?.metadata.autoDriveLastAction))
   const autoDriveLastReason = continueReasonLabel(metadataText(task?.metadata.autoDriveLastReason))
   const autoDriveLastSummary = metadataText(task?.metadata.autoDriveLastSummary)
+  const autoDriveRecentEvents = metadataAutoDriveEvents(task?.metadata.autoDriveRecentEvents)
 
   if (loading) {
     return <div className="empty-panel">正在加载任务…</div>
@@ -305,6 +340,22 @@ export function TaskWorkbench({
                     </div>
                   </div>
                 </article>
+                {autoDriveRecentEvents.slice().reverse().slice(0, 4).map((event) => (
+                  <article key={`${event.recordedAt}-${event.reason ?? event.status ?? 'event'}`} className="task-list-row">
+                    <div className="task-list-copy">
+                      <strong>{event.summary || autoDriveStatusLabel(event.status)}</strong>
+                      <span>{formatRelativeTime(event.recordedAt)}</span>
+                      <div className="task-chip-row">
+                        {event.status ? <span className="file-chip">阶段 · {autoDriveStatusLabel(event.status)}</span> : null}
+                        {event.action ? <span className="file-chip">动作 · {continueActionLabel(event.action)}</span> : null}
+                        {event.reason ? <span className="file-chip">原因 · {continueReasonLabel(event.reason)}</span> : null}
+                        {event.runId ? <span className="file-chip">Run · {event.runId}</span> : null}
+                        {event.runTaskId ? <span className="file-chip">任务 · {event.runTaskId}</span> : null}
+                        {event.error ? <span className="file-chip">错误 · {event.error}</span> : null}
+                      </div>
+                    </div>
+                  </article>
+                ))}
               </div>
             ) : null}
             <div className="task-inline-form">

@@ -525,6 +525,8 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(root_metadata["autoDriveLastAction"], "stop")
         self.assertEqual(root_metadata["autoDriveLastReason"], "no_high_value_action")
         self.assertGreaterEqual(root_metadata["autoDriveLoopCount"], 2)
+        self.assertGreaterEqual(len(root_metadata["autoDriveRecentEvents"]), 1)
+        self.assertTrue(any(item["reason"] == "no_high_value_action" for item in root_metadata["autoDriveRecentEvents"]))
 
         tasks = self.client.get("/api/tasks").json()["tasks"]
         child_tasks = [item for item in tasks if item["metadata"].get("parentTaskId") == "task-harness-cutover"]
@@ -588,6 +590,8 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(status["lastAction"], "stop")
         self.assertEqual(status["lastReason"], "no_high_value_action")
         self.assertGreaterEqual(status["loopCount"], 3)
+        self.assertGreaterEqual(len(status["recentEvents"]), 1)
+        self.assertTrue(any(item["reason"] == "no_high_value_action" for item in status["recentEvents"]))
 
         tasks = self.client.get("/api/tasks").json()["tasks"]
         root_one_children = [item for item in tasks if item["metadata"].get("parentTaskId") == "task-harness-cutover"]
@@ -711,6 +715,8 @@ class HarnessApiTests(unittest.TestCase):
         self.assertTrue(status["enabled"])
         self.assertEqual(status["status"], "idle")
         self.assertEqual(status["lastReason"], "no_high_value_action")
+        self.assertGreaterEqual(len(status["recentEvents"]), 1)
+        self.assertTrue(any(item["reason"] in {"global_auto_drive_recovered", "no_high_value_action"} for item in status["recentEvents"]))
 
         tasks = self.client.get("/api/tasks").json()["tasks"]
         root_two_children = [item for item in tasks if item["metadata"].get("parentTaskId") == second_root_id]
