@@ -210,11 +210,16 @@ async def _find_reusable_source_task(db: AsyncSession, dedup_key: str) -> Task |
         .options(selectinload(Task.refs), selectinload(Task.runs))
         .order_by(desc(Task.updated_at))
     )
+    latest_match: Task | None = None
     for task in result.scalars():
         if _source_dedup_key(task.metadata_ or {}) != dedup_key:
             continue
-        if _task_is_reusable_for_source_update(task):
-            return task
+        latest_match = task
+        break
+    if latest_match is None:
+        return None
+    if _task_is_reusable_for_source_update(latest_match):
+        return latest_match
     return None
 
 

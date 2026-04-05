@@ -343,6 +343,111 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(second_detail["refs"][1]["label"], "Review comment #2")
         self.assertIn("follow-up", second_detail["labels"])
 
+    def test_create_task_does_not_revive_older_duplicate_when_newer_same_source_task_has_run(self):
+        dedup_key = "github_pr_review_comments:lusipad/KAM:4518"
+        stale_updated_at = datetime.now(UTC) - timedelta(minutes=10)
+        active_updated_at = datetime.now(UTC) - timedelta(minutes=1)
+
+        async def seed_duplicate_source_tasks():
+            async with engine.begin() as conn:
+                await conn.execute(
+                    Task.__table__.insert().values(
+                        id="taskdupold01",
+                        title="过时的 review 任务",
+                        description="旧评论，不该被重新复用。",
+                        repo_path="D:/Repos/KAM",
+                        status="open",
+                        priority="high",
+                        labels=["dogfood", "github"],
+                        metadata={
+                            "recommendedPrompt": "处理旧评论。",
+                            "recommendedAgent": "codex",
+                            "sourceKind": "github_pr_review_comments",
+                            "sourceDedupKey": dedup_key,
+                        },
+                        updated_at=stale_updated_at,
+                        created_at=stale_updated_at,
+                    )
+                )
+                await conn.execute(
+                    Task.__table__.insert().values(
+                        id="taskdupnew01",
+                        title="正在处理的 review 任务",
+                        description="这张任务已经开始执行。",
+                        repo_path="D:/Repos/KAM",
+                        status="in_progress",
+                        priority="high",
+                        labels=["dogfood", "github"],
+                        metadata={
+                            "recommendedPrompt": "处理当前评论。",
+                            "recommendedAgent": "codex",
+                            "sourceKind": "github_pr_review_comments",
+                            "sourceDedupKey": dedup_key,
+                        },
+                        updated_at=active_updated_at,
+                        created_at=active_updated_at,
+                    )
+                )
+                await conn.execute(
+                    TaskRun.__table__.insert().values(
+                        id="rundupnew01",
+                        task_id="taskdupnew01",
+                        agent="codex",
+                        status="running",
+                        task="处理当前评论。",
+                        result_summary=None,
+                        changed_files=[],
+                        check_passed=None,
+                        raw_output="",
+                        created_at=active_updated_at,
+                    )
+                )
+
+        asyncio.run(seed_duplicate_source_tasks())
+
+        created = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "处理 PR review 评论",
+                "description": "第三轮评论应该创建新任务。",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+                "labels": ["dogfood", "github", "follow-up"],
+                "metadata": {
+                    "recommendedPrompt": "处理第三轮评论。",
+                    "recommendedAgent": "codex",
+                    "sourceKind": "github_pr_review_comments",
+                    "sourceDedupKey": dedup_key,
+                },
+                "refs": [
+                    {
+                        "kind": "url",
+                        "label": "PR",
+                        "value": "https://github.com/lusipad/KAM/pull/4518",
+                        "metadata": {"intakeSourceKind": "github_pr_review_comments"},
+                    },
+                    {
+                        "kind": "url",
+                        "label": "Review comment #3",
+                        "value": "https://github.com/lusipad/KAM/pull/4518#discussion_r3",
+                        "metadata": {"intakeSourceKind": "github_pr_review_comments", "commentId": 3},
+                    },
+                ],
+            },
+        ).json()
+
+        self.assertNotIn(created["id"], {"taskdupold01", "taskdupnew01"})
+
+        stale_detail = self.client.get("/api/tasks/taskdupold01").json()
+        active_detail = self.client.get("/api/tasks/taskdupnew01").json()
+        created_detail = self.client.get(f"/api/tasks/{created['id']}").json()
+
+        self.assertEqual(stale_detail["description"], "旧评论，不该被重新复用。")
+        self.assertEqual(active_detail["runs"][0]["status"], "running")
+        self.assertEqual(created_detail["description"], "第三轮评论应该创建新任务。")
+        self.assertEqual(created_detail["refs"][1]["label"], "Review comment #3")
+
     def test_seed_harness_reset_waits_for_background_runs(self):
         calls: list[str] = []
 
