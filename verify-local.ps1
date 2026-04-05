@@ -1,5 +1,6 @@
 param(
     [switch]$SkipSmoke,
+    [switch]$SkipRealAgentSmoke,
     [switch]$RunRealAgentSmoke,
     [ValidateSet("codex", "claude-code")]
     [string]$RealSmokeAgent = "codex"
@@ -55,10 +56,34 @@ function Invoke-CheckedProcess {
     }
 }
 
+function Assert-RealAgentSmokeReady {
+    param(
+        [string]$Agent
+    )
+
+    if ($Agent -eq "codex") {
+        $codexCommand = Get-Command codex -ErrorAction SilentlyContinue
+        if (-not $codexCommand) {
+            throw "默认真实 agent smoke 需要可用的 codex 命令。若当前只想跑快速本地回归，请显式传入 -SkipRealAgentSmoke。"
+        }
+
+        & $codexCommand.Source login status *> $null
+        if ($LASTEXITCODE -ne 0) {
+            throw "默认真实 agent smoke 需要可用的 codex 登录态。若当前只想跑快速本地回归，请显式传入 -SkipRealAgentSmoke。"
+        }
+    }
+}
+
 Write-Host "==================================" -ForegroundColor Cyan
 Write-Host "  KAM Harness - 本地验证脚本" -ForegroundColor Cyan
 Write-Host "==================================" -ForegroundColor Cyan
 Write-Host ""
+
+$shouldRunRealAgentSmoke = -not $SkipRealAgentSmoke -or $RunRealAgentSmoke
+
+if ($shouldRunRealAgentSmoke) {
+    Assert-RealAgentSmokeReady -Agent $RealSmokeAgent
+}
 
 Push-Location $RootDir
 try {
@@ -100,7 +125,7 @@ try {
         if (-not $SkipSmoke) {
             Invoke-CheckedProcess "本地 smoke" $Npm @("run", "test:smoke:local") (Get-Location).Path
         }
-        if ($RunRealAgentSmoke) {
+        if ($shouldRunRealAgentSmoke) {
             Invoke-CheckedProcess "真实 agent smoke" $Pwsh @(
                 "-NoProfile",
                 "-Command",

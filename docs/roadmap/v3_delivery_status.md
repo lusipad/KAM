@@ -56,7 +56,7 @@
 - global auto-drive supervisor 若被意外 cancel，只要全局开关仍开启，就会自动拉起新的 loop
 - 前端已新增全局无人值守状态面板与开关
 - 新增 harness smoke
-- 新增 opt-in 真实 agent smoke（默认覆盖 `codex` 的临时 git repo 改动、Lore commit 和 adopt 链路）
+- `verify-local.ps1` 已默认纳入真实 `codex` agent smoke，覆盖临时 git repo 改动、Lore commit 和 adopt 链路
 - 新增 `POST /api/dev/seed-harness`
 - 移除旧 `projects / threads / home / watchers / memory` 运行时入口
 - 移除 V3 前端组件、类型层和验证基线
@@ -67,7 +67,6 @@
 ### 需要继续推进
 
 - 把 task self-planning 从当前启发式继续做硬：引入更稳定的 repo/task 信号排序和更细的完成定义
-- 把真实 `codex` 仓库改动链路稳固成默认 smoke 门禁
 - 把 next-task / continue 调度策略继续做硬：完成定义、重试策略，以及失败任务、待 adopt 任务与新任务之间的排序
 - 把当前 global auto-drive 继续做硬：更多 OS-level crash / cold-start chaos 场景回归，以及更细的恢复可观测性仍未做
 - 保留 `claude-code` 为可选 agent 和额外 smoke 目标，而不是默认主门禁
@@ -82,7 +81,7 @@
 ## 当前建议
 
 - 继续沿 `KAM builds KAM` 方向推进，不要回到 V3 workspace 心智
-- 下一步优先把真实 `codex` 改仓库链路做成更硬的门禁，同时按 OS-level crash / cold-start 补更多 chaos 回归
+- 下一步优先把 next-task / continue 调度策略继续做硬，同时按 OS-level crash / cold-start 补更多 chaos 回归
 - 所有新增能力都必须围绕 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare`
 
 ## 对应文档
