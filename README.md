@@ -68,21 +68,21 @@ docs/
   archive/legacy/       历史设计
 ```
 
-## 本机最常用
+## 三分钟上手
 
-如果你只是想在本机把 KAM 跑起来并顺手值守，优先记住这 3 条：
+如果你只是想在本机把 KAM 跑起来并顺手值守，先走这 3 步：
 
-- 启动本地环境：`pwsh -File .\start-local.ps1`
-- 人工值守入口：`pwsh -File .\kam-operator.ps1 menu`
-- 脚本/监控入口：`pwsh -File .\kam-operator.ps1 status --json` 或 `pwsh -File .\kam-operator.ps1 status --fail-on-attention`
+1. 启动本地环境：`pwsh -File .\start-local.ps1`
+2. 人工值守入口：`pwsh -File .\kam-operator.ps1 menu`
+3. 本地验证：`pwsh -File .\verify-local.ps1`
 
-建议分工：
+## 按目的选入口
 
-- 人在本机盯盘或临时恢复：优先 `menu`
-- 人想连续看状态变化：优先 `watch`
-- 外部计划任务、监控、告警：优先 `status --json` / `status --fail-on-attention`
-
-更细的状态解释、打断、重启、人工介入边界，直接看 [docs/runbooks/operator-control-plane.md](./docs/runbooks/operator-control-plane.md)。
+- 你要在本机人工盯盘、恢复、继续推进：`pwsh -File .\kam-operator.ps1 menu`
+- 你要持续看状态变化：`pwsh -File .\kam-operator.ps1 watch --interval-seconds 5`
+- 你要接外部计划任务、监控、告警：`pwsh -File .\kam-operator.ps1 status --json` 或 `pwsh -File .\kam-operator.ps1 status --fail-on-attention`
+- 你要看整体交付状态和剩余缺口：看 [docs/roadmap/v3_delivery_status.md](./docs/roadmap/v3_delivery_status.md)
+- 你要看状态解释、打断、重启、人工介入边界：看 [docs/runbooks/operator-control-plane.md](./docs/runbooks/operator-control-plane.md)
 
 ## 本地开发
 
@@ -102,7 +102,7 @@ Set-Location ..
 pwsh -File .\start-local.ps1
 ```
 
-如果你想不打开 UI 直接从终端值守：
+如果你想不打开 UI，直接从终端值守：
 
 ```powershell
 pwsh -File .\kam-operator.ps1 menu
@@ -185,25 +185,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body 
 
 进入界面后，点击“让 KAM 自己排工作”会基于当前 task 的 run、compare、snapshot、refs 和 artifacts 自动拆出下一轮 follow-up tasks。拆出的子任务会自动带上推荐 Prompt、验收检查项和建议 refs，并支持直接开跑下一张任务。
 
-顶部“操作台”现在是外部操作者的统一入口：
-
-- 操作台内已经直接内嵌一组“值守说明”，不用先理解底层 `autodrive / continue / retry / adopt` 语义再动手
-- 看状态：
-  - `总状态 / 全局 / Running / Blocked / Failed / 待采纳`
-  - `当前焦点`
-  - `最近事件`
-- 重新触发：
-  - `让 KAM 接下一张`
-  - `继续推进当前任务`
-  - `重试最近失败 Run`
-  - `采纳最近结果`
-- 打断：
-  - `停止全局无人值守 / 停止无人值守` 用来停止后续自动推进
-  - `打断当前 Run` 用来直接取消正在执行的 agent run，状态会记为 `cancelled`
-- 重启：
-  - `重启全局 supervisor` 用来强制拉起新的全局无人值守 loop
-
-如果你不想开 UI，也可以直接走 CLI：
+如果你不想开 UI，也可以直接走 operator CLI：
 
 ```powershell
 pwsh -File .\kam-operator.ps1 menu
@@ -231,14 +213,7 @@ pwsh -File .\kam-operator.ps1 status --fail-on-attention
 
 第二条命令在 control plane 进入 `attention` 时会返回退出码 `2`，方便外部监控或计划任务接告警。
 
-“让 KAM 接下一张”会优先从现有任务池里挑选带推荐 Prompt 的可跑任务；如果当前还没有这样的 child task，就会先从最合适的父任务拆一张，再直接发起 run。
-
-“继续推进当前任务”会先在当前 task family 内自动判断下一步：
-
-- 有可自动采纳的真实 passed run 时，优先 `adopt`
-- 有失败 child run 时，优先 `retry`
-- 否则尝试 `plan_and_dispatch`
-- 如果当前作用域已收口或仍有 run 在执行，就返回 `stop`
+更细的 operator 状态解释、动作语义、打断与重启边界，直接看 [docs/runbooks/operator-control-plane.md](./docs/runbooks/operator-control-plane.md)。
 
 ## 关键命令
 
