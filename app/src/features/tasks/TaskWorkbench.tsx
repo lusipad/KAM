@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 
 import { PromptComposer } from '@/components/PromptComposer'
 import { formatRelativeTime } from '@/lib/ui'
+import { autoDriveActionLabel, autoDriveReasonLabel, autoDriveStatusLabel } from '@/features/tasks/autoDriveLabels'
 import { TaskRunCard } from '@/features/tasks/TaskRunCard'
 import type { AutoDriveEventRecord, RunRecord, SuggestedTaskRefRecord, TaskContinueResponse, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
 
@@ -169,72 +170,6 @@ function plannerAgentLabel(value: string | null) {
   return null
 }
 
-function continueActionLabel(value: string | null) {
-  if (value === 'adopt') {
-    return '采纳'
-  }
-  if (value === 'retry') {
-    return '重试'
-  }
-  if (value === 'plan_and_dispatch') {
-    return '拆并跑'
-  }
-  if (value === 'stop') {
-    return '停止'
-  }
-  return value
-}
-
-function continueReasonLabel(value: string | null) {
-  if (value === 'latest_passed_run_adopted') {
-    return '已采纳最近通过 run'
-  }
-  if (value === 'latest_failed_run_retried' || value === 'latest_failed_child_run_retried') {
-    return '已重试最近失败 run'
-  }
-  if (value === 'dispatched_next_runnable_task') {
-    return '已挑出下一张可跑任务'
-  }
-  if (value === 'scope_task_terminal') {
-    return '当前任务已收口'
-  }
-  if (value === 'scope_has_active_run') {
-    return '当前仍有 run 在执行'
-  }
-  if (value === 'latest_failed_run_retry_budget_exhausted') {
-    return '最近失败 run 已到自动重试上限'
-  }
-  if (value === 'no_high_value_action') {
-    return '当前没有更高价值的下一步'
-  }
-  if (value === 'adopt_failed') {
-    return '自动采纳失败'
-  }
-  return value
-}
-
-function autoDriveStatusLabel(value: string | null) {
-  if (value === 'running') {
-    return '执行中'
-  }
-  if (value === 'waiting_for_run') {
-    return '等待 run'
-  }
-  if (value === 'idle') {
-    return '已停机'
-  }
-  if (value === 'disabled') {
-    return '已关闭'
-  }
-  if (value === 'paused') {
-    return '已暂停'
-  }
-  if (value === 'error') {
-    return '异常'
-  }
-  return value
-}
-
 export function TaskWorkbench({
   task,
   taskDraft,
@@ -284,8 +219,8 @@ export function TaskWorkbench({
   const suggestedRefs = metadataSuggestedRefs(task?.metadata.suggestedRefs)
   const autoDriveEnabled = metadataBoolean(task?.metadata.autoDriveEnabled)
   const autoDriveStatus = metadataText(task?.metadata.autoDriveStatus)
-  const autoDriveLastAction = continueActionLabel(metadataText(task?.metadata.autoDriveLastAction))
-  const autoDriveLastReason = continueReasonLabel(metadataText(task?.metadata.autoDriveLastReason))
+  const autoDriveLastAction = autoDriveActionLabel(metadataText(task?.metadata.autoDriveLastAction))
+  const autoDriveLastReason = autoDriveReasonLabel(metadataText(task?.metadata.autoDriveLastReason))
   const autoDriveLastSummary = metadataText(task?.metadata.autoDriveLastSummary)
   const autoDriveRecentEvents = metadataAutoDriveEvents(task?.metadata.autoDriveRecentEvents)
 
@@ -347,8 +282,8 @@ export function TaskWorkbench({
                       <span>{formatRelativeTime(event.recordedAt)}</span>
                       <div className="task-chip-row">
                         {event.status ? <span className="file-chip">阶段 · {autoDriveStatusLabel(event.status)}</span> : null}
-                        {event.action ? <span className="file-chip">动作 · {continueActionLabel(event.action)}</span> : null}
-                        {event.reason ? <span className="file-chip">原因 · {continueReasonLabel(event.reason)}</span> : null}
+                        {event.action ? <span className="file-chip">动作 · {autoDriveActionLabel(event.action)}</span> : null}
+                        {event.reason ? <span className="file-chip">原因 · {autoDriveReasonLabel(event.reason)}</span> : null}
                         {event.runId ? <span className="file-chip">Run · {event.runId}</span> : null}
                         {event.runTaskId ? <span className="file-chip">任务 · {event.runTaskId}</span> : null}
                         {event.error ? <span className="file-chip">错误 · {event.error}</span> : null}
@@ -444,11 +379,11 @@ export function TaskWorkbench({
                   <div className="feed-card-title">自动推进结果</div>
                   <div className="feed-card-subtle">{continueDecision.summary}</div>
                 </div>
-                <span className="feed-card-badge">{continueActionLabel(continueDecision.action)}</span>
+                <span className="feed-card-badge">{autoDriveActionLabel(continueDecision.action)}</span>
               </div>
               <div className="task-chip-row">
-                {continueReasonLabel(continueDecision.reason) ? (
-                  <span className="file-chip">原因 · {continueReasonLabel(continueDecision.reason)}</span>
+                {autoDriveReasonLabel(continueDecision.reason) ? (
+                  <span className="file-chip">原因 · {autoDriveReasonLabel(continueDecision.reason)}</span>
                 ) : null}
                 {continueDecision.source ? <span className="file-chip">来源 · {continueDecision.source}</span> : null}
                 {continueDecision.plannedFromTaskId ? <span className="file-chip">父任务 · {continueDecision.plannedFromTaskId}</span> : null}
