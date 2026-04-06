@@ -1,0 +1,78 @@
+name: Build Portable Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 包版本标签，默认使用 tag 名或 dev-<sha>
+        required: false
+        type: string
+      artifact_name:
+        description: Artifact 名称，默认 kam-portable-<version>
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-portable-package:
+    runs-on: windows-latest
+    env:
+      INPUT_VERSION: ${{ github.event.inputs.version || '' }}
+      INPUT_ARTIFACT_NAME: ${{ github.event.inputs.artifact_name || '' }}
+      PACKAGE_OUTPUT_DIR: ${{ runner.temp }}\kam-portable-package
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: app
+        shell: pwsh
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: app
+        shell: pwsh
+        run: npm run build
+
+      - name: Resolve package metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $version = $env:INPUT_VERSION
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            if ($env:GITHUB_REF_TYPE -eq "tag") {
+              $version = $env:GITHUB_REF_NAME
+            }
+            else {
+              $version = "dev-$($env:GITHUB_SHA.Substring(0, 7))"
+            }
+          }
+
+          $artifactName = $env:INPUT_ARTIFACT_NAME
+          if ([string]::IsNullOrWhiteSpace($artifactName)) {
+            $artifactName = "kam-portable-$version"
+          }
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_name=$artifactName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Package portable bundle
+        shell: pwsh
+        run: |
+          ./scripts/package-portable.ps1 -Version '${{ steps.meta.outputs.version }}' -OutputDir "$env:PACKAGE_OUTPUT_DIR"
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ env.PACKAGE_OUTPUT_DIR }}\*.zip
+          if-no-files-found: error

@@ -76,6 +76,31 @@ docs/
 2. 人工值守入口：`pwsh -File .\kam-operator.ps1 menu`
 3. 本地验证：`pwsh -File .\verify-local.ps1`
 
+## GitHub Actions 运行包
+
+如果你不想在本机安装 Node，只想下载一个已经带好前端 `app/dist` 的运行包，可以直接走 GitHub Actions：
+
+1. 打开仓库的 `Build Portable Package` workflow
+2. 点击 `Run workflow`
+3. 下载生成的 artifact：`kam-portable-<version>`
+4. 解压后执行：
+
+Windows：
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\install.ps1
+pwsh -File .\run.ps1
+```
+
+macOS / Linux：
+
+```bash
+bash ./install.sh
+bash ./run.sh
+```
+
+运行包已经内置前端静态资源，所以本机只需要 Python 3；不需要再执行 `npm install` 或 `npm run build`。
+
 ## 按目的选入口
 
 - 你要在本机人工盯盘、恢复、继续推进：`pwsh -File .\kam-operator.ps1 menu`
