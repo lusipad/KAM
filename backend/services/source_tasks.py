@@ -7,7 +7,7 @@ import os
 import socket
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -137,7 +137,11 @@ async def source_task_guard(dedup_key: str | None):
 
 
 async def _acquire_source_task_lock(dedup_key: str) -> str:
-    deadline = asyncio.get_running_loop().time() + _SOURCE_TASK_LOCK_WAIT_SECONDS
+    wait_seconds = max(
+        _SOURCE_TASK_LOCK_WAIT_SECONDS,
+        _SOURCE_TASK_LOCK_TTL_SECONDS + _SOURCE_TASK_LOCK_POLL_SECONDS,
+    )
+    deadline = asyncio.get_running_loop().time() + wait_seconds
     while True:
         owner_id = await asyncio.to_thread(_try_acquire_source_task_lock, dedup_key)
         if owner_id is not None:
@@ -152,7 +156,9 @@ def _try_acquire_source_task_lock(dedup_key: str) -> str | None:
     existing = _load_source_task_lock_payload(lock_path)
     if existing is not None and not _is_source_task_lock_stale(existing):
         return None
-    if existing is not None:
+    if existing is None and lock_path.exists() and not _is_source_task_lock_file_stale(lock_path):
+        return None
+    if existing is not None or lock_path.exists():
         try:
             lock_path.unlink()
         except FileNotFoundError:
@@ -215,6 +221,14 @@ def _is_source_task_lock_stale(payload: dict[str, Any]) -> bool:
     except ValueError:
         return True
     return now() - acquired_at_value > timedelta(seconds=_SOURCE_TASK_LOCK_TTL_SECONDS)
+
+
+def _is_source_task_lock_file_stale(path: Path) -> bool:
+    try:
+        modified_at = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    except OSError:
+        return False
+    return now() - modified_at > timedelta(seconds=_SOURCE_TASK_LOCK_TTL_SECONDS)
 
 
 def _normalize_pull_number(value: Any) -> int | None:
