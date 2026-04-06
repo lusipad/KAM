@@ -21,7 +21,7 @@ jobs:
     env:
       INPUT_VERSION: ${{ github.event.inputs.version || '' }}
       INPUT_ARTIFACT_NAME: ${{ github.event.inputs.artifact_name || '' }}
-      PACKAGE_OUTPUT_DIR: ${{ runner.temp }}\kam-portable-package
+      PACKAGE_OUTPUT_DIR: output\package-artifacts
     steps:
       - name: Checkout
         uses: actions/checkout@v4
