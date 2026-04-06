@@ -20,6 +20,7 @@
 - `POST /api/tasks/{task_id}/autodrive/stop`
 - `GET /api/operator/control-plane`
 - `POST /api/operator/actions`
+- `pwsh -File .\kam-operator.ps1 ...`
 - UI 的“操作台”
 - 当前动作集合：`adopt / retry / plan_and_dispatch / stop`
 - 当前范围：既支持选中 `task family` 的自动托管，也支持全局任务池调度与 supervisor 重启

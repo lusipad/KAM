@@ -86,6 +86,12 @@ Set-Location ..
 pwsh -File .\start-local.ps1
 ```
 
+如果你想不打开 UI 直接从终端值守：
+
+```powershell
+pwsh -File .\kam-operator.ps1 status
+```
+
 验证：
 
 ```powershell
@@ -181,6 +187,25 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body 
 - 重启：
   - `重启全局 supervisor` 用来强制拉起新的全局无人值守 loop
 
+如果你不想开 UI，也可以直接走 CLI：
+
+```powershell
+pwsh -File .\kam-operator.ps1 status
+pwsh -File .\kam-operator.ps1 watch --interval-seconds 5
+pwsh -File .\kam-operator.ps1 continue --task-id task-harness-cutover
+pwsh -File .\kam-operator.ps1 restart-global
+pwsh -File .\kam-operator.ps1 cancel --task-id task-harness-cutover --run-id task-run-123
+```
+
+如果你想把它接到值班/监控脚本里，用：
+
+```powershell
+pwsh -File .\kam-operator.ps1 status --json
+pwsh -File .\kam-operator.ps1 status --fail-on-attention
+```
+
+第二条命令在 control plane 进入 `attention` 时会返回退出码 `2`，方便外部监控或计划任务接告警。
+
 “让 KAM 接下一张”会优先从现有任务池里挑选带推荐 Prompt 的可跑任务；如果当前还没有这样的 child task，就会先从最合适的父任务拆一张，再直接发起 run。
 
 “继续推进当前任务”会先在当前 task family 内自动判断下一步：
@@ -201,6 +226,7 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body 
 .\.venv\Scripts\python.exe -m unittest backend.tests.test_run_engine_lore -v
 .\.venv\Scripts\python.exe -m unittest backend.tests.test_github_adapter -v
 .\.venv\Scripts\python.exe -m unittest backend.tests.test_pr_review_monitor -v
+.\.venv\Scripts\python.exe -m unittest backend.tests.test_operator_cli -v
 ```
 
 前端：

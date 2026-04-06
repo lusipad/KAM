@@ -12,6 +12,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
 
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Python = Join-Path $RootDir ".venv\\Scripts\\python.exe"
@@ -105,6 +108,11 @@ try {
         "-NoProfile",
         "-Command",
         "& '$Python' -m unittest backend.tests.test_agent_readiness -v"
+    ) $RootDir
+    Invoke-CheckedProcess "Operator CLI 回归" $Pwsh @(
+        "-NoProfile",
+        "-Command",
+        "& '$Python' -m unittest backend.tests.test_operator_cli -v"
     ) $RootDir
     Invoke-CheckedProcess "Run Engine Lore 回归" $Pwsh @(
         "-NoProfile",
