@@ -58,8 +58,8 @@ class Task(Base):
         cascade="all, delete-orphan",
     )
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, dependency_state: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = {
             "id": self.id,
             "title": self.title,
             "description": self.description,
@@ -72,10 +72,13 @@ class Task(Base):
             "createdAt": serialize_datetime(self.created_at),
             "updatedAt": serialize_datetime(self.updated_at),
         }
+        if dependency_state is not None:
+            payload["dependencyState"] = dependency_state
+        return payload
 
-    def to_detail_dict(self) -> dict[str, Any]:
+    def to_detail_dict(self, *, dependency_state: dict[str, Any] | None = None) -> dict[str, Any]:
         return {
-            **self.to_dict(),
+            **self.to_dict(dependency_state=dependency_state),
             "refs": [ref.to_dict() for ref in self.refs],
             "snapshots": [snapshot.to_dict() for snapshot in self.snapshots],
         }

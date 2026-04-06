@@ -169,6 +169,16 @@ class TaskPlannerApiTests(unittest.TestCase):
         self.assertEqual(payload["suggestions"], [])
         self.assertEqual(payload["tasks"], [])
 
+    def test_plan_returns_no_suggestions_when_dependencies_unresolved(self):
+        task_id = asyncio.run(self._seed_dependency_blocked_task())
+
+        response = self.client.post(f"/api/tasks/{task_id}/plan", json={"createTasks": True, "limit": 2})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+
+        self.assertEqual(payload["suggestions"], [])
+        self.assertEqual(payload["tasks"], [])
+
     def test_planned_child_task_can_start_run_with_generated_context(self):
         task_id = asyncio.run(self._seed_adopt_and_compare_task())
 
@@ -485,6 +495,33 @@ class TaskPlannerApiTests(unittest.TestCase):
                 )
             )
         return "taskterm1234"
+
+    async def _seed_dependency_blocked_task(self) -> str:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskdep12345",
+                    title="前置任务",
+                    description="当前还没完成的上游任务。",
+                    repo_path="D:/Repos/KAM",
+                    status="open",
+                    priority="high",
+                    labels=["dependency"],
+                )
+            )
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskwait1234",
+                    title="等待依赖完成后再规划",
+                    description="依赖没完成时 planner 不应继续拆 follow-up。",
+                    repo_path="D:/Repos/KAM",
+                    status="open",
+                    priority="medium",
+                    labels=["planner", "dependency"],
+                    metadata={"dependsOnTaskIds": ["taskdep12345"]},
+                )
+            )
+        return "taskwait1234"
 
     async def _truncate_tables(self):
         async with engine.begin() as conn:

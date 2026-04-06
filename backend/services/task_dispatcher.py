@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from models import Task, TaskRun, now
 from services.run_engine import RunEngine
+from services.task_dependencies import build_task_dependency_state
 from services.task_planner import TaskPlannerService
 
 
@@ -117,6 +118,7 @@ class TaskDispatcherService:
         create_plan_if_needed: bool = True,
     ) -> TaskContinueResult:
         tasks = await self._list_tasks()
+        tasks_by_id = {task.id: task for task in tasks}
         scoped_tasks = self._scope_tasks(tasks, task_id)
         scope_task_id = self._scope_root_task_id(tasks, task_id)
         if task_id is not None and not scoped_tasks:
@@ -136,6 +138,16 @@ class TaskDispatcherService:
                 task=scope_root,
                 scope_task_id=scope_root.id,
             )
+        if scope_root is not None:
+            dependency_state = build_task_dependency_state(scope_root, tasks_by_id)
+            if not dependency_state.ready:
+                return TaskContinueResult(
+                    action="stop",
+                    reason="scope_dependencies_unresolved",
+                    summary=dependency_state.summary or "当前任务仍被上游依赖阻塞，先不要继续自动推进。",
+                    task=scope_root,
+                    scope_task_id=scope_root.id,
+                )
         if any(any(run.status in {"pending", "running"} for run in task.runs) for task in scoped_tasks):
             return TaskContinueResult(
                 action="stop",
@@ -252,14 +264,15 @@ class TaskDispatcherService:
         task_id: str | None = None,
     ) -> tuple[Task | None, str, str | None]:
         tasks = self._scope_tasks(await self._list_tasks(), task_id)
-        existing = self._pick_existing_runnable_task(tasks)
+        tasks_by_id = {task.id: task for task in tasks}
+        existing = self._pick_existing_runnable_task(tasks, tasks_by_id)
         if existing is not None:
             return existing, "existing_task", None
 
         if not create_plan_if_needed:
             return None, "existing_task", None
 
-        planning_candidates = self._pick_parents_for_planning(tasks)
+        planning_candidates = self._pick_parents_for_planning(tasks, tasks_by_id)
         if not planning_candidates:
             return None, "planned_task", None
 
@@ -276,10 +289,12 @@ class TaskDispatcherService:
 
             refreshed_tasks = await self._list_tasks()
             scoped_refreshed_tasks = self._scope_tasks(refreshed_tasks, task_id)
-            existing = self._pick_existing_runnable_task(scoped_refreshed_tasks)
+            refreshed_tasks_by_id = {task.id: task for task in scoped_refreshed_tasks}
+            existing = self._pick_existing_runnable_task(scoped_refreshed_tasks, refreshed_tasks_by_id)
             if existing is not None:
                 return existing, "existing_task", None
             tasks = scoped_refreshed_tasks
+            tasks_by_id = refreshed_tasks_by_id
 
         return None, "planned_task", last_parent_id
 
@@ -292,28 +307,30 @@ class TaskDispatcherService:
         )
         return list(result.scalars())
 
-    def _pick_existing_runnable_task(self, tasks: list[Task]) -> Task | None:
-        candidates = [task for task in tasks if self._is_runnable_existing_task(task)]
+    def _pick_existing_runnable_task(self, tasks: list[Task], tasks_by_id: dict[str, Task]) -> Task | None:
+        candidates = [task for task in tasks if self._is_runnable_existing_task(task, tasks_by_id)]
         if not candidates:
             return None
         candidates.sort(key=self._existing_task_sort_key)
         return candidates[0]
 
-    def _pick_parent_for_planning(self, tasks: list[Task]) -> Task | None:
-        candidates = [task for task in tasks if self._is_plannable_parent_task(task)]
+    def _pick_parent_for_planning(self, tasks: list[Task], tasks_by_id: dict[str, Task]) -> Task | None:
+        candidates = [task for task in tasks if self._is_plannable_parent_task(task, tasks_by_id)]
         if not candidates:
             return None
         candidates.sort(key=self._parent_task_sort_key)
         return candidates[0]
 
-    def _pick_parents_for_planning(self, tasks: list[Task]) -> list[Task]:
-        candidates = [task for task in tasks if self._is_plannable_parent_task(task)]
+    def _pick_parents_for_planning(self, tasks: list[Task], tasks_by_id: dict[str, Task]) -> list[Task]:
+        candidates = [task for task in tasks if self._is_plannable_parent_task(task, tasks_by_id)]
         candidates.sort(key=self._parent_task_sort_key)
         return candidates
 
-    def _pick_latest_adoptable_run(self, tasks: list[Task]) -> tuple[Task, TaskRun] | None:
+    def _pick_latest_adoptable_run(self, tasks: list[Task], tasks_by_id: dict[str, Task]) -> tuple[Task, TaskRun] | None:
         candidates: list[tuple[Task, TaskRun]] = []
         for task in tasks:
+            if task_has_unresolved_dependencies(task, tasks_by_id):
+                continue
             latest_run = task.runs[-1] if task.runs else None
             if latest_run is None or latest_run.status != "passed" or latest_run.adopted_at is not None:
                 continue
@@ -325,9 +342,11 @@ class TaskDispatcherService:
         candidates.sort(key=lambda item: -item[1].created_at.timestamp())
         return candidates[0]
 
-    def _pick_retry_candidate(self, tasks: list[Task]) -> tuple[Task, TaskRun] | None:
+    def _pick_retry_candidate(self, tasks: list[Task], tasks_by_id: dict[str, Task]) -> tuple[Task, TaskRun] | None:
         candidates: list[tuple[Task, TaskRun]] = []
         for task in tasks:
+            if task_has_unresolved_dependencies(task, tasks_by_id):
+                continue
             latest_run = task.runs[-1] if task.runs else None
             if latest_run is None or not self._is_retry_candidate(task, latest_run):
                 continue
@@ -343,9 +362,11 @@ class TaskDispatcherService:
         )
         return candidates[0]
 
-    def _pick_retry_budget_exhausted_candidate(self, tasks: list[Task]) -> tuple[Task, TaskRun] | None:
+    def _pick_retry_budget_exhausted_candidate(self, tasks: list[Task], tasks_by_id: dict[str, Task]) -> tuple[Task, TaskRun] | None:
         candidates: list[tuple[Task, TaskRun]] = []
         for task in tasks:
+            if task_has_unresolved_dependencies(task, tasks_by_id):
+                continue
             latest_run = task.runs[-1] if task.runs else None
             if latest_run is None:
                 continue
@@ -377,8 +398,9 @@ class TaskDispatcherService:
         create_plan_if_needed: bool,
     ) -> _ContinueCandidate | None:
         candidates: list[_ContinueCandidate] = []
+        tasks_by_id = {task.id: task for task in tasks}
 
-        adopt_candidate = self._pick_latest_adoptable_run(tasks)
+        adopt_candidate = self._pick_latest_adoptable_run(tasks, tasks_by_id)
         if adopt_candidate is not None:
             adopt_task, adopt_run = adopt_candidate
             candidates.append(
@@ -396,7 +418,7 @@ class TaskDispatcherService:
                 )
             )
 
-        retry_candidate = self._pick_retry_candidate(tasks)
+        retry_candidate = self._pick_retry_candidate(tasks, tasks_by_id)
         if retry_candidate is not None:
             retry_task, retry_run = retry_candidate
             candidates.append(
@@ -413,7 +435,7 @@ class TaskDispatcherService:
                 )
             )
 
-        exhausted_candidate = self._pick_retry_budget_exhausted_candidate(tasks)
+        exhausted_candidate = self._pick_retry_budget_exhausted_candidate(tasks, tasks_by_id)
         if exhausted_candidate is not None:
             exhausted_task, exhausted_run = exhausted_candidate
             candidates.append(
@@ -431,7 +453,7 @@ class TaskDispatcherService:
                 )
             )
 
-        existing = self._pick_existing_runnable_task(tasks)
+        existing = self._pick_existing_runnable_task(tasks, tasks_by_id)
         if existing is not None:
             candidates.append(
                 _ContinueCandidate(
@@ -442,7 +464,7 @@ class TaskDispatcherService:
                 )
             )
         elif create_plan_if_needed:
-            parent = self._pick_parent_for_planning(tasks)
+            parent = self._pick_parent_for_planning(tasks, tasks_by_id)
             if parent is not None:
                 candidates.append(
                     _ContinueCandidate(
@@ -459,12 +481,14 @@ class TaskDispatcherService:
         candidates.sort(key=lambda item: item.rank)
         return candidates[0]
 
-    def _is_runnable_existing_task(self, task: Task) -> bool:
+    def _is_runnable_existing_task(self, task: Task, tasks_by_id: dict[str, Task]) -> bool:
         if self._is_terminal_task(task):
             return False
         if not self._recommended_prompt(task.metadata_ or {}):
             return False
         if any(run.status in {"pending", "running"} for run in task.runs):
+            return False
+        if task_has_unresolved_dependencies(task, tasks_by_id):
             return False
         latest_run = task.runs[-1] if task.runs else None
         if latest_run is not None and latest_run.status == "passed":
@@ -473,12 +497,14 @@ class TaskDispatcherService:
             return False
         return True
 
-    def _is_plannable_parent_task(self, task: Task) -> bool:
+    def _is_plannable_parent_task(self, task: Task, tasks_by_id: dict[str, Task]) -> bool:
         if self._is_terminal_task(task):
             return False
         if (task.metadata_ or {}).get("parentTaskId"):
             return False
         if any(run.status in {"pending", "running"} for run in task.runs):
+            return False
+        if task_has_unresolved_dependencies(task, tasks_by_id):
             return False
         return task.status in {"open", "in_progress", "failed"}
 
@@ -638,3 +664,7 @@ class TaskDispatcherService:
         repo_path = Path(task.repo_path)
         worktree_path = Path(run.worktree_path)
         return repo_path.exists() and worktree_path.exists()
+
+
+def task_has_unresolved_dependencies(task: Task, tasks_by_id: dict[str, Task]) -> bool:
+    return not build_task_dependency_state(task, tasks_by_id).ready

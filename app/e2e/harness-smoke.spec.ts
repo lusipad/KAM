@@ -138,6 +138,46 @@ test('can enter global self-driving mode across task families', async ({ page })
   }).toBeGreaterThan(0)
 })
 
+test('can block a task with dependencies from the workbench', async ({ page }) => {
+  const prerequisiteResponse = await page.request.post('/api/tasks', {
+    data: {
+      title: '先完成前置任务',
+      description: '这是后续任务的前置依赖',
+      repoPath: 'D:/Repos/KAM',
+      status: 'open',
+      priority: 'high',
+      labels: ['dogfood', 'dependency'],
+    },
+  })
+  expect(prerequisiteResponse.ok()).toBeTruthy()
+  const prerequisite = await prerequisiteResponse.json()
+
+  const blockedTaskResponse = await page.request.post('/api/tasks', {
+    data: {
+      title: '等待依赖完成的任务',
+      description: '依赖没完成时不应自动继续',
+      repoPath: 'D:/Repos/KAM',
+      status: 'open',
+      priority: 'medium',
+      labels: ['dogfood', 'dependency'],
+    },
+  })
+  expect(blockedTaskResponse.ok()).toBeTruthy()
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await page.waitForTimeout(600)
+  await page.locator('.thread-title').filter({ hasText: '等待依赖完成的任务' }).first().click()
+
+  await page.getByPlaceholder('依赖任务 ID').fill(prerequisite.id)
+  await page.getByRole('button', { name: '添加依赖' }).click()
+
+  await expect(page.locator('.file-chip').filter({ hasText: '依赖 · 阻塞中' }).first()).toBeVisible()
+  await expect(page.locator('.task-hero-card .task-list-row').filter({ hasText: '依赖状态' }).first()).toContainText('依赖未完成：先完成前置任务')
+  await expect(page.getByRole('button', { name: '继续推进当前任务' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '让 KAM 自己排工作' })).toBeDisabled()
+  await expect(page.locator('.composer-submit')).toBeDisabled()
+})
+
 test('mobile keeps task detail and artifact panel reachable', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
 

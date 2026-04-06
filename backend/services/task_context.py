@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from models import ContextSnapshot, Task, now
+from services.task_dependencies import build_task_dependency_state, load_tasks_by_id
 
 
 class TaskContextService:
@@ -31,6 +32,14 @@ class TaskContextService:
         lines.append(f"优先级：{task.priority}")
         if task.labels:
             lines.append(f"标签：{', '.join(task.labels)}")
+
+        dependency_state = build_task_dependency_state(task, await load_tasks_by_id(self.db))
+        if dependency_state.dependencies:
+            lines.append("")
+            lines.append("## Dependencies")
+            for dependency in dependency_state.dependencies:
+                status_label = "已满足" if dependency.resolved else "未满足"
+                lines.append(f"- {dependency.title} ({dependency.status}) · {status_label}")
 
         lines.append("")
         lines.append("## Refs")

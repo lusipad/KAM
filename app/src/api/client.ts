@@ -108,6 +108,19 @@ export function archiveTask(taskId: string) {
   })
 }
 
+export function addTaskDependency(taskId: string, payload: { dependsOnTaskId: string }) {
+  return request<TaskRecord>(`/tasks/${taskId}/dependencies`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function deleteTaskDependency(taskId: string, dependsOnTaskId: string) {
+  return request<TaskRecord>(`/tasks/${taskId}/dependencies/${dependsOnTaskId}`, {
+    method: 'DELETE',
+  })
+}
+
 export function addTaskRef(taskId: string, payload: { kind: string; label: string; value: string; metadata?: Record<string, unknown> | null }) {
   return request<TaskRefRecord>(`/tasks/${taskId}/refs`, {
     method: 'POST',

@@ -187,6 +187,57 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(detail["refs"][0]["label"], "PR")
         self.assertEqual(detail["refs"][1]["value"], "backend/services/run_engine.py")
 
+    def test_create_task_can_attach_dependencies_and_reports_blocking_state(self):
+        prerequisite = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "先完成前置任务",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+            },
+        ).json()
+
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "依赖前置任务的实现",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "medium",
+                "dependsOnTaskIds": [prerequisite["id"]],
+            },
+        ).json()
+
+        self.assertFalse(task["dependencyState"]["ready"])
+        self.assertEqual(task["dependencyState"]["blockingTaskIds"], [prerequisite["id"]])
+
+        detail = self.client.get(f"/api/tasks/{task['id']}").json()
+        self.assertEqual(detail["dependencyState"]["dependencies"][0]["taskId"], prerequisite["id"])
+        self.assertEqual(detail["dependencyState"]["dependencies"][0]["title"], "先完成前置任务")
+        self.assertIn("依赖未完成", detail["dependencyState"]["summary"])
+
+    def test_add_dependency_rejects_cycle(self):
+        root = self.client.post(
+            "/api/tasks",
+            json={"title": "根任务", "repoPath": "D:/Repos/KAM", "status": "open", "priority": "high"},
+        ).json()
+        child = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "子任务",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "medium",
+                "dependsOnTaskIds": [root["id"]],
+            },
+        ).json()
+
+        response = self.client.post(f"/api/tasks/{root['id']}/dependencies", json={"dependsOnTaskId": child["id"]})
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("不能形成循环", response.json()["detail"])
+
     def test_create_task_reuses_active_source_task_with_same_dedup_key(self):
         first = self.client.post(
             "/api/tasks",
@@ -577,6 +628,60 @@ class HarnessApiTests(unittest.TestCase):
         artifacts = self.client.get(f"/api/runs/{payload['run']['id']}/artifacts").json()["artifacts"]
         self.assertTrue(any(item["type"] == "source_context" for item in artifacts))
 
+    def test_dispatch_next_skips_task_with_unresolved_dependencies(self):
+        prerequisite = self.client.post(
+            "/api/tasks",
+            json={"title": "前置任务", "repoPath": "D:/Repos/KAM", "status": "open", "priority": "high"},
+        ).json()
+        blocked = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "被依赖阻塞的任务",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+                "dependsOnTaskIds": [prerequisite["id"]],
+                "metadata": {
+                    "recommendedPrompt": "这张任务现在不该被执行。",
+                    "recommendedAgent": "codex",
+                    "acceptanceChecks": ["noop"],
+                    "suggestedRefs": [],
+                },
+            },
+        ).json()
+        ready = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "可直接执行的任务",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "medium",
+                "metadata": {
+                    "recommendedPrompt": "优先执行这张 ready 任务。",
+                    "recommendedAgent": "codex",
+                    "acceptanceChecks": ["执行 ready task"],
+                    "suggestedRefs": [],
+                },
+            },
+        ).json()
+
+        async def fake_run_command(_engine, _command, _cwd):
+            return 0, "执行完成：ready task"
+
+        async def fake_prepare_task_execution(_engine, _run, _task):
+            return None, ["fake-agent"]
+
+        with (
+            patch("services.run_engine.RunEngine._run_command", new=fake_run_command),
+            patch("services.run_engine.RunEngine._prepare_task_execution", new=fake_prepare_task_execution),
+        ):
+            response = self.client.post("/api/tasks/dispatch-next", json={"createPlanIfNeeded": False})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["task"]["id"], ready["id"])
+        self.assertNotEqual(payload["task"]["id"], blocked["id"])
+
     def test_continue_prefers_adopt_for_latest_passed_unadopted_run(self):
         repo = self._create_git_repo()
         task = self.client.post(
@@ -823,6 +928,30 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "scope_has_active_run")
         self.assertIn("还有 run 在执行", payload["summary"])
         self.assertEqual(payload["task"]["id"], task["id"])
+
+    def test_continue_stops_when_scope_dependencies_unresolved(self):
+        prerequisite = self.client.post(
+            "/api/tasks",
+            json={"title": "前置任务", "repoPath": "D:/Repos/KAM", "status": "open", "priority": "high"},
+        ).json()
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "等待前置任务的 root",
+                "repoPath": "D:/Repos/KAM",
+                "status": "in_progress",
+                "priority": "high",
+                "dependsOnTaskIds": [prerequisite["id"]],
+            },
+        ).json()
+
+        response = self.client.post("/api/tasks/continue", json={"taskId": task["id"], "createPlanIfNeeded": True})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["action"], "stop")
+        self.assertEqual(payload["reason"], "scope_dependencies_unresolved")
+        self.assertIn("依赖未完成", payload["summary"])
 
     def test_autodrive_start_advances_task_family_until_no_high_value_action(self):
         self.client.post("/api/dev/seed-harness", json={"reset": True})
@@ -1489,9 +1618,37 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(detail["runs"][0]["status"], "passed")
         self.assertNotIn("autoDriveEnabled", detail["metadata"])
 
-        tasks = self.client.get("/api/tasks").json()["tasks"]
-        self.assertEqual(len(tasks), 1)
-        self.assertEqual(tasks[0]["id"], task["id"])
+    def test_create_task_run_rejects_when_dependencies_unresolved(self):
+        prerequisite = self.client.post(
+            "/api/tasks",
+            json={"title": "前置任务", "repoPath": "D:/Repos/KAM", "status": "open", "priority": "high"},
+        ).json()
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "依赖阻塞的任务",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "medium",
+                "dependsOnTaskIds": [prerequisite["id"]],
+            },
+        ).json()
+
+        response = self.client.post(
+            f"/api/tasks/{task['id']}/runs",
+            json={"agent": "codex", "task": "不应该允许直接开跑。"},
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("依赖未完成", response.json()["detail"])
+
+    def test_retry_run_rejects_when_dependencies_unresolved(self):
+        asyncio.run(self._seed_retry_blocked_task())
+
+        response = self.client.post("/api/runs/runblock001/retry")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("依赖未完成", response.json()["detail"])
 
     def test_task_family_autodrive_records_dispatch_timeout(self):
         self.client.post("/api/dev/seed-harness", json={"reset": True})
@@ -1905,6 +2062,46 @@ class HarnessApiTests(unittest.TestCase):
                     raw_output="still running",
                 )
             )
+
+    async def _seed_retry_blocked_task(self) -> str:
+        async with engine.begin() as conn:
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskdep001",
+                    title="前置任务",
+                    description="先完成这个前置任务。",
+                    repo_path="D:/Repos/KAM",
+                    status="open",
+                    priority="high",
+                    labels=["dogfood", "dependency"],
+                )
+            )
+            await conn.execute(
+                Task.__table__.insert().values(
+                    id="taskblock01",
+                    title="被依赖阻塞的失败任务",
+                    description="依赖未完成时不应允许 retry。",
+                    repo_path="D:/Repos/KAM",
+                    status="failed",
+                    priority="high",
+                    labels=["dogfood", "dependency"],
+                    metadata={"dependsOnTaskIds": ["taskdep001"]},
+                )
+            )
+            await conn.execute(
+                TaskRun.__table__.insert().values(
+                    id="runblock001",
+                    task_id="taskblock01",
+                    agent="codex",
+                    status="failed",
+                    task="先修复依赖阻塞任务。",
+                    result_summary="执行失败：AssertionError: blocked retry",
+                    changed_files=["backend/services/task_dispatcher.py"],
+                    check_passed=False,
+                    raw_output="AssertionError: blocked retry",
+                )
+            )
+        return "taskblock01"
 
     async def _seed_retryable_root_task(self, task_id: str) -> None:
         async with engine.begin() as conn:

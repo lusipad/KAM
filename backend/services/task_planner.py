@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from models import ContextSnapshot, ReviewCompare, Task, TaskRef, TaskRun, TaskRunArtifact, now
+from services.task_dependencies import build_task_dependency_state, load_tasks_by_id
 
 
 @dataclass
@@ -104,6 +105,9 @@ class TaskPlannerService:
         if task is None:
             return None, [], []
         if self._is_terminal_task(task):
+            return task, [], []
+        tasks_by_id = await load_tasks_by_id(self.db)
+        if not build_task_dependency_state(task, tasks_by_id).ready:
             return task, [], []
 
         latest_snapshot = task.snapshots[-1] if task.snapshots else None

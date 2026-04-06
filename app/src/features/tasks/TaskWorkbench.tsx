@@ -4,7 +4,16 @@ import { PromptComposer } from '@/components/PromptComposer'
 import { formatRelativeTime } from '@/lib/ui'
 import { autoDriveActionLabel, autoDriveReasonLabel, autoDriveStatusLabel } from '@/features/tasks/autoDriveLabels'
 import { TaskRunCard } from '@/features/tasks/TaskRunCard'
-import type { AutoDriveEventRecord, RunRecord, SuggestedTaskRefRecord, TaskContinueResponse, TaskDetail, TaskPlanSuggestion, TaskRecord } from '@/types/harness'
+import type {
+  AutoDriveEventRecord,
+  RunRecord,
+  SuggestedTaskRefRecord,
+  TaskContinueResponse,
+  TaskDependencyRecord,
+  TaskDetail,
+  TaskPlanSuggestion,
+  TaskRecord,
+} from '@/types/harness'
 
 type TaskWorkbenchProps = {
   task: TaskDetail | null
@@ -20,15 +29,18 @@ type TaskWorkbenchProps = {
   runPrompt: string
   runAgent: 'codex' | 'claude-code'
   refDraft: { kind: string; label: string; value: string }
+  dependencyDraft: string
   snapshotFocus: string
   selectedRunId: string | null
   creatingRun: boolean
   addingRef: boolean
+  addingDependency: boolean
   creatingSnapshot: boolean
   creatingCompare: boolean
   creatingPlan: boolean
   continueDecision: TaskContinueResponse | null
   savingTask: boolean
+  taskBlocked: boolean
   plannedTasks: TaskRecord[]
   planSuggestions: TaskPlanSuggestion[]
   onRunPromptChange: (value: string) => void
@@ -48,6 +60,9 @@ type TaskWorkbenchProps = {
   onRefDraftChange: (draft: { kind: string; label: string; value: string }) => void
   onAddRef: () => void
   onDeleteRef: (refId: string) => void
+  onDependencyDraftChange: (value: string) => void
+  onAddDependency: () => void
+  onDeleteDependency: (dependsOnTaskId: string) => void
   onSnapshotFocusChange: (value: string) => void
   onCreateSnapshot: () => void
   onCreateCompare: () => void
@@ -170,6 +185,31 @@ function plannerAgentLabel(value: string | null) {
   return null
 }
 
+function dependencyStatusLabel(dependency: TaskDependencyRecord) {
+  if (dependency.missing) {
+    return '缺失'
+  }
+  if (dependency.resolved) {
+    return '已满足'
+  }
+  if (dependency.status === 'verified' || dependency.status === 'done') {
+    return '已满足'
+  }
+  if (dependency.status === 'failed') {
+    return '失败待修'
+  }
+  if (dependency.status === 'blocked') {
+    return '被阻塞'
+  }
+  if (dependency.status === 'in_progress') {
+    return '进行中'
+  }
+  if (dependency.status === 'open') {
+    return '待完成'
+  }
+  return dependency.status
+}
+
 export function TaskWorkbench({
   task,
   taskDraft,
@@ -177,15 +217,18 @@ export function TaskWorkbench({
   runPrompt,
   runAgent,
   refDraft,
+  dependencyDraft,
   snapshotFocus,
   selectedRunId,
   creatingRun,
   addingRef,
+  addingDependency,
   creatingSnapshot,
   creatingCompare,
   creatingPlan,
   continueDecision,
   savingTask,
+  taskBlocked,
   plannedTasks,
   planSuggestions,
   onRunPromptChange,
@@ -198,6 +241,9 @@ export function TaskWorkbench({
   onRefDraftChange,
   onAddRef,
   onDeleteRef,
+  onDependencyDraftChange,
+  onAddDependency,
+  onDeleteDependency,
   onSnapshotFocusChange,
   onCreateSnapshot,
   onCreateCompare,
@@ -223,6 +269,8 @@ export function TaskWorkbench({
   const autoDriveLastReason = autoDriveReasonLabel(metadataText(task?.metadata.autoDriveLastReason))
   const autoDriveLastSummary = metadataText(task?.metadata.autoDriveLastSummary)
   const autoDriveRecentEvents = metadataAutoDriveEvents(task?.metadata.autoDriveRecentEvents)
+  const dependencyState = task?.dependencyState
+  const dependencySummary = dependencyState?.summary ?? null
 
   if (loading) {
     return <div className="empty-panel">正在加载任务…</div>
@@ -255,12 +303,34 @@ export function TaskWorkbench({
             <div className="task-chip-row">
               <span className="file-chip">状态 · {task.status}</span>
               {task.repoPath ? <span className="file-chip">Repo · {task.repoPath}</span> : null}
+              {dependencyState ? (
+                <span className="file-chip">依赖 · {dependencyState.ready ? '已满足' : '阻塞中'}</span>
+              ) : null}
               {task.labels.map((label) => (
                 <span key={label} className="file-chip">
                   {label}
                 </span>
               ))}
             </div>
+            {dependencySummary ? (
+              <div className="task-list">
+                <article className="task-list-row">
+                  <div className="task-list-copy">
+                    <strong>依赖状态</strong>
+                    <span>{dependencySummary}</span>
+                    {dependencyState?.blockedBy.length ? (
+                      <div className="task-chip-row">
+                        {dependencyState.blockedBy.map((dependency) => (
+                          <span key={dependency.taskId} className="file-chip">
+                            {dependency.title} · {dependencyStatusLabel(dependency)}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </article>
+              </div>
+            ) : null}
             {autoDriveStatus || autoDriveLastSummary ? (
               <div className="task-list">
                 <article className="task-list-row">
@@ -336,6 +406,51 @@ export function TaskWorkbench({
               onChange={(event) => onTaskDraftChange({ ...taskDraft, description: event.target.value })}
               placeholder="任务描述"
             />
+            <div className="task-list">
+              <article className="task-list-row">
+                <div className="task-list-copy">
+                  <strong>任务依赖</strong>
+                  <span>{dependencySummary || '当前没有显式依赖。'}</span>
+                  {dependencyState?.dependencies.length ? (
+                    <div className="task-chip-row">
+                      {dependencyState.dependencies.map((dependency) => (
+                        <span key={dependency.taskId} className="file-chip">
+                          {dependency.title} · {dependencyStatusLabel(dependency)}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </article>
+            </div>
+            <div className="task-inline-form">
+              <input
+                className="watcher-input"
+                value={dependencyDraft}
+                onChange={(event) => onDependencyDraftChange(event.target.value)}
+                placeholder="依赖任务 ID"
+              />
+              <button type="button" className="button-primary" disabled={addingDependency || !dependencyDraft.trim()} onClick={onAddDependency}>
+                添加依赖
+              </button>
+            </div>
+            {dependencyState?.dependencies.length ? (
+              <div className="task-list">
+                {dependencyState.dependencies.map((dependency) => (
+                  <article key={dependency.taskId} className="task-list-row">
+                    <div className="task-list-copy">
+                      <strong>{dependency.title}</strong>
+                      <span>
+                        {dependency.taskId} · {dependencyStatusLabel(dependency)}
+                      </span>
+                    </div>
+                    <button type="button" className="button-secondary" onClick={() => onDeleteDependency(dependency.taskId)}>
+                      移除依赖
+                    </button>
+                  </article>
+                ))}
+              </div>
+            ) : null}
             {recommendedPrompt || acceptanceChecks.length || suggestedRefs.length ? (
               <div className="task-list">
                 <article className="task-list-row">
@@ -362,7 +477,7 @@ export function TaskWorkbench({
                   </div>
                   {recommendedPrompt ? (
                     <div className="task-list-actions">
-                      <button type="button" className="button-primary" disabled={creatingRun} onClick={onRunRecommendedTask}>
+                      <button type="button" className="button-primary" disabled={creatingRun || taskBlocked} onClick={onRunRecommendedTask}>
                         用推荐 Prompt 开跑
                       </button>
                     </div>
@@ -396,9 +511,11 @@ export function TaskWorkbench({
             <div className="feed-card-head">
               <div className="feed-card-title-stack">
                 <div className="feed-card-title">让 KAM 自己排工作</div>
-                <div className="feed-card-subtle">基于当前任务的 run、compare 和上下文，直接拆出下一轮 follow-up tasks。</div>
+                <div className="feed-card-subtle">
+                  {taskBlocked ? dependencySummary || '当前任务仍被依赖阻塞。' : '基于当前任务的 run、compare 和上下文，直接拆出下一轮 follow-up tasks。'}
+                </div>
               </div>
-              <button type="button" className="button-primary" disabled={creatingPlan} onClick={onCreatePlan}>
+              <button type="button" className="button-primary" disabled={creatingPlan || taskBlocked} onClick={onCreatePlan}>
                 {creatingPlan ? '正在拆任务…' : '让 KAM 自己排工作'}
               </button>
             </div>
@@ -457,7 +574,7 @@ export function TaskWorkbench({
                           打开任务
                         </button>
                         {plannedPrompt ? (
-                          <button type="button" className="button-primary" disabled={creatingRun} onClick={() => onRunPlannedTask(plannedTask)}>
+                          <button type="button" className="button-primary" disabled={creatingRun || taskBlocked} onClick={() => onRunPlannedTask(plannedTask)}>
                             直接开跑
                           </button>
                         ) : null}
@@ -627,8 +744,9 @@ export function TaskWorkbench({
               value={runPrompt}
               placeholder="输入这轮要执行的任务..."
               isSending={creatingRun}
+              disabled={taskBlocked}
               toneLabel={runAgent === 'codex' ? 'Codex' : 'Claude Code'}
-              detailLabel="当前会把任务发给选中的 agent"
+              detailLabel={taskBlocked ? dependencySummary || '当前任务仍被依赖阻塞。' : '当前会把任务发给选中的 agent'}
               onChange={onRunPromptChange}
               onSubmit={onCreateRun}
             />
@@ -643,7 +761,7 @@ export function TaskWorkbench({
                       <button type="button" className="task-run-select" onClick={() => onSelectRun(run.id)}>
                         选中产物
                       </button>
-                      <TaskRunCard run={run} onAdopt={onAdoptRun} onRetry={onRetryRun} />
+                      <TaskRunCard run={run} onAdopt={onAdoptRun} onRetry={onRetryRun} disableRetry={taskBlocked} />
                     </div>
                   ))
               ) : (

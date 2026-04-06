@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   addTaskRef,
+  addTaskDependency,
   adoptRun,
   archiveTask,
   continueTask,
@@ -9,6 +10,7 @@ import {
   createTaskCompare,
   createTaskRun,
   deleteTaskRef,
+  deleteTaskDependency,
   dispatchNextTask,
   getErrorMessage,
   getGlobalAutoDriveStatus,
@@ -242,6 +244,7 @@ function App() {
   const [creatingSnapshot, setCreatingSnapshot] = useState(false)
   const [creatingCompare, setCreatingCompare] = useState(false)
   const [creatingPlan, setCreatingPlan] = useState(false)
+  const [addingDependency, setAddingDependency] = useState(false)
   const [dispatchingNext, setDispatchingNext] = useState(false)
   const [continuingTask, setContinuingTask] = useState(false)
   const [managingAutoDrive, setManagingAutoDrive] = useState(false)
@@ -249,6 +252,7 @@ function App() {
   const [savingTask, setSavingTask] = useState(false)
   const [snapshotFocus, setSnapshotFocus] = useState('')
   const [refDraft, setRefDraft] = useState({ kind: 'file', label: '', value: '' })
+  const [dependencyDraft, setDependencyDraft] = useState('')
   const [plannedTasks, setPlannedTasks] = useState<TaskRecord[]>([])
   const [planSuggestions, setPlanSuggestions] = useState<TaskPlanSuggestion[]>([])
   const [continueDecision, setContinueDecision] = useState<TaskContinueResponse | null>(null)
@@ -339,6 +343,7 @@ function App() {
   useEffect(() => {
     setPlannedTasks([])
     setPlanSuggestions([])
+    setDependencyDraft('')
   }, [selectedTaskId])
 
   useEffect(() => {
@@ -433,6 +438,36 @@ function App() {
       onError(error, '删除引用失败。')
     }
   }, [onError, refreshTask, refreshTasks, task])
+
+  const handleAddDependency = useCallback(async () => {
+    if (!task || addingDependency || !dependencyDraft.trim()) {
+      return
+    }
+    setAddingDependency(true)
+    try {
+      await addTaskDependency(task.id, { dependsOnTaskId: dependencyDraft.trim() })
+      await Promise.all([refreshTask(task.id), refreshTasks()])
+      setDependencyDraft('')
+      pushToast({ id: `task-dependency-add-${Date.now()}`, message: '依赖已添加。', tone: 'green' })
+    } catch (error) {
+      onError(error, '添加依赖失败。')
+    } finally {
+      setAddingDependency(false)
+    }
+  }, [addingDependency, dependencyDraft, onError, pushToast, refreshTask, refreshTasks, task])
+
+  const handleDeleteDependency = useCallback(async (dependsOnTaskId: string) => {
+    if (!task) {
+      return
+    }
+    try {
+      await deleteTaskDependency(task.id, dependsOnTaskId)
+      await Promise.all([refreshTask(task.id), refreshTasks()])
+      pushToast({ id: `task-dependency-delete-${Date.now()}`, message: '依赖已移除。', tone: 'green' })
+    } catch (error) {
+      onError(error, '移除依赖失败。')
+    }
+  }, [onError, pushToast, refreshTask, refreshTasks, task])
 
   const handleCreateSnapshot = useCallback(async () => {
     if (!task || creatingSnapshot) {
@@ -761,6 +796,7 @@ function App() {
     [selectedRunId, task],
   )
   const autoDriveEnabled = useMemo(() => parseAutoDriveEnabled(task?.metadata.autoDriveEnabled), [task])
+  const taskBlocked = useMemo(() => task?.dependencyState?.ready === false, [task])
   const globalAutoDriveEnabled = useMemo(() => globalAutoDrive?.enabled === true, [globalAutoDrive])
   const globalCurrentTaskTitle = useMemo(() => {
     if (!globalAutoDrive?.currentTaskId) {
@@ -881,21 +917,21 @@ function App() {
           {selectedTaskId ? (
             <>
             <div className="task-main-actions">
-              <button type="button" className="button-primary" disabled={dispatchingNext} onClick={handleDispatchNext}>
-                {dispatchingNext ? 'KAM 接任务中…' : '让 KAM 接下一张'}
-              </button>
+                <button type="button" className="button-primary" disabled={dispatchingNext} onClick={handleDispatchNext}>
+                  {dispatchingNext ? 'KAM 接任务中…' : '让 KAM 接下一张'}
+                </button>
               {task ? (
                 <button
                   type="button"
                   className="button-secondary"
-                  disabled={managingAutoDrive}
+                  disabled={managingAutoDrive || (!autoDriveEnabled && taskBlocked)}
                   onClick={autoDriveEnabled ? handleStopAutoDrive : handleStartAutoDrive}
                 >
                   {managingAutoDrive ? (autoDriveEnabled ? '停止中…' : '启动中…') : autoDriveEnabled ? '停止无人值守' : '进入无人值守'}
                 </button>
               ) : null}
               {task ? (
-                <button type="button" className="button-secondary" disabled={continuingTask} onClick={handleContinueTask}>
+                <button type="button" className="button-secondary" disabled={continuingTask || taskBlocked} onClick={handleContinueTask}>
                   {continuingTask ? 'KAM 推进中…' : '继续推进当前任务'}
                 </button>
               ) : null}
@@ -915,15 +951,18 @@ function App() {
               runPrompt={runPrompt}
               runAgent={runAgent}
               refDraft={refDraft}
+              dependencyDraft={dependencyDraft}
               snapshotFocus={snapshotFocus}
               selectedRunId={selectedRunId}
               creatingRun={creatingRun}
               addingRef={addingRef}
+              addingDependency={addingDependency}
               creatingSnapshot={creatingSnapshot}
               creatingCompare={creatingCompare}
               creatingPlan={creatingPlan}
               continueDecision={continueDecision}
               savingTask={savingTask}
+              taskBlocked={taskBlocked}
               plannedTasks={plannedTasks}
               planSuggestions={planSuggestions}
               onRunPromptChange={setRunPrompt}
@@ -940,6 +979,9 @@ function App() {
               onRefDraftChange={setRefDraft}
               onAddRef={handleAddRef}
               onDeleteRef={handleDeleteRef}
+              onDependencyDraftChange={setDependencyDraft}
+              onAddDependency={handleAddDependency}
+              onDeleteDependency={handleDeleteDependency}
               onSnapshotFocusChange={setSnapshotFocus}
               onCreateSnapshot={handleCreateSnapshot}
               onCreateCompare={handleCreateCompare}

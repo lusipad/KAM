@@ -11,6 +11,7 @@
 - task self-planning：已具备显式信号排序和可执行 child task 能力
 - task self-dispatch：已具备显式优先级调度
 - task self-continue：已具备显式优先级调度
+- task dependency gating：已具备显式依赖/阻塞建模
 - task family auto-drive：已具备当前任务族级别的 opt-in 无人值守能力
 - global backlog auto-drive：已具备跨 family、可重启恢复、跨进程 lease/dedupe，以及 cold-start chaos 回归覆盖的无人值守能力
 - V3 legacy runtime：已退场
@@ -45,6 +46,8 @@
 - `dispatch-next / continue` 已切成显式 ranking：会稳定区分 `adopt / retry / existing runnable task / parent planning`，并优先处理强信号失败任务而不是弱 generic child
 - 自动继续推进现在会尊重失败预算：同一任务连续失败达到上限后会显式 `paused/stop`，不再绕过 `retry` 限制继续重开 run
 - planner follow-up 已切成显式 source ranking：会优先使用最新 terminal run / compare 信号，不再让旧失败 run 压过更新的通过结果
+- task 已支持显式 `dependsOnTaskIds`，列表/详情会返回结构化 dependency state，可直接看到 blockedBy / ready / summary
+- dispatch / continue / planner / 手动 run / retry 已统一尊重依赖阻塞，不会在上游任务未完成时继续错序执行
 - KAM 已可对当前 task family 开启自动托管：run 完成后会继续复用 `continue_task()`，直到显式 `stop`
 - 新增 `/api/tasks/{task_id}/autodrive/start` 与 `/api/tasks/{task_id}/autodrive/stop`
 - KAM 已可开启全局无人值守：会跨 task family 继续接活，而不是只停留在单个 root task 上

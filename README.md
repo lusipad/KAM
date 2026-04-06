@@ -28,6 +28,7 @@ V3 workspace 已经从运行时、前端主入口、验证基线和数据库 hea
 - 当前 task 已可基于 run、compare、snapshot、refs 和 artifacts 自动拆出可执行的 follow-up tasks
 - KAM 已可从任务池里自动接下一张任务；若当前没有可跑 child task，会先拆一张再开跑
 - KAM 已可围绕当前 task family 自动继续推进：优先 `adopt / retry / plan_and_dispatch / stop`
+- 当前 task 已支持显式依赖：可声明 `dependsOnTaskIds`，并在列表/详情里看到 blocked 状态；planner / dispatch / continue / manual run / retry 都会尊重依赖阻塞
 - 当前 task family / global autodrive 都已增加单步调度超时保护：如果 `continue_task()` 卡住，不会把 supervisor 挂死，而是记录 timeout 状态并自动恢复或等待人工重启
 - GitHub PR review comment monitor 已可把新评论写入 KAM 任务池，并自动拉起 global autodrive
 - 带 `executionRemoteUrl + executionRef` 的任务已可在指定远端分支上起 worktree、执行、push 回去，并自动把任务收口到 `verified`

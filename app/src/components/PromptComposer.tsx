@@ -5,6 +5,7 @@ type PromptComposerProps = {
   value: string
   placeholder: string
   isSending?: boolean
+  disabled?: boolean
   toneLabel?: string
   detailLabel?: string
   onChange: (value: string) => void
@@ -15,6 +16,7 @@ export function PromptComposer({
   value,
   placeholder,
   isSending = false,
+  disabled = false,
   toneLabel = '自动选择',
   detailLabel = '当前会按任务判断',
   onChange,
@@ -45,9 +47,10 @@ export function PromptComposer({
           placeholder={placeholder}
           value={value}
           rows={1}
+          disabled={disabled}
           onChange={(event) => onChange(event.target.value)}
         />
-        <button type="submit" className="composer-submit" disabled={isSending || !value.trim()}>
+        <button type="submit" className="composer-submit" disabled={disabled || isSending || !value.trim()}>
           {isSending ? '…' : '↗'}
         </button>
       </div>

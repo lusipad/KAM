@@ -74,6 +74,23 @@ export interface TaskPlanSuggestion {
   suggestedRefs: SuggestedTaskRefRecord[]
 }
 
+export interface TaskDependencyRecord {
+  taskId: string
+  title: string
+  status: string
+  resolved: boolean
+  missing: boolean
+}
+
+export interface TaskDependencyState {
+  dependsOnTaskIds: string[]
+  dependencies: TaskDependencyRecord[]
+  blockingTaskIds: string[]
+  blockedBy: TaskDependencyRecord[]
+  ready: boolean
+  summary: string | null
+}
+
 export interface TaskRecord {
   id: string
   title: string
@@ -86,6 +103,7 @@ export interface TaskRecord {
   archivedAt: string | null
   createdAt: string
   updatedAt: string
+  dependencyState?: TaskDependencyState
 }
 
 export interface TaskDetail extends TaskRecord {

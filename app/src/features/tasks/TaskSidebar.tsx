@@ -11,6 +11,9 @@ type TaskSidebarProps = {
 }
 
 function taskTone(task: TaskRecord) {
+  if (task.dependencyState?.ready === false) {
+    return 'red'
+  }
   if (task.status === 'running' || task.status === 'in_progress') {
     return 'amber'
   }
@@ -26,6 +29,9 @@ function taskTone(task: TaskRecord) {
 function taskMeta(task: TaskRecord) {
   if (task.archivedAt) {
     return '已归档'
+  }
+  if (task.dependencyState?.ready === false && task.dependencyState.summary) {
+    return task.dependencyState.summary
   }
   const label = task.labels.slice(0, 2).join(' · ')
   return label || formatRelativeTime(task.updatedAt)

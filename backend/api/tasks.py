@@ -12,6 +12,13 @@ from sqlalchemy.orm import selectinload
 from db import get_db
 from models import Task, TaskRef, TaskRun, now
 from services.task_dispatcher import TaskDispatcherService
+from services.task_dependencies import (
+    build_task_dependency_state,
+    load_tasks_by_id,
+    task_dependency_ids,
+    validate_dependency_task_ids,
+    with_dependency_task_ids,
+)
 from services.task_autodrive import GlobalAutoDriveService, TaskAutoDriveService
 from services.run_engine import RunEngine
 from services.source_tasks import (
@@ -42,6 +49,7 @@ class TaskCreate(BaseModel):
     status: str = Field(default="open", max_length=20)
     priority: str = Field(default="medium", max_length=20)
     labels: list[str] = Field(default_factory=list)
+    dependsOnTaskIds: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] | None = None
     refs: list[TaskRefCreate] = Field(default_factory=list)
 
@@ -53,6 +61,11 @@ class TaskUpdate(BaseModel):
     status: str | None = Field(default=None, max_length=20)
     priority: str | None = Field(default=None, max_length=20)
     labels: list[str] | None = None
+    dependsOnTaskIds: list[str] | None = None
+
+
+class TaskDependencyCreate(BaseModel):
+    dependsOnTaskId: str = Field(min_length=1, max_length=12)
 
 
 class TaskResolveContext(BaseModel):
@@ -87,7 +100,14 @@ async def list_tasks(
     if not include_archived:
         stmt = stmt.where(Task.archived_at.is_(None))
     result = await db.execute(stmt)
-    return {"tasks": [task.to_dict() for task in result.scalars()]}
+    tasks = list(result.scalars())
+    tasks_by_id = await load_tasks_by_id(db)
+    return {
+        "tasks": [
+            task.to_dict(dependency_state=build_task_dependency_state(task, tasks_by_id).to_dict())
+            for task in tasks
+        ]
+    }
 
 
 @router.post("/dispatch-next")
@@ -144,7 +164,16 @@ async def stop_global_autodrive(db: AsyncSession = Depends(get_db)):
 
 @router.post("")
 async def create_task(payload: TaskCreate, db: AsyncSession = Depends(get_db)):
-    metadata = dict(payload.metadata or {}) or None
+    tasks_by_id = await load_tasks_by_id(db)
+    dependency_task_ids, dependency_error = validate_dependency_task_ids(
+        task_id=None,
+        dependency_task_ids=payload.dependsOnTaskIds,
+        tasks_by_id=tasks_by_id,
+    )
+    if dependency_error:
+        raise HTTPException(status_code=409, detail=dependency_error)
+
+    metadata = with_dependency_task_ids(payload.metadata, dependency_task_ids)
     dedup_key = source_dedup_key(metadata)
     async with source_task_guard(dedup_key):
         if dedup_key:
@@ -159,12 +188,15 @@ async def create_task(payload: TaskCreate, db: AsyncSession = Depends(get_db)):
                 reusable_task.repo_path = payload.repoPath.strip() if payload.repoPath else None
                 reusable_task.priority = payload.priority.strip()
                 reusable_task.labels = _merge_labels(reusable_task.labels or [], payload.labels)
-                reusable_task.metadata_ = merged_metadata
+                reusable_task.metadata_ = with_dependency_task_ids(merged_metadata, dependency_task_ids)
                 await _refresh_source_refs(db, reusable_task, payload.refs, merged_metadata)
                 reusable_task.updated_at = now()
                 await db.commit()
                 await db.refresh(reusable_task)
-                return reusable_task.to_dict()
+                refreshed_tasks = await load_tasks_by_id(db)
+                return reusable_task.to_dict(
+                    dependency_state=build_task_dependency_state(reusable_task, refreshed_tasks).to_dict()
+                )
 
         task = Task(
             title=payload.title.strip(),
@@ -180,7 +212,8 @@ async def create_task(payload: TaskCreate, db: AsyncSession = Depends(get_db)):
         _add_task_refs(db, task.id, payload.refs)
         await db.commit()
         await db.refresh(task)
-        return task.to_dict()
+        refreshed_tasks = await load_tasks_by_id(db)
+        return task.to_dict(dependency_state=build_task_dependency_state(task, refreshed_tasks).to_dict())
 
 
 def _merge_labels(existing: list[str], incoming: list[str]) -> list[str]:
@@ -314,11 +347,12 @@ async def get_task(task_id: str, db: AsyncSession = Depends(get_db)):
     task = await _load_task_detail(db, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
+    tasks_by_id = await load_tasks_by_id(db)
     runs = await _list_task_runs(db, task)
     state = sa_inspect(task)
     compares = [] if "review_compares" in state.unloaded else [compare.to_dict() for compare in task.review_compares]
     return {
-        **task.to_detail_dict(),
+        **task.to_detail_dict(dependency_state=build_task_dependency_state(task, tasks_by_id).to_dict()),
         "runs": [run.to_dict() for run in runs],
         "reviews": compares,
     }
@@ -329,6 +363,16 @@ async def update_task(task_id: str, payload: TaskUpdate, db: AsyncSession = Depe
     task = await db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
+    if payload.dependsOnTaskIds is not None:
+        tasks_by_id = await load_tasks_by_id(db)
+        dependency_task_ids, dependency_error = validate_dependency_task_ids(
+            task_id=task.id,
+            dependency_task_ids=payload.dependsOnTaskIds,
+            tasks_by_id=tasks_by_id,
+        )
+        if dependency_error:
+            raise HTTPException(status_code=409, detail=dependency_error)
+        task.metadata_ = with_dependency_task_ids(task.metadata_, dependency_task_ids)
     if payload.title is not None:
         task.title = payload.title.strip()
     if payload.description is not None:
@@ -344,7 +388,8 @@ async def update_task(task_id: str, payload: TaskUpdate, db: AsyncSession = Depe
     task.updated_at = now()
     await db.commit()
     await db.refresh(task)
-    return task.to_dict()
+    refreshed_tasks = await load_tasks_by_id(db)
+    return task.to_dict(dependency_state=build_task_dependency_state(task, refreshed_tasks).to_dict())
 
 
 @router.post("/{task_id}/archive")
@@ -357,7 +402,47 @@ async def archive_task(task_id: str, db: AsyncSession = Depends(get_db)):
     task.updated_at = task.archived_at
     await db.commit()
     await db.refresh(task)
-    return task.to_dict()
+    refreshed_tasks = await load_tasks_by_id(db)
+    return task.to_dict(dependency_state=build_task_dependency_state(task, refreshed_tasks).to_dict())
+
+
+@router.post("/{task_id}/dependencies")
+async def add_task_dependency(task_id: str, payload: TaskDependencyCreate, db: AsyncSession = Depends(get_db)):
+    task = await db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    tasks_by_id = await load_tasks_by_id(db)
+    dependency_task_ids, dependency_error = validate_dependency_task_ids(
+        task_id=task.id,
+        dependency_task_ids=[*task_dependency_ids(task.metadata_ or {}), payload.dependsOnTaskId],
+        tasks_by_id=tasks_by_id,
+    )
+    if dependency_error:
+        raise HTTPException(status_code=409, detail=dependency_error)
+    task.metadata_ = with_dependency_task_ids(task.metadata_, dependency_task_ids)
+    task.updated_at = now()
+    await db.commit()
+    await db.refresh(task)
+    refreshed_tasks = await load_tasks_by_id(db)
+    return task.to_dict(dependency_state=build_task_dependency_state(task, refreshed_tasks).to_dict())
+
+
+@router.delete("/{task_id}/dependencies/{depends_on_task_id}")
+async def delete_task_dependency(task_id: str, depends_on_task_id: str, db: AsyncSession = Depends(get_db)):
+    task = await db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    dependency_task_ids = [
+        candidate
+        for candidate in task_dependency_ids(task.metadata_ or {})
+        if candidate != depends_on_task_id
+    ]
+    task.metadata_ = with_dependency_task_ids(task.metadata_, dependency_task_ids)
+    task.updated_at = now()
+    await db.commit()
+    await db.refresh(task)
+    refreshed_tasks = await load_tasks_by_id(db)
+    return task.to_dict(dependency_state=build_task_dependency_state(task, refreshed_tasks).to_dict())
 
 
 @router.post("/{task_id}/refs")
@@ -405,6 +490,10 @@ async def create_task_run(task_id: str, payload: TaskRunCreate, db: AsyncSession
     task = await db.get(Task, task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
+    tasks_by_id = await load_tasks_by_id(db)
+    dependency_state = build_task_dependency_state(task, tasks_by_id)
+    if not dependency_state.ready:
+        raise HTTPException(status_code=409, detail=dependency_state.summary or "当前任务仍被依赖阻塞")
     run_engine = RunEngine(db)
     run = await run_engine.create_task_run(
         task_id=task.id,

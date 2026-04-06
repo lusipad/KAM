@@ -7,9 +7,10 @@ type TaskRunCardProps = {
   run: RunRecord
   onAdopt: (runId: string) => void
   onRetry: (runId: string) => void
+  disableRetry?: boolean
 }
 
-export function TaskRunCard({ run, onAdopt, onRetry }: TaskRunCardProps) {
+export function TaskRunCard({ run, onAdopt, onRetry, disableRetry = false }: TaskRunCardProps) {
   const [detail, setDetail] = useState<'diff' | 'logs' | null>(null)
   const tone = runTone(run.status)
   const duration = formatDuration(run.durationMs)
@@ -92,7 +93,7 @@ export function TaskRunCard({ run, onAdopt, onRetry }: TaskRunCardProps) {
               <button type="button" className="button-secondary" onClick={() => setDetail(detail === 'logs' ? null : 'logs')}>
                 查看日志
               </button>
-              <button type="button" className="button-secondary" onClick={() => onRetry(run.id)}>
+              <button type="button" className="button-secondary" disabled={disableRetry} onClick={() => onRetry(run.id)}>
                 重试
               </button>
             </>
