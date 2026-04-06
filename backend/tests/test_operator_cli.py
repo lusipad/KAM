@@ -29,8 +29,56 @@ def _task_record(task_id: str, title: str) -> dict[str, object]:
     }
 
 
-def _control_plane(*, system_status: str = "ready", enabled: bool = False) -> dict[str, object]:
+def _run_record(run_id: str, task_id: str) -> dict[str, object]:
+    return {
+        "id": run_id,
+        "taskId": task_id,
+        "threadId": None,
+        "agent": "codex",
+        "status": "running",
+        "task": "处理中",
+        "resultSummary": None,
+        "changedFiles": [],
+        "checkPassed": None,
+        "durationMs": 1200,
+        "worktreePath": None,
+        "adoptedAt": None,
+        "rawOutput": "",
+        "createdAt": "2026-04-06T00:00:00Z",
+    }
+
+
+def _control_plane(
+    *,
+    system_status: str = "ready",
+    enabled: bool = False,
+    active_run_id: str | None = None,
+    actions: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     focus_task = _task_record("task-harness-cutover", "切到 task-first harness")
+    default_actions = [
+        {
+            "key": "continue_task_family",
+            "label": "继续推进当前任务",
+            "description": "围绕当前 task family 重新判断 adopt / retry / plan / dispatch。",
+            "tone": "green",
+            "taskId": focus_task["id"],
+            "runId": None,
+            "disabled": False,
+            "disabledReason": None,
+        },
+        {
+            "key": "restart_global_autodrive",
+            "label": "重启全局 supervisor",
+            "description": "重新拉起全局无人值守 supervisor。",
+            "tone": "amber",
+            "taskId": None,
+            "runId": None,
+            "disabled": False,
+            "disabledReason": None,
+        },
+    ]
+    active_run = _run_record(active_run_id, focus_task["id"]) if active_run_id else None
     return {
         "generatedAt": "2026-04-06T00:00:00Z",
         "systemStatus": system_status,
@@ -64,32 +112,11 @@ def _control_plane(*, system_status: str = "ready", enabled: bool = False) -> di
         "focus": {
             "task": focus_task,
             "scopeTask": focus_task,
-            "activeRun": None,
+            "activeRun": active_run,
             "summary": "当前焦点任务是切到 task-first harness。",
             "reason": "focus_task",
         },
-        "actions": [
-            {
-                "key": "continue_task_family",
-                "label": "继续推进当前任务",
-                "description": "围绕当前 task family 重新判断 adopt / retry / plan / dispatch。",
-                "tone": "green",
-                "taskId": focus_task["id"],
-                "runId": None,
-                "disabled": False,
-                "disabledReason": None,
-            },
-            {
-                "key": "restart_global_autodrive",
-                "label": "重启全局 supervisor",
-                "description": "重新拉起全局无人值守 supervisor。",
-                "tone": "amber",
-                "taskId": None,
-                "runId": None,
-                "disabled": False,
-                "disabledReason": None,
-            },
-        ],
+        "actions": default_actions if actions is None else actions,
         "attention": []
         if system_status != "attention"
         else [
@@ -207,6 +234,37 @@ class OperatorCliTests(unittest.TestCase):
         payload = json.loads(completed.stdout.strip())
         self.assertEqual(payload["action"], "restart_global_autodrive")
 
+    def test_continue_infers_task_id_from_control_plane_actions(self):
+        completed = self._run_cli("continue", "--kam-url", self.base_url, "--json")
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(self.server.action_payloads[0]["action"], "continue_task_family")
+        self.assertEqual(self.server.action_payloads[0]["taskId"], "task-harness-cutover")
+
+    def test_cancel_infers_run_id_from_control_plane_actions(self):
+        self.server.control_plane = _control_plane(
+            active_run_id="task-run-123",
+            actions=[
+                {
+                    "key": "cancel_run",
+                    "label": "打断当前 Run",
+                    "description": "终止当前正在执行的 agent run，并把状态标记为 cancelled。",
+                    "tone": "red",
+                    "taskId": "task-harness-cutover",
+                    "runId": "task-run-123",
+                    "disabled": False,
+                    "disabledReason": None,
+                }
+            ],
+        )
+
+        completed = self._run_cli("cancel", "--kam-url", self.base_url, "--json")
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(self.server.action_payloads[0]["action"], "cancel_run")
+        self.assertEqual(self.server.action_payloads[0]["taskId"], "task-harness-cutover")
+        self.assertEqual(self.server.action_payloads[0]["runId"], "task-run-123")
+
     def test_watch_json_respects_iteration_limit(self):
         completed = self._run_cli("watch", "--kam-url", self.base_url, "--json", "--interval-seconds", "0.01", "--iterations", "2")
 
@@ -214,6 +272,12 @@ class OperatorCliTests(unittest.TestCase):
         lines = [line for line in completed.stdout.splitlines() if line.strip()]
         self.assertEqual(len(lines), 2)
         self.assertTrue(all(json.loads(line)["systemStatus"] == "ready" for line in lines))
+
+    def test_menu_requires_interactive_terminal(self):
+        completed = self._run_cli("menu", "--kam-url", self.base_url)
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("`menu` 需要交互式终端", completed.stderr)
 
 
 if __name__ == "__main__":

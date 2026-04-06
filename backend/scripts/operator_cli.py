@@ -26,6 +26,7 @@ ACTION_ALIASES: dict[str, str] = {
 
 WATCH_COMMAND = "watch"
 STATUS_COMMAND = "status"
+MENU_COMMAND = "menu"
 
 
 @dataclass(frozen=True)
@@ -170,12 +171,36 @@ def _task_title(record: Any) -> str | None:
     return None
 
 
-def _preferred_action(control_plane: dict[str, Any]) -> dict[str, Any] | None:
+def _optional_text(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _action_descriptors(control_plane: dict[str, Any]) -> list[dict[str, Any]]:
     actions = control_plane.get("actions")
     if not isinstance(actions, list):
+        return []
+    return [action for action in actions if isinstance(action, dict)]
+
+
+def _action_key(action: dict[str, Any]) -> str | None:
+    return _optional_text(action.get("key"))
+
+
+def _find_action_descriptor(control_plane: dict[str, Any], action_key: str) -> dict[str, Any] | None:
+    matches = [action for action in _action_descriptors(control_plane) if _action_key(action) == action_key]
+    if not matches:
         return None
-    for action in actions:
-        if isinstance(action, dict) and action.get("disabled") is not True:
+    for action in matches:
+        if action.get("disabled") is not True:
+            return action
+    return matches[0]
+
+
+def _preferred_action(control_plane: dict[str, Any]) -> dict[str, Any] | None:
+    for action in _action_descriptors(control_plane):
+        if action.get("disabled") is not True:
             return action
     return None
 
@@ -194,7 +219,7 @@ def format_control_plane(control_plane: dict[str, Any]) -> str:
     focus = control_plane.get("focus") if isinstance(control_plane.get("focus"), dict) else {}
     stats = control_plane.get("stats") if isinstance(control_plane.get("stats"), dict) else {}
     attention = control_plane.get("attention") if isinstance(control_plane.get("attention"), list) else []
-    actions = control_plane.get("actions") if isinstance(control_plane.get("actions"), list) else []
+    actions = _action_descriptors(control_plane)
     preferred = _preferred_action(control_plane)
 
     lines = [
@@ -240,7 +265,7 @@ def format_control_plane(control_plane: dict[str, Any]) -> str:
 
 
 def _resolve_action(command: str) -> str | None:
-    if command in {STATUS_COMMAND, WATCH_COMMAND}:
+    if command in {STATUS_COMMAND, WATCH_COMMAND, MENU_COMMAND}:
         return None
     return ACTION_ALIASES.get(command)
 
@@ -252,6 +277,30 @@ def _validate_action_requirements(command: str, *, task_id: str | None, run_id: 
         raise OperatorCliError(f"`{command}` 需要传入 --run-id。")
 
 
+def _resolve_action_targets(
+    *,
+    api_base_url: str,
+    command: str,
+    task_id: str | None,
+    run_id: str | None,
+    timeout_seconds: float,
+) -> tuple[str | None, str | None]:
+    requires_task_id = command in {"continue", "start-scope", "stop-scope"}
+    requires_run_id = command in {"adopt", "retry", "cancel"}
+    if (not requires_task_id or task_id) and (not requires_run_id or run_id):
+        return task_id, run_id
+
+    action = _resolve_action(command)
+    if action is None:
+        return task_id, run_id
+
+    control_plane = fetch_control_plane(api_base_url, task_id=task_id, timeout_seconds=timeout_seconds)
+    descriptor = _find_action_descriptor(control_plane, action)
+    if descriptor is None:
+        return task_id, run_id
+    return task_id or _optional_text(descriptor.get("taskId")), run_id or _optional_text(descriptor.get("runId"))
+
+
 def _emit_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False))
 
@@ -260,6 +309,101 @@ def _status_exit_code(control_plane: dict[str, Any], *, fail_on_attention: bool)
     if fail_on_attention and control_plane.get("systemStatus") == "attention":
         return 2
     return 0
+
+
+def _format_menu_item(index: int, action: dict[str, Any]) -> str:
+    label = action.get("label") if isinstance(action.get("label"), str) else action.get("key") or f"动作 {index}"
+    description = action.get("description") if isinstance(action.get("description"), str) else ""
+    parts = [f"{index}. {label}"]
+    if description:
+        parts.append(description)
+    task_id = _optional_text(action.get("taskId"))
+    run_id = _optional_text(action.get("runId"))
+    target_bits = []
+    if task_id:
+        target_bits.append(f"task={task_id}")
+    if run_id:
+        target_bits.append(f"run={run_id}")
+    if target_bits:
+        parts.append(" ".join(target_bits))
+    disabled_reason = action.get("disabledReason") if isinstance(action.get("disabledReason"), str) else None
+    if action.get("disabled") is True:
+        parts.append(f"不可用：{disabled_reason or '当前不可执行'}")
+    return " | ".join(parts)
+
+
+def run_menu(
+    *,
+    api_base_url: str,
+    task_id: str | None,
+    timeout_seconds: float,
+    fail_on_attention: bool,
+) -> int:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise OperatorCliError("`menu` 需要交互式终端；脚本集成请改用 `status --json` 或直接执行具体命令。")
+
+    control_plane = fetch_control_plane(api_base_url, task_id=task_id, timeout_seconds=timeout_seconds)
+    while True:
+        print(format_control_plane(control_plane))
+        actions = _action_descriptors(control_plane)
+        print("")
+        print("菜单:")
+        print("0. 刷新状态")
+        for index, action in enumerate(actions, start=1):
+            print(_format_menu_item(index, action))
+        print("q. 退出")
+
+        try:
+            choice = input("选择动作 [0 刷新, q 退出]: ").strip().lower()
+        except EOFError as exc:
+            raise OperatorCliError("`menu` 未检测到可用输入；请在本地交互终端里执行。") from exc
+        if choice in {"", "0", "r", "refresh"}:
+            control_plane = fetch_control_plane(api_base_url, task_id=task_id, timeout_seconds=timeout_seconds)
+            continue
+        if choice in {"q", "quit", "exit"}:
+            return _status_exit_code(control_plane, fail_on_attention=fail_on_attention)
+
+        try:
+            selection = int(choice)
+        except ValueError:
+            print("输入无效，请输入数字、0 或 q。")
+            print("")
+            continue
+
+        if selection < 1 or selection > len(actions):
+            print("输入超出范围，请重新选择。")
+            print("")
+            continue
+
+        action = actions[selection - 1]
+        if action.get("disabled") is True:
+            disabled_reason = action.get("disabledReason") if isinstance(action.get("disabledReason"), str) else "当前不可执行。"
+            print(f"动作不可用：{disabled_reason}")
+            print("")
+            continue
+
+        action_key = _action_key(action)
+        if action_key is None:
+            print("动作定义不完整，已跳过。")
+            print("")
+            continue
+
+        response = perform_operator_action(
+            api_base_url,
+            action=action_key,
+            task_id=_optional_text(action.get("taskId")),
+            run_id=_optional_text(action.get("runId")),
+            timeout_seconds=timeout_seconds,
+        )
+        summary = response.get("summary") if isinstance(response.get("summary"), str) else "动作已执行。"
+        print("")
+        print(f"动作结果: {summary}")
+        next_control_plane = response.get("controlPlane")
+        if isinstance(next_control_plane, dict):
+            control_plane = next_control_plane
+        else:
+            control_plane = fetch_control_plane(api_base_url, task_id=task_id, timeout_seconds=timeout_seconds)
+        print("")
 
 
 def run_status(
@@ -319,6 +463,13 @@ def run_action(
     action = _resolve_action(command)
     if action is None:
         raise OperatorCliError(f"未知命令：{command}")
+    task_id, run_id = _resolve_action_targets(
+        api_base_url=api_base_url,
+        command=command,
+        task_id=task_id,
+        run_id=run_id,
+        timeout_seconds=timeout_seconds,
+    )
     _validate_action_requirements(command, task_id=task_id, run_id=run_id)
     response = perform_operator_action(
         api_base_url,
@@ -346,8 +497,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Query or operate the KAM operator control plane.")
     parser.add_argument(
         "command",
-        choices=[STATUS_COMMAND, WATCH_COMMAND, *sorted(ACTION_ALIASES.keys())],
-        help="status/watch or a friendly operator action alias",
+        choices=[STATUS_COMMAND, WATCH_COMMAND, MENU_COMMAND, *sorted(ACTION_ALIASES.keys())],
+        help="status/watch/menu or a friendly operator action alias",
     )
     parser.add_argument("--kam-url", default="http://127.0.0.1:8000/api", help="KAM API base URL, defaults to http://127.0.0.1:8000/api")
     parser.add_argument("--task-id", default=None, help="Optional task id for scoped status or task-family actions")
@@ -383,6 +534,15 @@ def main(argv: list[str] | None = None) -> int:
                 fail_on_attention=args.fail_on_attention,
                 interval_seconds=args.interval_seconds,
                 iterations=args.iterations,
+            )
+        if args.command == MENU_COMMAND:
+            if args.json:
+                raise OperatorCliError("`menu` 不支持 --json；请改用 `status --json`。")
+            return run_menu(
+                api_base_url=args.kam_url,
+                task_id=args.task_id,
+                timeout_seconds=args.timeout_seconds,
+                fail_on_attention=args.fail_on_attention,
             )
         return run_action(
             api_base_url=args.kam_url,

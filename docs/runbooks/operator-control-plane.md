@@ -30,6 +30,7 @@ GET /api/operator/control-plane?task_id=task-harness-cutover
 如果你在终端值守，最常用的是：
 
 ```powershell
+pwsh -File .\kam-operator.ps1 menu
 pwsh -File .\kam-operator.ps1 status
 pwsh -File .\kam-operator.ps1 watch --interval-seconds 5
 pwsh -File .\kam-operator.ps1 status --json
@@ -38,10 +39,17 @@ pwsh -File .\kam-operator.ps1 status --fail-on-attention
 
 说明：
 
+- `menu`：给本机人工值守用的轻交互入口，只显示当前状态和 control plane 已推荐动作
 - `status`：拉一次 operator control plane，并输出简洁摘要
 - `watch`：持续轮询，适合值班时盯盘
 - `--json`：输出原始 JSON，适合集成到外部脚本
 - `--fail-on-attention`：当系统进入 `attention` 时返回退出码 `2`
+
+CLI 还有一个约定：
+
+- `continue / start-scope / stop-scope` 在未传 `--task-id` 时，会自动复用当前 control plane 的焦点 task
+- `adopt / retry / cancel` 在未传 `--run-id` 时，会自动复用当前 control plane 已推荐的 run
+- 如果你要绕过当前推荐对象，仍可显式传 `--task-id` / `--run-id`
 
 ## 怎么看状态
 
@@ -80,9 +88,9 @@ pwsh -File .\kam-operator.ps1 status --fail-on-attention
 
 ```powershell
 pwsh -File .\kam-operator.ps1 dispatch
-pwsh -File .\kam-operator.ps1 continue --task-id task-harness-cutover
-pwsh -File .\kam-operator.ps1 retry --run-id task-run-123
-pwsh -File .\kam-operator.ps1 adopt --run-id task-run-123
+pwsh -File .\kam-operator.ps1 continue
+pwsh -File .\kam-operator.ps1 retry
+pwsh -File .\kam-operator.ps1 adopt
 ```
 
 ## 怎么打断
@@ -106,8 +114,8 @@ pwsh -File .\kam-operator.ps1 adopt --run-id task-run-123
 
 ```powershell
 pwsh -File .\kam-operator.ps1 stop-global
-pwsh -File .\kam-operator.ps1 stop-scope --task-id task-harness-cutover
-pwsh -File .\kam-operator.ps1 cancel --task-id task-harness-cutover --run-id task-run-123
+pwsh -File .\kam-operator.ps1 stop-scope
+pwsh -File .\kam-operator.ps1 cancel
 ```
 
 ## 怎么重启

@@ -190,12 +190,20 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body 
 如果你不想开 UI，也可以直接走 CLI：
 
 ```powershell
+pwsh -File .\kam-operator.ps1 menu
 pwsh -File .\kam-operator.ps1 status
 pwsh -File .\kam-operator.ps1 watch --interval-seconds 5
-pwsh -File .\kam-operator.ps1 continue --task-id task-harness-cutover
+pwsh -File .\kam-operator.ps1 continue
 pwsh -File .\kam-operator.ps1 restart-global
-pwsh -File .\kam-operator.ps1 cancel --task-id task-harness-cutover --run-id task-run-123
+pwsh -File .\kam-operator.ps1 cancel
 ```
+
+其中：
+
+- `menu` 是给人本机值守用的轻交互入口，只提供“刷新 / 选择推荐动作 / 退出”
+- `continue / start-scope / stop-scope` 默认会复用当前 control plane 的 focus task
+- `adopt / retry / cancel` 默认会复用当前 control plane 已推荐的 run
+- 如果你需要精确指定对象，仍然可以显式传 `--task-id` 或 `--run-id`
 
 如果你想把它接到值班/监控脚本里，用：
 
