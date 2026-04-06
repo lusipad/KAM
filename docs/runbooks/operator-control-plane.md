@@ -10,6 +10,13 @@
 4. 怎样打断
 5. 怎样重启
 
+先给结论：
+
+- 人工值守优先 `pwsh -File .\kam-operator.ps1 menu`
+- 持续盯盘优先 `pwsh -File .\kam-operator.ps1 watch --interval-seconds 5`
+- 脚本集成优先 `pwsh -File .\kam-operator.ps1 status --json`
+- 告警/计划任务优先 `pwsh -File .\kam-operator.ps1 status --fail-on-attention`
+
 ## 入口
 
 - UI：顶部 `操作台`
@@ -50,6 +57,14 @@ CLI 还有一个约定：
 - `continue / start-scope / stop-scope` 在未传 `--task-id` 时，会自动复用当前 control plane 的焦点 task
 - `adopt / retry / cancel` 在未传 `--run-id` 时，会自动复用当前 control plane 已推荐的 run
 - 如果你要绕过当前推荐对象，仍可显式传 `--task-id` / `--run-id`
+
+## 命令怎么选
+
+- 你是人在本机操作：优先 `menu`
+- 你只是想看状态，不需要交互：用 `status`
+- 你想连续盯盘：用 `watch`
+- 你在接外部脚本、调度器、监控：用 `status --json`
+- 你在做健康检查或接告警：用 `status --fail-on-attention`
 
 ## 怎么看状态
 

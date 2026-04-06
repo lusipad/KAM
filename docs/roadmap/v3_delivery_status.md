@@ -14,7 +14,7 @@
 - task dependency gating：已具备显式依赖/阻塞建模
 - task family auto-drive：已具备当前任务族级别的 opt-in 无人值守能力
 - global backlog auto-drive：已具备跨 family、可重启恢复、跨进程 lease/dedupe，以及 cold-start chaos 回归覆盖的无人值守能力
-- operator control plane：已具备统一状态摘要、推荐动作、run 打断与 supervisor 重启入口
+- operator control plane：已具备统一状态摘要、推荐动作、run 打断与 supervisor 重启入口，并补齐本机 CLI 值守与轻交互入口
 - V3 legacy runtime：已退场
 
 ## 已完成
@@ -62,6 +62,8 @@
 - task family / global auto-drive 已返回 recent events，可直接回看等待、暂停、重启、错误与最近任务切换
 - 新增 `GET /api/operator/control-plane`：统一返回 system status、focus、attention、stats、recent events 与推荐动作
 - 新增 `POST /api/operator/actions`：统一封装 `继续当前任务 / 接下一张 / 开停无人值守 / 重启 supervisor / 采纳 / 重试 / 打断 run`
+- 新增 `kam-operator.ps1` / `backend/scripts/operator_cli.py`：支持 `status / watch / menu / dispatch / continue / retry / adopt / cancel / restart-global`
+- operator CLI 会直接复用 control plane 已返回的推荐动作和目标对象，不再要求外部操作者手记 `task-id / run-id`
 - 新增 `POST /api/runs/{run_id}/cancel`：可直接打断当前正在执行的 run，并把状态标记为 `cancelled`
 - 前端顶部已切成 `操作台`，不再让外部操作者在散点按钮之间自行拼装“状态 / 重触发 / 打断 / 重启”语义
 - 已补真实多进程 lease 回归：验证第二个进程会被 active owner 挡住，owner 释放后新的进程可以接管

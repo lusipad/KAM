@@ -6,12 +6,19 @@
 
 ## 当前主参考
 
-- [../README.md](../README.md): 仓库根说明与本地开发/验证入口
-- [runbooks/operator-control-plane.md](runbooks/operator-control-plane.md): 外部操作者状态查看、重触发、打断、重启手册
-- [product/ai_work_assistant_prd.md](product/ai_work_assistant_prd.md): 当前唯一产品目标定义
+- [../README.md](../README.md): 仓库根说明、本地启动、最常用 operator 入口
+- [runbooks/operator-control-plane.md](runbooks/operator-control-plane.md): 本机值守 / 外部操作者状态查看、重触发、打断、重启手册
 - [roadmap/v3_delivery_status.md](roadmap/v3_delivery_status.md): 当前交付状态、已完成能力和剩余缺口
+- [product/ai_work_assistant_prd.md](product/ai_work_assistant_prd.md): 当前唯一产品目标定义
 - [../.omx/plans/prd-harness-dogfood-cutover.md](../.omx/plans/prd-harness-dogfood-cutover.md): 本地 cutover PRD
 - [../.omx/plans/test-spec-harness-dogfood-cutover.md](../.omx/plans/test-spec-harness-dogfood-cutover.md): 本地 cutover test spec
+
+## 按角色查看
+
+- 如果你是第一次在本机把 KAM 跑起来：先看 [../README.md](../README.md)
+- 如果你是本机值守或要人工恢复一轮：先看 [runbooks/operator-control-plane.md](runbooks/operator-control-plane.md)
+- 如果你想判断“现在做到哪一步、还差什么”：先看 [roadmap/v3_delivery_status.md](roadmap/v3_delivery_status.md)
+- 如果你要对齐产品目标，而不是当前实现细节：看 [product/ai_work_assistant_prd.md](product/ai_work_assistant_prd.md)
 
 当前新增的最小自动闭环能力也以这组文档为准：
 

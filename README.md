@@ -68,6 +68,22 @@ docs/
   archive/legacy/       历史设计
 ```
 
+## 本机最常用
+
+如果你只是想在本机把 KAM 跑起来并顺手值守，优先记住这 3 条：
+
+- 启动本地环境：`pwsh -File .\start-local.ps1`
+- 人工值守入口：`pwsh -File .\kam-operator.ps1 menu`
+- 脚本/监控入口：`pwsh -File .\kam-operator.ps1 status --json` 或 `pwsh -File .\kam-operator.ps1 status --fail-on-attention`
+
+建议分工：
+
+- 人在本机盯盘或临时恢复：优先 `menu`
+- 人想连续看状态变化：优先 `watch`
+- 外部计划任务、监控、告警：优先 `status --json` / `status --fail-on-attention`
+
+更细的状态解释、打断、重启、人工介入边界，直接看 [docs/runbooks/operator-control-plane.md](./docs/runbooks/operator-control-plane.md)。
+
 ## 本地开发
 
 首次准备：
@@ -89,7 +105,7 @@ pwsh -File .\start-local.ps1
 如果你想不打开 UI 直接从终端值守：
 
 ```powershell
-pwsh -File .\kam-operator.ps1 status
+pwsh -File .\kam-operator.ps1 menu
 ```
 
 验证：
@@ -201,6 +217,7 @@ pwsh -File .\kam-operator.ps1 cancel
 其中：
 
 - `menu` 是给人本机值守用的轻交互入口，只提供“刷新 / 选择推荐动作 / 退出”
+- `watch` 更适合持续盯盘，但不适合做交互恢复
 - `continue / start-scope / stop-scope` 默认会复用当前 control plane 的 focus task
 - `adopt / retry / cancel` 默认会复用当前 control plane 已推荐的 run
 - 如果你需要精确指定对象，仍然可以显式传 `--task-id` 或 `--run-id`
