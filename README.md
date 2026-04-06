@@ -1,89 +1,118 @@
 # KAM
 
-KAM 现在的主目标不是继续做 V3 对话工作台，而是切到一个 `local-first` 的软件工程 agent harness，用 KAM 自己持续开发 KAM。
+KAM 是一套 `local-first` 的软件工程 agent 工作台与控制面。
+它不是聊天窗口外包一切，而是把工程工作显式化成一条可追踪、可比对、可继续推进的主链路：
 
-当前主链路：
+`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare -> Follow-up Planning -> Dispatch / Continue`
 
-`Task -> Refs -> Context Snapshot -> Runs -> Artifacts -> Review / Compare -> Follow-up Planning -> Next-Task Dispatch -> Continue`
+它的目标不是“帮你问答”，而是“帮你把软件工程工作接住、做下去、让你能随时介入”。
 
-V3 workspace 已经从运行时、前端主入口、验证基线和数据库 head 中退场。
+## KAM 解决什么问题
 
-## 当前状态
+真实的软件工程 agent 工作，难点通常不在单次生成，而在这些环节：
 
-- 验证基线已稳定：`verify-local.ps1` 可通过
-- 后端启动会执行 Alembic `upgrade head`，不再依赖 `create_all`
-- 最小 harness backend 已接上：
-  - `GET/POST /api/tasks`
-  - `POST/DELETE /api/tasks/{task_id}/refs`
-  - `POST /api/tasks/{task_id}/context/resolve`
-  - `GET /api/context/snapshots/{snapshot_id}`
-  - `POST /api/tasks/{task_id}/runs`
-  - `GET /api/runs/{run_id}/artifacts`
-  - `POST /api/runs/{run_id}/cancel`
-  - `POST /api/reviews/{task_id}/compare`
-  - `POST /api/tasks/{task_id}/plan`
-  - `POST /api/tasks/dispatch-next`
-  - `POST /api/tasks/continue`
-  - `GET /api/operator/control-plane`
-  - `POST /api/operator/actions`
-- harness run 已是 task-native 存储
-- 默认前端入口已切成 task-first workbench
-- 当前 task 已可基于 run、compare、snapshot、refs 和 artifacts 自动拆出可执行的 follow-up tasks
-- KAM 已可从任务池里自动接下一张任务；若当前没有可跑 child task，会先拆一张再开跑
-- KAM 已可围绕当前 task family 自动继续推进：优先 `adopt / retry / plan_and_dispatch / stop`
-- 当前 task 已支持显式依赖：可声明 `dependsOnTaskIds`，并在列表/详情里看到 blocked 状态；planner / dispatch / continue / manual run / retry 都会尊重依赖阻塞
-- 当前 task family / global autodrive 都已增加单步调度超时保护：如果 `continue_task()` 卡住，不会把 supervisor 挂死，而是记录 timeout 状态并自动恢复或等待人工重启
-- 已提供统一 operator control plane：外部操作者可直接看到当前状态、焦点任务、attention items、推荐动作，并统一执行“重新触发 / 打断 / 重启”
-- GitHub PR review comment monitor 已可把新评论写入 KAM 任务池，并自动拉起 global autodrive
-- 带 `executionRemoteUrl + executionRef` 的任务已可在指定远端分支上起 worktree、执行、push 回去，并自动把任务收口到 `verified`
-- 开发态提供 harness demo 播种接口：`POST /api/dev/seed-harness`
+- 工作目标散落在聊天、PR、文档和代码里，不成任务对象
+- agent 跑完之后只剩一段对话，不留下可复核的产物
+- 一轮结果出来后，没人把它拆成下一轮可执行工作
+- 任务一多就失控，不知道现在在干什么、卡在哪里、该不该重试
+- 系统一旦中断，外部操作者不知道怎么恢复、打断、重启或接管
 
-## 目录
+KAM 的产品设计就是围绕这些问题做的：让软件工程工作像一个可操作、可监督的任务系统一样运行，而不是像一次次临时对话。
 
-```text
-app/
-  src/
-    features/tasks/      task-first workbench
-    components/          task-first 复用组件
-    layout/              壳层组件
+## 适合谁
 
-backend/
-  api/
-    tasks.py
-    context_snapshots.py
-    reviews.py
-    runs.py
-  services/
-    run_engine.py
-    task_context.py
-    artifact_store.py
-    review_compare.py
-  models.py
-  main.py
-  db.py
+- 想在本机持续驱动 agent 干活的个人开发者
+- 想把 PR 评论、改动建议、修复任务收进统一工作池的人
+- 需要“自动继续推进”，但又必须保留人工干预与恢复能力的小团队
 
-docs/
-  product/              目标 PRD
-  roadmap/              当前交付状态
-  archive/legacy/       历史设计
-```
+当前默认场景仍然是 `KAM builds KAM`，也就是先把这套系统在自身仓库上跑稳。
+
+## 产品现在能做什么
+
+### 1. 把工作显式化成任务
+
+- 创建任务、维护任务状态、优先级、标签和依赖
+- 给任务挂 refs，包括文件、仓库路径、PR、文档、外部链接
+- 为任务生成 context snapshot，固定这一轮运行的上下文边界
+
+### 2. 让 agent 执行变成可审计 run
+
+- 基于任务启动 run，而不是直接在聊天里临时开工
+- 保留 `stdout / summary / patch / changed_files / check_result` 等 artifacts
+- 支持 `retry`、成功后的 `adopt`
+- 支持在指定远端分支上起 worktree 执行并回推
+
+### 3. 自动拆下一步工作
+
+- 基于当前 task、snapshot、run、compare、artifacts 自动生成 follow-up tasks
+- 子任务会自动带上推荐 prompt、建议 refs、验收检查项和推荐 agent
+- 当前没有现成可跑 child task 时，可以先拆再跑
+
+### 4. 自动继续推进，而不是只做单轮执行
+
+- KAM 可以围绕当前 task family 自动决定下一步动作
+- 当前动作集合包括：`adopt / retry / plan_and_dispatch / stop`
+- 支持 task family 级别的 auto-drive
+- 支持全局 backlog 级别的 auto-drive
+
+### 5. 让外部操作者随时知道系统在干什么
+
+- 提供统一 operator control plane
+- 可以直接看到 focus task、attention items、推荐动作、近期事件
+- 可以统一执行继续、接下一张、重试、采纳、打断 run、重启 supervisor
+- 重启后会恢复持久化的全局无人值守状态，并把残留假活跃 run 收口
+
+### 6. 把外部输入接进来
+
+- PR review comments 可自动写入 KAM 任务池
+- 同源评论在尚未执行前会刷新原任务，避免无意义并行
+- 一旦已有 run，后续评论会进入新的后继任务，避免改写运行中上下文
+
+## 真实使用方式
+
+一个真实用户通常这样用 KAM：
+
+1. 把一个工程目标、问题单、PR 评论或改进点放进任务池
+2. 给它补 refs，让工作边界足够清晰
+3. 让 KAM 生成 snapshot 并启动 run
+4. 看结果产出的 artifacts、compare 和后续计划
+5. 选择人工采纳、人工重试，或开启 auto-drive 让 KAM 继续推进
+6. 在任何时候通过 operator control plane 观察状态、打断、重启或接管
+
+这里的核心不是“AI 替你点一个按钮”，而是“整个工作过程有对象、有状态、有证据、有恢复语义”。
+
+## 为什么它比纯脚本更像产品
+
+KAM 不是一组零散脚本，而是一套有统一工作对象和控制平面的系统：
+
+- UI 里能看到任务、refs、snapshot、run、compare、下一步计划
+- CLI 里能看到当前 focus、attention、推荐动作和恢复入口
+- 后端里有统一的任务、运行、artifact、autodrive 语义
+- 文档里明确了打断、重启、恢复和人工介入边界
+
+这意味着外部使用者不需要记住一堆内部脚本组合，只需要围绕“任务怎么进来、系统现在在做什么、我怎么干预”来使用它。
 
 ## 三分钟上手
 
-如果你只是想在本机把 KAM 跑起来并顺手值守，先走这 3 步：
+如果你只是想在本机跑起来并开始值守：
 
 1. 启动本地环境：`pwsh -File .\start-local.ps1`
-2. 人工值守入口：`pwsh -File .\kam-operator.ps1 menu`
-3. 本地验证：`pwsh -File .\verify-local.ps1`
+2. 打开 operator 入口：`pwsh -File .\kam-operator.ps1 menu`
+3. 做一轮本地验证：`pwsh -File .\verify-local.ps1`
 
-## GitHub Actions 运行包
+启动后默认访问：`http://127.0.0.1:8000`
 
-如果你不想在本机安装 Node，只想下载一个已经带好前端 `app/dist` 的运行包，可以直接走 GitHub Actions：
+如果你想直接播种一套 demo harness 数据：
 
-1. 打开仓库的 `Build Portable Package` workflow
-2. 点击 `Run workflow`
-3. 下载生成的 artifact：`kam-portable-<version>`
-4. 解压后执行：
+```powershell
+pwsh -File .\seed-harness.ps1 -OpenBrowser
+```
+
+## 下载运行包
+
+如果你不想在本机安装 Node，只想下载一个已经内置前端 `app/dist` 的运行包，可以直接用 GitHub Actions 构建出来的便携包。
+
+解压后：
 
 Windows：
 
@@ -99,15 +128,49 @@ bash ./install.sh
 bash ./run.sh
 ```
 
-运行包已经内置前端静态资源，所以本机只需要 Python 3；不需要再执行 `npm install` 或 `npm run build`。
+运行包只要求 Python 3；不要求本机再执行 `npm install` 或 `npm run build`。
 
-## 按目的选入口
+## 操作者入口
 
-- 你要在本机人工盯盘、恢复、继续推进：`pwsh -File .\kam-operator.ps1 menu`
-- 你要持续看状态变化：`pwsh -File .\kam-operator.ps1 watch --interval-seconds 5`
-- 你要接外部计划任务、监控、告警：`pwsh -File .\kam-operator.ps1 status --json` 或 `pwsh -File .\kam-operator.ps1 status --fail-on-attention`
-- 你要看整体交付状态和剩余缺口：看 [docs/roadmap/v3_delivery_status.md](./docs/roadmap/v3_delivery_status.md)
-- 你要看状态解释、打断、重启、人工介入边界：看 [docs/runbooks/operator-control-plane.md](./docs/runbooks/operator-control-plane.md)
+如果你平时主要从终端值守，优先用这些入口：
+
+- `pwsh -File .\kam-operator.ps1 menu`
+- `pwsh -File .\kam-operator.ps1 watch --interval-seconds 5`
+- `pwsh -File .\kam-operator.ps1 status`
+- `pwsh -File .\kam-operator.ps1 status --json`
+- `pwsh -File .\kam-operator.ps1 status --fail-on-attention`
+- `pwsh -File .\kam-operator.ps1 continue`
+- `pwsh -File .\kam-operator.ps1 restart-global`
+- `pwsh -File .\kam-operator.ps1 cancel`
+
+其中：
+
+- `menu` 适合人值守时快速选择推荐动作
+- `watch` 适合盯盘，不适合交互恢复
+- `status --json` 适合接脚本、监控、告警
+- `restart-global` 适合系统重启、loop 异常或你明确要重拉 supervisor 时使用
+
+更细的状态语义、打断与重启边界，直接看 [operator-control-plane.md](./docs/runbooks/operator-control-plane.md)。
+
+## 当前默认配置
+
+- 默认 agent：`codex`
+- 可选 agent：`claude-code`
+- 默认主门禁：`pwsh -NoProfile -File .\verify-local.ps1`
+- 当前主产品入口：task-first workbench
+- V3 workspace：已退场，不再是目标态
+
+## 当前边界
+
+KAM 当前明确不优先做这些方向：
+
+- SaaS / 云化 / 多租户
+- 账号体系
+- 重型调度中心
+- 大量连接器扩展
+- 为历史兼容长期保留 V3 双主线
+
+KAM 当前优先做的是：把“任务进入系统 -> agent 执行 -> 结果沉淀 -> 下一步继续 -> 人可接管”这条链路在真实仓库里跑硬。
 
 ## 本地开发
 
@@ -121,21 +184,10 @@ npm install
 Set-Location ..
 ```
 
-启动：
+开发常用命令：
 
 ```powershell
 pwsh -File .\start-local.ps1
-```
-
-如果你想不打开 UI，直接从终端值守：
-
-```powershell
-pwsh -File .\kam-operator.ps1 menu
-```
-
-验证：
-
-```powershell
 pwsh -File .\verify-local.ps1
 ```
 
@@ -145,102 +197,20 @@ pwsh -File .\verify-local.ps1
 pwsh -File .\verify-local.ps1 -RunRealAgentSmoke -RealSmokeAgent codex
 ```
 
-这条 smoke 现在会验证临时 git 仓库中的真实改动、Lore commit，以及 adopt 回主仓库的收口。
-
-`codex` 是当前默认 agent。`claude-code` 仍保留为可选执行目标和额外 smoke 目标，但不是默认主门禁。
-
-如果你要显式验证 `claude-code` 这条可选 lane：
+如果你要验证可选的 `claude-code` lane：
 
 ```powershell
 pwsh -File .\verify-local.ps1 -RunRealAgentSmoke -RealSmokeAgent claude-code
 ```
 
-这条链路现在会先做 `claude auth status` readiness 预检，未登录时会在真实 smoke 开始前直接失败。
-
-如果你要补一轮更长时间的全局无人值守 soak：
+如果你要做更长时间的全局无人值守 soak：
 
 ```powershell
 pwsh -File .\verify-local.ps1 -RunAutoDriveSoak -AutoDriveSoakMinutes 180
-```
-
-这条可选验证会启动独立 mock backend、持续注入新的 root task，并检查：
-
-- 全局无人值守始终保持开启
-- `recentEvents` 仍然有界
-- loop 持续推进，不会长时间卡死
-- 新注入 root task 最终能产出 follow-up task 和 passed run
-
-如果你要把长时 soak 直接落成一份可归档的运行记录，优先使用：
-
-```powershell
 pwsh -File .\run-autodrive-soak.ps1 -Minutes 480 -TaskIntervalSeconds 30
 ```
 
-它会在 `output/soak-runs/<timestamp>-<commit>/` 下自动保存：
-
-- `metadata.json`
-- `soak-result.json`
-- `runner-stdout.log`
-- `runner-stderr.log`
-- `backend.out.log`
-- `backend.err.log`
-
-如果你想让 8 小时 soak 在后台继续跑：
-
-```powershell
-pwsh -File .\run-autodrive-soak.ps1 -Minutes 480 -TaskIntervalSeconds 30 -Detached
-```
-
-这会立即返回 `artifactDir` 和后台 `pid`，最终证据仍会写回同一个目录。
-
-如果你只想单独跑 soak runner，也可以直接执行：
-
-```powershell
-Set-Location .\app
-$env:KAM_SOAK_DURATION_MS='10800000'
-$env:KAM_SOAK_TASK_INTERVAL_MS='30000'
-npm run test:soak:autodrive
-```
-
-如果你要直接看 task-first 界面：
-
-```powershell
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body (@{ reset = $true } | ConvertTo-Json) -ContentType 'application/json'
-```
-
-进入界面后，点击“让 KAM 自己排工作”会基于当前 task 的 run、compare、snapshot、refs 和 artifacts 自动拆出下一轮 follow-up tasks。拆出的子任务会自动带上推荐 Prompt、验收检查项和建议 refs，并支持直接开跑下一张任务。
-
-如果你不想开 UI，也可以直接走 operator CLI：
-
-```powershell
-pwsh -File .\kam-operator.ps1 menu
-pwsh -File .\kam-operator.ps1 status
-pwsh -File .\kam-operator.ps1 watch --interval-seconds 5
-pwsh -File .\kam-operator.ps1 continue
-pwsh -File .\kam-operator.ps1 restart-global
-pwsh -File .\kam-operator.ps1 cancel
-```
-
-其中：
-
-- `menu` 是给人本机值守用的轻交互入口，只提供“刷新 / 选择推荐动作 / 退出”
-- `watch` 更适合持续盯盘，但不适合做交互恢复
-- `continue / start-scope / stop-scope` 默认会复用当前 control plane 的 focus task
-- `adopt / retry / cancel` 默认会复用当前 control plane 已推荐的 run
-- 如果你需要精确指定对象，仍然可以显式传 `--task-id` 或 `--run-id`
-
-如果你想把它接到值班/监控脚本里，用：
-
-```powershell
-pwsh -File .\kam-operator.ps1 status --json
-pwsh -File .\kam-operator.ps1 status --fail-on-attention
-```
-
-第二条命令在 control plane 进入 `attention` 时会返回退出码 `2`，方便外部监控或计划任务接告警。
-
-更细的 operator 状态解释、动作语义、打断与重启边界，直接看 [docs/runbooks/operator-control-plane.md](./docs/runbooks/operator-control-plane.md)。
-
-## 关键命令
+## 验证命令
 
 后端单测：
 
@@ -265,34 +235,11 @@ npm run test:smoke:agent
 npm run test:soak:autodrive
 ```
 
-安装 PR review comment 自动监控计划任务：
-
-```powershell
-pwsh -File .\install-pr-review-monitor.ps1 -Repo lusipad/KAM -PullRequest 4518
-```
-
-默认模式会把新评论写入本机正在运行的 KAM backend（默认 `http://127.0.0.1:8000/api`），由 KAM 自己接单、执行并回推到 PR 分支。
-如果同一个 `repo + PR` 已经存在尚未实际执行的 review 任务，KAM intake 会优先刷新原任务而不是重复创建并行任务；一旦该任务已经产生 run，后续评论会进入新的后继任务。
-
-如果你要保留旧的“监控脚本直接跑 Codex”旁路，可显式切回：
-
-```powershell
-pwsh -File .\install-pr-review-monitor.ps1 -Repo lusipad/KAM -PullRequest 4518 -DirectCodex
-```
-
-## 当前原则
-
-- dogfood-first：先让 KAM 能稳定开发 KAM
-- local-first：先把单机链路做硬，不先追云化
-- task-first：只保留 `Task -> Refs -> Snapshot -> Run -> Artifacts -> Compare -> Plan -> Dispatch -> Continue`
-- prefer deletion：不为历史长期保留双主线
-- retire V3：旧 `projects / threads / home / watchers / memory` 已退场
-
 ## 参考文档
 
 - [docs/README.md](./docs/README.md)
-- [docs/runbooks/operator-control-plane.md](./docs/runbooks/operator-control-plane.md)
 - [docs/product/ai_work_assistant_prd.md](./docs/product/ai_work_assistant_prd.md)
+- [docs/runbooks/operator-control-plane.md](./docs/runbooks/operator-control-plane.md)
 - [docs/roadmap/v3_delivery_status.md](./docs/roadmap/v3_delivery_status.md)
 - [.omx/plans/prd-harness-dogfood-cutover.md](./.omx/plans/prd-harness-dogfood-cutover.md)
 - [.omx/plans/test-spec-harness-dogfood-cutover.md](./.omx/plans/test-spec-harness-dogfood-cutover.md)
