@@ -171,6 +171,13 @@ def _task_title(record: Any) -> str | None:
     return None
 
 
+def _task_metadata(record: Any) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        return {}
+    metadata = record.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
 def _optional_text(value: Any) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -203,6 +210,69 @@ def _preferred_action(control_plane: dict[str, Any]) -> dict[str, Any] | None:
         if action.get("disabled") is not True:
             return action
     return None
+
+
+def _focus_task_record(control_plane: dict[str, Any]) -> dict[str, Any] | None:
+    focus = control_plane.get("focus")
+    if not isinstance(focus, dict):
+        return None
+    for key in ("task", "scopeTask"):
+        record = focus.get(key)
+        if isinstance(record, dict):
+            return record
+    return None
+
+
+def _pull_number_label(value: Any) -> str | None:
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value.strip().isdigit():
+        return value.strip()
+    return None
+
+
+def _source_mapping_label(control_plane: dict[str, Any]) -> str | None:
+    metadata = _task_metadata(_focus_task_record(control_plane))
+    source_kind = _optional_text(metadata.get("sourceKind"))
+    source_repo = _optional_text(metadata.get("sourceRepo"))
+    pull_number = _pull_number_label(metadata.get("sourcePullNumber"))
+    if source_kind == "github_pr_review_comments" and source_repo and pull_number:
+        return f"GitHub PR 评审 · {source_repo}#{pull_number}"
+    if source_repo and pull_number:
+        return f"{source_repo}#{pull_number}"
+    if source_repo:
+        return source_repo
+    if source_kind == "task":
+        return "KAM 任务池"
+    if source_kind:
+        return source_kind
+    return None
+
+
+def _target_mapping_label(control_plane: dict[str, Any]) -> str | None:
+    record = _focus_task_record(control_plane)
+    metadata = _task_metadata(record)
+    remote_url = _optional_text(metadata.get("executionRemoteUrl"))
+    ref = _optional_text(metadata.get("executionRef"))
+    if remote_url and ref:
+        trimmed = remote_url.removesuffix(".git")
+        if trimmed.startswith("https://github.com/"):
+            repo = trimmed.removeprefix("https://github.com/")
+            return f"{repo}:{ref}"
+        return f"{trimmed}:{ref}"
+    if isinstance(record, dict):
+        repo_path = _optional_text(record.get("repoPath"))
+        if repo_path:
+            return repo_path
+    return None
+
+
+def _restart_semantics_label(control_plane: dict[str, Any]) -> str:
+    global_auto_drive = control_plane.get("globalAutoDrive")
+    enabled = isinstance(global_auto_drive, dict) and global_auto_drive.get("enabled") is True
+    if enabled:
+        return "不会续跑中断 run；未完成 run 会标记 failed；若此前已开启全局无人值守，supervisor 会恢复并继续调度。"
+    return "不会续跑中断 run；未完成 run 会标记 failed；需要时可手动重启 supervisor 重新恢复调度。"
 
 
 def _format_action(action: dict[str, Any]) -> str:
@@ -241,6 +311,11 @@ def format_control_plane(control_plane: dict[str, Any]) -> str:
             f"awaiting_adopt={stats.get('passedRunAwaitingAdoptCount', 0)}"
         ),
     ]
+    source_mapping = _source_mapping_label(control_plane)
+    target_mapping = _target_mapping_label(control_plane)
+    if source_mapping or target_mapping:
+        lines.append(f"现实: source={source_mapping or '-'} | target={target_mapping or '-'}")
+    lines.append(f"重启语义: {_restart_semantics_label(control_plane)}")
     if preferred is not None:
         preferred_label = preferred.get("label") if isinstance(preferred.get("label"), str) else preferred.get("key")
         if isinstance(preferred_label, str):

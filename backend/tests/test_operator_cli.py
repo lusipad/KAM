@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "operator_cli.py"
 
 
-def _task_record(task_id: str, title: str) -> dict[str, object]:
+def _task_record(task_id: str, title: str, *, metadata: dict[str, object] | None = None) -> dict[str, object]:
     return {
         "id": task_id,
         "title": title,
@@ -22,7 +22,7 @@ def _task_record(task_id: str, title: str) -> dict[str, object]:
         "status": "in_progress",
         "priority": "high",
         "labels": ["dogfood"],
-        "metadata": {},
+        "metadata": metadata or {},
         "archivedAt": None,
         "createdAt": "2026-04-06T00:00:00Z",
         "updatedAt": "2026-04-06T00:00:00Z",
@@ -54,8 +54,9 @@ def _control_plane(
     enabled: bool = False,
     active_run_id: str | None = None,
     actions: list[dict[str, object]] | None = None,
+    task_metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    focus_task = _task_record("task-harness-cutover", "切到 task-first harness")
+    focus_task = _task_record("task-harness-cutover", "切到 task-first harness", metadata=task_metadata)
     default_actions = [
         {
             "key": "continue_task_family",
@@ -225,6 +226,24 @@ class OperatorCliTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 2)
         self.assertIn("状态: 待介入", completed.stdout)
         self.assertIn("需要关注:", completed.stdout)
+
+    def test_status_shows_source_target_and_restart_semantics(self):
+        self.server.control_plane = _control_plane(
+            enabled=True,
+            task_metadata={
+                "sourceKind": "github_pr_review_comments",
+                "sourceRepo": "lusipad/KAM",
+                "sourcePullNumber": 4518,
+                "executionRemoteUrl": "https://github.com/lusipad/KAM.git",
+                "executionRef": "feature/pr-4518",
+            },
+        )
+
+        completed = self._run_cli("status", "--kam-url", self.base_url)
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn("现实: source=GitHub PR 评审 · lusipad/KAM#4518 | target=lusipad/KAM:feature/pr-4518", completed.stdout)
+        self.assertIn("重启语义: 不会续跑中断 run；未完成 run 会标记 failed；若此前已开启全局无人值守", completed.stdout)
 
     def test_action_alias_posts_operator_action(self):
         completed = self._run_cli("restart-global", "--kam-url", self.base_url, "--json")

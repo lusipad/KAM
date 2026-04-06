@@ -1,5 +1,6 @@
 import { autoDriveActionLabel, autoDriveReasonLabel, autoDriveStatusLabel } from '@/features/tasks/autoDriveLabels'
-import type { OperatorActionKey, OperatorActionRecord, OperatorControlPlaneResponse } from '@/types/harness'
+import { metadataText } from '@/features/tasks/taskMetadata'
+import type { OperatorActionKey, OperatorActionRecord, OperatorControlPlaneResponse, TaskRecord } from '@/types/harness'
 
 const guideItems = [
   {
@@ -16,7 +17,7 @@ const guideItems = [
   },
   {
     title: '怎么重启',
-    summary: '全局调度异常、lease 卡住或想重新接管时，用“重启全局 supervisor”。',
+    summary: '重启不会续跑已中断 run；它会把未完成 run 标记为 failed，并恢复全局调度。',
   },
 ] as const
 
@@ -108,6 +109,57 @@ function leaseLabel(controlPlane: OperatorControlPlaneResponse | null) {
   return lease.ownedByCurrentProcess ? `${owner} · 当前实例` : owner
 }
 
+function pullNumberLabel(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+  if (typeof value === 'string' && value.trim() && /^\d+$/.test(value.trim())) {
+    return value.trim()
+  }
+  return null
+}
+
+function sourceMappingLabel(task: TaskRecord | null) {
+  const metadata = task?.metadata ?? {}
+  const sourceKind = metadataText(metadata.sourceKind)
+  const sourceRepo = metadataText(metadata.sourceRepo)
+  const sourcePullNumber = pullNumberLabel(metadata.sourcePullNumber)
+  if (sourceKind === 'github_pr_review_comments' && sourceRepo && sourcePullNumber) {
+    return `GitHub PR 评审 · ${sourceRepo}#${sourcePullNumber}`
+  }
+  if (sourceRepo && sourcePullNumber) {
+    return `${sourceRepo}#${sourcePullNumber}`
+  }
+  if (sourceRepo) {
+    return sourceRepo
+  }
+  if (sourceKind === 'task') {
+    return 'KAM 任务池'
+  }
+  return sourceKind
+}
+
+function targetMappingLabel(task: TaskRecord | null) {
+  const metadata = task?.metadata ?? {}
+  const remoteUrl = metadataText(metadata.executionRemoteUrl)
+  const executionRef = metadataText(metadata.executionRef)
+  if (remoteUrl && executionRef) {
+    const trimmed = remoteUrl.replace(/\.git$/u, '')
+    if (trimmed.startsWith('https://github.com/')) {
+      return `${trimmed.replace('https://github.com/', '')}:${executionRef}`
+    }
+    return `${trimmed}:${executionRef}`
+  }
+  return task?.repoPath ?? null
+}
+
+function restartSemanticsLabel(controlPlane: OperatorControlPlaneResponse | null) {
+  if (controlPlane?.globalAutoDrive.enabled) {
+    return '不会续跑已中断 run；启动恢复时，未完成 run 会标记为 failed；若全局无人值守此前已开启，supervisor 会恢复并继续调度。'
+  }
+  return '不会续跑已中断 run；启动恢复时，未完成 run 会标记为 failed；需要时可手动重启 supervisor 重新恢复调度。'
+}
+
 export function OperatorPanel({
   controlPlane,
   actionPending,
@@ -132,6 +184,10 @@ export function OperatorPanel({
   const recentEvents = controlPlane?.recentEvents.slice().reverse().slice(0, 4) ?? []
   const lease = leaseLabel(controlPlane)
   const focusSummary = selectedTaskBlockedReason ?? controlPlane?.focus.summary ?? null
+  const mappingTask = currentTask ?? scopeTask
+  const sourceMapping = sourceMappingLabel(mappingTask)
+  const targetMapping = targetMappingLabel(mappingTask)
+  const restartSemantics = restartSemanticsLabel(controlPlane)
 
   return (
     <section className="feed-card operator-card">
@@ -189,6 +245,21 @@ export function OperatorPanel({
           </div>
           {focusSummary ? <div className="feed-card-subtle">{focusSummary}</div> : null}
         </div>
+      ) : null}
+
+      {sourceMapping || targetMapping || restartSemantics ? (
+        <section className="operator-section">
+          <div className="group-label">现实对应</div>
+          <div className="task-list">
+            <article className="task-list-row">
+              <div className="task-list-copy">
+                {sourceMapping ? <span>来源：{sourceMapping}</span> : null}
+                {targetMapping ? <span>目标：{targetMapping}</span> : null}
+                <span>重启语义：{restartSemantics}</span>
+              </div>
+            </article>
+          </div>
+        </section>
       ) : null}
 
       <section className="operator-section">
