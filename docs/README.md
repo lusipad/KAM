@@ -7,6 +7,7 @@
 ## 当前主参考
 
 - [../README.md](../README.md): 仓库根说明与本地开发/验证入口
+- [runbooks/operator-control-plane.md](runbooks/operator-control-plane.md): 外部操作者状态查看、重触发、打断、重启手册
 - [product/ai_work_assistant_prd.md](product/ai_work_assistant_prd.md): 当前唯一产品目标定义
 - [roadmap/v3_delivery_status.md](roadmap/v3_delivery_status.md): 当前交付状态、已完成能力和剩余缺口
 - [../.omx/plans/prd-harness-dogfood-cutover.md](../.omx/plans/prd-harness-dogfood-cutover.md): 本地 cutover PRD
@@ -17,10 +18,11 @@
 - `POST /api/tasks/continue`
 - `POST /api/tasks/{task_id}/autodrive/start`
 - `POST /api/tasks/{task_id}/autodrive/stop`
-- UI 的“继续推进当前任务”
-- UI 的“进入无人值守 / 停止无人值守”
+- `GET /api/operator/control-plane`
+- `POST /api/operator/actions`
+- UI 的“操作台”
 - 当前动作集合：`adopt / retry / plan_and_dispatch / stop`
-- 当前范围：仅针对选中 `task family` 的自动托管，不扩展成全局任务池调度
+- 当前范围：既支持选中 `task family` 的自动托管，也支持全局任务池调度与 supervisor 重启
 
 ## 过渡与历史资料
 

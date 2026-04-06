@@ -19,10 +19,13 @@ V3 workspace 已经从运行时、前端主入口、验证基线和数据库 hea
   - `GET /api/context/snapshots/{snapshot_id}`
   - `POST /api/tasks/{task_id}/runs`
   - `GET /api/runs/{run_id}/artifacts`
+  - `POST /api/runs/{run_id}/cancel`
   - `POST /api/reviews/{task_id}/compare`
   - `POST /api/tasks/{task_id}/plan`
   - `POST /api/tasks/dispatch-next`
   - `POST /api/tasks/continue`
+  - `GET /api/operator/control-plane`
+  - `POST /api/operator/actions`
 - harness run 已是 task-native 存储
 - 默认前端入口已切成 task-first workbench
 - 当前 task 已可基于 run、compare、snapshot、refs 和 artifacts 自动拆出可执行的 follow-up tasks
@@ -30,6 +33,7 @@ V3 workspace 已经从运行时、前端主入口、验证基线和数据库 hea
 - KAM 已可围绕当前 task family 自动继续推进：优先 `adopt / retry / plan_and_dispatch / stop`
 - 当前 task 已支持显式依赖：可声明 `dependsOnTaskIds`，并在列表/详情里看到 blocked 状态；planner / dispatch / continue / manual run / retry 都会尊重依赖阻塞
 - 当前 task family / global autodrive 都已增加单步调度超时保护：如果 `continue_task()` 卡住，不会把 supervisor 挂死，而是记录 timeout 状态并自动恢复或等待人工重启
+- 已提供统一 operator control plane：外部操作者可直接看到当前状态、焦点任务、attention items、推荐动作，并统一执行“重新触发 / 打断 / 重启”
 - GitHub PR review comment monitor 已可把新评论写入 KAM 任务池，并自动拉起 global autodrive
 - 带 `executionRemoteUrl + executionRef` 的任务已可在指定远端分支上起 worktree、执行、push 回去，并自动把任务收口到 `verified`
 - 开发态提供 harness demo 播种接口：`POST /api/dev/seed-harness`
@@ -159,9 +163,27 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/dev/seed-harness -Body 
 
 进入界面后，点击“让 KAM 自己排工作”会基于当前 task 的 run、compare、snapshot、refs 和 artifacts 自动拆出下一轮 follow-up tasks。拆出的子任务会自动带上推荐 Prompt、验收检查项和建议 refs，并支持直接开跑下一张任务。
 
-点击“让 KAM 接下一张”时，KAM 会优先从现有任务池里挑选带推荐 Prompt 的可跑任务；如果当前还没有这样的 child task，就会先从最合适的父任务拆一张，再直接发起 run。
+顶部“操作台”现在是外部操作者的统一入口：
 
-点击“继续推进当前任务”时，KAM 会先在当前 task family 内自动判断下一步：
+- 操作台内已经直接内嵌一组“值守说明”，不用先理解底层 `autodrive / continue / retry / adopt` 语义再动手
+- 看状态：
+  - `总状态 / 全局 / Running / Blocked / Failed / 待采纳`
+  - `当前焦点`
+  - `最近事件`
+- 重新触发：
+  - `让 KAM 接下一张`
+  - `继续推进当前任务`
+  - `重试最近失败 Run`
+  - `采纳最近结果`
+- 打断：
+  - `停止全局无人值守 / 停止无人值守` 用来停止后续自动推进
+  - `打断当前 Run` 用来直接取消正在执行的 agent run，状态会记为 `cancelled`
+- 重启：
+  - `重启全局 supervisor` 用来强制拉起新的全局无人值守 loop
+
+“让 KAM 接下一张”会优先从现有任务池里挑选带推荐 Prompt 的可跑任务；如果当前还没有这样的 child task，就会先从最合适的父任务拆一张，再直接发起 run。
+
+“继续推进当前任务”会先在当前 task family 内自动判断下一步：
 
 - 有可自动采纳的真实 passed run 时，优先 `adopt`
 - 有失败 child run 时，优先 `retry`
@@ -218,6 +240,7 @@ pwsh -File .\install-pr-review-monitor.ps1 -Repo lusipad/KAM -PullRequest 4518 -
 ## 参考文档
 
 - [docs/README.md](./docs/README.md)
+- [docs/runbooks/operator-control-plane.md](./docs/runbooks/operator-control-plane.md)
 - [docs/product/ai_work_assistant_prd.md](./docs/product/ai_work_assistant_prd.md)
 - [docs/roadmap/v3_delivery_status.md](./docs/roadmap/v3_delivery_status.md)
 - [.omx/plans/prd-harness-dogfood-cutover.md](./.omx/plans/prd-harness-dogfood-cutover.md)

@@ -1,13 +1,20 @@
 import { useMemo } from 'react'
 
 import { PromptComposer } from '@/components/PromptComposer'
-import { formatRelativeTime } from '@/lib/ui'
 import { autoDriveActionLabel, autoDriveReasonLabel, autoDriveStatusLabel } from '@/features/tasks/autoDriveLabels'
+import {
+  metadataList,
+  metadataSuggestedRefs,
+  metadataText,
+  plannerAgentLabel,
+  planningReasonLabel,
+  readPlanningMetadata,
+  readTaskAutoDriveMetadata,
+} from '@/features/tasks/taskMetadata'
+import { formatRelativeTime } from '@/lib/ui'
 import { TaskRunCard } from '@/features/tasks/TaskRunCard'
 import type {
-  AutoDriveEventRecord,
   RunRecord,
-  SuggestedTaskRefRecord,
   TaskContinueResponse,
   TaskDependencyRecord,
   TaskDetail,
@@ -71,6 +78,7 @@ type TaskWorkbenchProps = {
   onRunPlannedTask: (task: TaskRecord) => void
   onAdoptRun: (runId: string) => void
   onRetryRun: (runId: string) => void
+  onCancelRun: (runId: string) => void
 }
 
 function latestRunLabel(run: RunRecord | null) {
@@ -80,109 +88,8 @@ function latestRunLabel(run: RunRecord | null) {
   return `${run.agent} · ${run.status} · ${formatRelativeTime(run.createdAt)}`
 }
 
-function metadataText(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : null
-}
-
-function metadataBoolean(value: unknown) {
-  return value === true
-}
-
-function metadataList(value: unknown) {
-  if (!Array.isArray(value)) {
-    return []
-  }
-  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-}
-
-function metadataSuggestedRefs(value: unknown): SuggestedTaskRefRecord[] {
-  if (!Array.isArray(value)) {
-    return []
-  }
-  return value.flatMap((item) => {
-    if (!item || typeof item !== 'object') {
-      return []
-    }
-    const candidate = item as Record<string, unknown>
-    const kind = typeof candidate.kind === 'string' ? candidate.kind.trim() : ''
-    const label = typeof candidate.label === 'string' ? candidate.label.trim() : ''
-    const refValue = typeof candidate.value === 'string' ? candidate.value.trim() : ''
-    if (!kind || !label || !refValue) {
-      return []
-    }
-    return [
-      {
-        kind,
-        label,
-        value: refValue,
-        metadata: candidate.metadata && typeof candidate.metadata === 'object' ? (candidate.metadata as Record<string, unknown>) : {},
-      },
-    ]
-  })
-}
-
-function metadataAutoDriveEvents(value: unknown): AutoDriveEventRecord[] {
-  if (!Array.isArray(value)) {
-    return []
-  }
-  return value.flatMap((item) => {
-    if (!item || typeof item !== 'object') {
-      return []
-    }
-    const candidate = item as Record<string, unknown>
-    const recordedAt = typeof candidate.recordedAt === 'string' ? candidate.recordedAt.trim() : ''
-    if (!recordedAt) {
-      return []
-    }
-    const text = (entry: string) => {
-      const raw = candidate[entry]
-      return typeof raw === 'string' && raw.trim() ? raw.trim() : null
-    }
-    return [
-      {
-        recordedAt,
-        status: text('status'),
-        action: text('action'),
-        reason: text('reason'),
-        summary: text('summary'),
-        error: text('error'),
-        taskId: text('taskId'),
-        scopeTaskId: text('scopeTaskId'),
-        runId: text('runId'),
-        runTaskId: text('runTaskId'),
-      },
-    ]
-  })
-}
-
-function planningReasonLabel(reason: string | null) {
-  if (reason === 'failed_run_follow_up') {
-    return '失败修复'
-  }
-  if (reason === 'passed_run_not_adopted') {
-    return '采纳收口'
-  }
-  if (reason === 'review_compare_follow_up') {
-    return 'compare 推进'
-  }
-  if (reason === 'task_next_step') {
-    return '下一步'
-  }
-  return null
-}
-
 function firstLine(value: string) {
   return value.split('\n').find((line) => line.trim()) ?? value
-}
-
-function plannerAgentLabel(value: string | null) {
-  if (value === 'codex') {
-    return 'Codex'
-  }
-  if (value === 'claude-code') {
-    return 'Claude Code'
-  }
-  return null
 }
 
 function dependencyStatusLabel(dependency: TaskDependencyRecord) {
@@ -252,6 +159,7 @@ export function TaskWorkbench({
   onRunPlannedTask,
   onAdoptRun,
   onRetryRun,
+  onCancelRun,
 }: TaskWorkbenchProps) {
   const selectedRun = useMemo(
     () => task?.runs.find((run) => run.id === selectedRunId) ?? task?.runs.at(-1) ?? null,
@@ -259,16 +167,18 @@ export function TaskWorkbench({
   )
   const parentTaskId = metadataText(task?.metadata.parentTaskId)
   const currentPlanningReason = planningReasonLabel(metadataText(task?.metadata.planningReason))
-  const recommendedPrompt = metadataText(task?.metadata.recommendedPrompt)
-  const recommendedAgent = plannerAgentLabel(metadataText(task?.metadata.recommendedAgent))
-  const acceptanceChecks = metadataList(task?.metadata.acceptanceChecks)
-  const suggestedRefs = metadataSuggestedRefs(task?.metadata.suggestedRefs)
-  const autoDriveEnabled = metadataBoolean(task?.metadata.autoDriveEnabled)
-  const autoDriveStatus = metadataText(task?.metadata.autoDriveStatus)
-  const autoDriveLastAction = autoDriveActionLabel(metadataText(task?.metadata.autoDriveLastAction))
-  const autoDriveLastReason = autoDriveReasonLabel(metadataText(task?.metadata.autoDriveLastReason))
-  const autoDriveLastSummary = metadataText(task?.metadata.autoDriveLastSummary)
-  const autoDriveRecentEvents = metadataAutoDriveEvents(task?.metadata.autoDriveRecentEvents)
+  const planning = readPlanningMetadata(task?.metadata)
+  const autoDrive = readTaskAutoDriveMetadata(task?.metadata)
+  const recommendedPrompt = planning.recommendedPrompt || null
+  const recommendedAgent = plannerAgentLabel(planning.recommendedAgent)
+  const acceptanceChecks = planning.acceptanceChecks
+  const suggestedRefs = planning.suggestedRefs
+  const autoDriveEnabled = autoDrive.enabled
+  const autoDriveStatus = autoDrive.status
+  const autoDriveLastAction = autoDriveActionLabel(autoDrive.lastAction)
+  const autoDriveLastReason = autoDriveReasonLabel(autoDrive.lastReason)
+  const autoDriveLastSummary = autoDrive.lastSummary
+  const autoDriveRecentEvents = autoDrive.recentEvents
   const dependencyState = task?.dependencyState
   const dependencySummary = dependencyState?.summary ?? null
 
@@ -761,7 +671,13 @@ export function TaskWorkbench({
                       <button type="button" className="task-run-select" onClick={() => onSelectRun(run.id)}>
                         选中产物
                       </button>
-                      <TaskRunCard run={run} onAdopt={onAdoptRun} onRetry={onRetryRun} disableRetry={taskBlocked} />
+                      <TaskRunCard
+                        run={run}
+                        onAdopt={onAdoptRun}
+                        onRetry={onRetryRun}
+                        onCancel={onCancelRun}
+                        disableRetry={taskBlocked}
+                      />
                     </div>
                   ))
               ) : (

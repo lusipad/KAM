@@ -662,6 +662,12 @@ button {
   color: white;
 }
 
+.button-danger {
+  border-color: rgba(226, 75, 74, 0.35);
+  background: rgba(226, 75, 74, 0.14);
+  color: #ffb4b2;
+}
+
 .button-secondary {
   border-color: var(--border-strong);
   background: transparent;
@@ -1185,6 +1191,46 @@ button {
   padding: 18px 24px 0;
 }
 
+.operator-card {
+  margin: 18px 24px 0;
+}
+
+.operator-focus,
+.operator-section {
+  display: grid;
+  gap: 10px;
+}
+
+.operator-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.operator-action-list {
+  gap: 10px;
+}
+
+.operator-action-row {
+  align-items: center;
+}
+
+.task-link-button {
+  border: 0.5px solid var(--border-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 10px;
+  font-family: 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace;
+  min-height: 28px;
+  padding: 5px 8px;
+}
+
+.task-link-button:hover,
+.button-danger:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .task-workbench {
   height: 100%;
   min-height: 0;
@@ -1409,6 +1455,10 @@ button {
   }
 
   .task-inline-form {
+    grid-template-columns: 1fr;
+  }
+
+  .operator-sections {
     grid-template-columns: 1fr;
   }
 

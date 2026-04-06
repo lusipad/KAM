@@ -34,7 +34,9 @@ from services.source_tasks import source_dedup_key, source_task_guard
 class _RunState:
     semaphore: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(settings.max_concurrent_runs))
     tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    processes: dict[str, asyncio.subprocess.Process] = field(default_factory=dict)
     initial_artifacts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    skip_autodrive_once: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,26 @@ class RunEngine:
             task=task_run.task,
             initial_artifacts=await self.build_task_initial_artifacts(task_run.task_id),
         )
+
+    async def cancel_run(self, run_id: str) -> TaskRun | None:
+        run = await self.db.get(TaskRun, run_id)
+        if run is None:
+            return None
+        if run.status not in {"pending", "running"}:
+            return run
+
+        _STATE.skip_autodrive_once.add(run_id)
+        process = _STATE.processes.get(run_id)
+        if process is not None and process.returncode is None:
+            await _terminate_process(process)
+
+        task_handle = _STATE.tasks.get(run_id)
+        if task_handle is not None and not task_handle.done():
+            task_handle.cancel()
+            await asyncio.gather(task_handle, return_exceptions=True)
+
+        await self.db.refresh(run)
+        return run
 
     async def build_task_initial_artifacts(self, task_id: str) -> list[dict[str, Any]]:
         result = await self.db.execute(
@@ -177,6 +199,7 @@ class RunEngine:
     async def _execute_task_run(self, run_id: str) -> None:
         async with _STATE.semaphore:
             auto_drive_task_id: str | None = None
+            started_at: float | None = None
             try:
                 async with async_session() as session:
                     run = await self._load_task_run(session, run_id)
@@ -205,7 +228,11 @@ class RunEngine:
                         run.worktree_path = str(worktree_path)
                         await session.commit()
 
-                    code, output = await self._run_command(command, worktree_path or settings.run_dir)
+                    self._active_run_id = run.id
+                    try:
+                        code, output = await self._run_command(command, worktree_path or settings.run_dir)
+                    finally:
+                        self._active_run_id = None
                     run.duration_ms = int((asyncio.get_event_loop().time() - started_at) * 1000)
                     run.raw_output = output[-20000:]
 
@@ -237,6 +264,22 @@ class RunEngine:
                         task_record.updated_at = now()
                     await session.commit()
                     auto_drive_task_id = run.task_id
+            except asyncio.CancelledError:
+                async with async_session() as session:
+                    run = await self._load_task_run(session, run_id)
+                    if run is not None:
+                        run.status = "cancelled"
+                        run.check_passed = False
+                        run.changed_files = []
+                        if started_at is not None:
+                            run.duration_ms = max(1, int((asyncio.get_event_loop().time() - started_at) * 1000))
+                        run.raw_output = f"{run.raw_output or ''}\nRun cancelled by operator.".strip()
+                        run.result_summary = "执行已取消：操作员主动打断了当前 run。"
+                        await ArtifactStore(session).replace_for_run(run.id, self._build_artifacts(run, ""))
+                        if run.task_rel is not None:
+                            run.task_rel.updated_at = now()
+                        await session.commit()
+                raise
             except Exception as exc:
                 async with async_session() as session:
                     run = await self._load_task_run(session, run_id)
@@ -251,14 +294,16 @@ class RunEngine:
                         auto_drive_task_id = run.task_id
             finally:
                 _STATE.tasks.pop(run_id, None)
+                _STATE.processes.pop(run_id, None)
                 _STATE.initial_artifacts.pop(run_id, None)
-                if auto_drive_task_id is not None:
+                if auto_drive_task_id is not None and run_id not in _STATE.skip_autodrive_once:
                     try:
                         global_enabled = await schedule_global_autodrive_if_enabled()
                         if not global_enabled:
                             await schedule_autodrive_for_task(auto_drive_task_id)
                     except Exception:
                         pass
+                _STATE.skip_autodrive_once.discard(run_id)
 
     async def _prepare_task_execution(self, run: TaskRun, task_record: Task | None) -> tuple[Path | None, list[str]]:
         repo_path = Path(task_record.repo_path).resolve() if task_record and task_record.repo_path else None
@@ -327,25 +372,36 @@ class RunEngine:
         return shutil.which(executable) or executable
 
     async def _run_command(self, command: list[str], cwd: Path) -> tuple[int, str]:
+        run_id = getattr(self, "_active_run_id", None)
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
+        if run_id is not None:
+            _STATE.processes[run_id] = process
         output_lines: list[str] = []
-        assert process.stdout is not None
-        while True:
-            raw_line = await process.stdout.readline()
-            if not raw_line:
-                break
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            extracted = self._extract_output_text(line)
-            output_lines.append(extracted)
-        code = await process.wait()
-        return code, "\n".join(output_lines)
+        try:
+            assert process.stdout is not None
+            while True:
+                raw_line = await process.stdout.readline()
+                if not raw_line:
+                    break
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                extracted = self._extract_output_text(line)
+                output_lines.append(extracted)
+            code = await process.wait()
+            return code, "\n".join(output_lines)
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                await _terminate_process(process)
+            raise
+        finally:
+            if run_id is not None:
+                _STATE.processes.pop(run_id, None)
 
     async def _finalize_success(
         self,
@@ -637,3 +693,17 @@ async def recover_interrupted_runs() -> int:
         if recovered_count:
             await session.commit()
         return recovered_count
+
+
+async def _terminate_process(process: asyncio.subprocess.Process, timeout: float = 2.0) -> None:
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout)
+        return
+    except asyncio.TimeoutError:
+        pass
+    if process.returncode is None:
+        process.kill()
+        await process.wait()

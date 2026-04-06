@@ -186,3 +186,76 @@ export interface GlobalAutoDriveResponse {
   lease: GlobalAutoDriveLeaseStatus | null
   recentEvents: AutoDriveEventRecord[]
 }
+
+export type OperatorActionKey =
+  | 'start_global_autodrive'
+  | 'stop_global_autodrive'
+  | 'restart_global_autodrive'
+  | 'dispatch_next'
+  | 'continue_task_family'
+  | 'start_task_autodrive'
+  | 'stop_task_autodrive'
+  | 'adopt_run'
+  | 'retry_run'
+  | 'cancel_run'
+
+export interface OperatorActionRecord {
+  key: OperatorActionKey
+  label: string
+  description: string
+  tone: 'green' | 'amber' | 'red' | 'gray'
+  taskId: string | null
+  runId: string | null
+  disabled: boolean
+  disabledReason: string | null
+}
+
+export interface OperatorAttentionItem {
+  kind: string
+  title: string
+  summary: string
+  tone: 'green' | 'amber' | 'red' | 'gray'
+  taskId: string | null
+  runId: string | null
+}
+
+export interface OperatorStats {
+  totalTaskCount: number
+  runnableTaskCount: number
+  blockedTaskCount: number
+  failedTaskCount: number
+  pendingRunCount: number
+  runningRunCount: number
+  passedRunAwaitingAdoptCount: number
+  scopeAutodriveEnabledCount: number
+}
+
+export interface OperatorFocus {
+  task: TaskRecord | null
+  scopeTask: TaskRecord | null
+  activeRun: RunRecord | null
+  summary: string | null
+  reason: string | null
+}
+
+export interface OperatorControlPlaneResponse {
+  generatedAt: string
+  systemStatus: string
+  systemSummary: string
+  globalAutoDrive: GlobalAutoDriveResponse
+  stats: OperatorStats
+  focus: OperatorFocus
+  actions: OperatorActionRecord[]
+  attention: OperatorAttentionItem[]
+  recentEvents: AutoDriveEventRecord[]
+}
+
+export interface OperatorActionResponse {
+  ok: boolean
+  action: OperatorActionKey
+  summary: string
+  taskId: string | null
+  runId: string | null
+  continueDecision: TaskContinueResponse | null
+  controlPlane: OperatorControlPlaneResponse
+}

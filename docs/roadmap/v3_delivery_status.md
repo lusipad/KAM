@@ -14,6 +14,7 @@
 - task dependency gating：已具备显式依赖/阻塞建模
 - task family auto-drive：已具备当前任务族级别的 opt-in 无人值守能力
 - global backlog auto-drive：已具备跨 family、可重启恢复、跨进程 lease/dedupe，以及 cold-start chaos 回归覆盖的无人值守能力
+- operator control plane：已具备统一状态摘要、推荐动作、run 打断与 supervisor 重启入口
 - V3 legacy runtime：已退场
 
 ## 已完成
@@ -59,11 +60,16 @@
 - task family / global auto-drive 已增加单步调度超时保护：`continue_task()` 卡住时会显式打点 timeout，而不是把 supervisor 静默挂死
 - global auto-drive 状态面板已返回结构化 lease / health 字段，能直接看到 owner、heartbeat、stale 与最近状态更新时间
 - task family / global auto-drive 已返回 recent events，可直接回看等待、暂停、重启、错误与最近任务切换
+- 新增 `GET /api/operator/control-plane`：统一返回 system status、focus、attention、stats、recent events 与推荐动作
+- 新增 `POST /api/operator/actions`：统一封装 `继续当前任务 / 接下一张 / 开停无人值守 / 重启 supervisor / 采纳 / 重试 / 打断 run`
+- 新增 `POST /api/runs/{run_id}/cancel`：可直接打断当前正在执行的 run，并把状态标记为 `cancelled`
+- 前端顶部已切成 `操作台`，不再让外部操作者在散点按钮之间自行拼装“状态 / 重触发 / 打断 / 重启”语义
 - 已补真实多进程 lease 回归：验证第二个进程会被 active owner 挡住，owner 释放后新的进程可以接管
 - 已补真实 crash failover 回归：持有 lease 的子进程被强制 kill 后，TTL 到期前仍会阻挡其他进程，TTL 到期后可自动接管
 - 已补 cold-start chaos 回归：覆盖 `persisted enabled + stale lease reclaim`，以及 `persisted enabled + foreign lease wait -> TTL 后二次冷启动接管`
 - global auto-drive supervisor 若被意外 cancel，只要全局开关仍开启，就会自动拉起新的 loop
 - 前端已新增全局无人值守状态面板与开关
+- 已新增 operator runbook，说明状态查看、重新触发、打断、重启与人工介入边界
 - 新增 harness smoke
 - `verify-local.ps1` 已默认纳入真实 `codex` agent smoke，覆盖临时 git repo 改动、Lore commit 和 adopt 链路
 - PR review comment monitor 已可把新评论写入 KAM 任务池，并自动拉起 global autodrive，而不是旁路直接执行

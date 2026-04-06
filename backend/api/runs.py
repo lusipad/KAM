@@ -50,3 +50,16 @@ async def retry_run(run_id: str, db: AsyncSession = Depends(get_db)):
     if run is None:
         raise HTTPException(status_code=404, detail="执行记录不存在")
     return run.to_dict()
+
+
+@router.post("/{run_id}/cancel")
+async def cancel_run(run_id: str, db: AsyncSession = Depends(get_db)):
+    run = await db.get(TaskRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    if run.status not in {"pending", "running"}:
+        raise HTTPException(status_code=409, detail="当前 run 不在执行中，无法打断")
+    cancelled = await RunEngine(db).cancel_run(run_id)
+    if cancelled is None:
+        raise HTTPException(status_code=404, detail="执行记录不存在")
+    return cancelled.to_dict()

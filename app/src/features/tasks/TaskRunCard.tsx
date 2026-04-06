@@ -7,10 +7,11 @@ type TaskRunCardProps = {
   run: RunRecord
   onAdopt: (runId: string) => void
   onRetry: (runId: string) => void
+  onCancel: (runId: string) => void
   disableRetry?: boolean
 }
 
-export function TaskRunCard({ run, onAdopt, onRetry, disableRetry = false }: TaskRunCardProps) {
+export function TaskRunCard({ run, onAdopt, onRetry, onCancel, disableRetry = false }: TaskRunCardProps) {
   const [detail, setDetail] = useState<'diff' | 'logs' | null>(null)
   const tone = runTone(run.status)
   const duration = formatDuration(run.durationMs)
@@ -70,7 +71,7 @@ export function TaskRunCard({ run, onAdopt, onRetry, disableRetry = false }: Tas
         {detail === 'logs' && run.rawOutput ? <pre className="run-detail-block">{run.rawOutput}</pre> : null}
       </div>
 
-      {run.status === 'passed' || run.status === 'failed' ? (
+      {run.status === 'passed' || run.status === 'failed' || run.status === 'pending' || run.status === 'running' ? (
         <div className="run-actions run-actions-footer">
           {run.status === 'passed' ? (
             <>
@@ -88,13 +89,22 @@ export function TaskRunCard({ run, onAdopt, onRetry, disableRetry = false }: Tas
                 <span className="run-adopted-flag">已采纳</span>
               )}
             </>
-          ) : (
+          ) : run.status === 'failed' ? (
             <>
               <button type="button" className="button-secondary" onClick={() => setDetail(detail === 'logs' ? null : 'logs')}>
                 查看日志
               </button>
               <button type="button" className="button-secondary" disabled={disableRetry} onClick={() => onRetry(run.id)}>
                 重试
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="button-secondary" onClick={() => setDetail(detail === 'logs' ? null : 'logs')}>
+                {detail === 'logs' ? '收起日志' : '查看日志'}
+              </button>
+              <button type="button" className="button-danger" onClick={() => onCancel(run.id)}>
+                打断 Run
               </button>
             </>
           )}

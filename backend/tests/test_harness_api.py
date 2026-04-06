@@ -1746,6 +1746,108 @@ class HarnessApiTests(unittest.TestCase):
         self.assertEqual(seed_demo_response.status_code, 405)
         self.assertEqual(seed_demo_response.json()["detail"], "Method Not Allowed")
 
+    def test_operator_control_plane_reports_focus_and_actions(self):
+        payload = self.client.post("/api/dev/seed-harness", json={"reset": True}).json()
+        response = self.client.get(f"/api/operator/control-plane?task_id={payload['taskId']}")
+
+        self.assertEqual(response.status_code, 200)
+        control_plane = response.json()
+        action_keys = {item["key"] for item in control_plane["actions"]}
+
+        self.assertEqual(control_plane["focus"]["task"]["id"], payload["taskId"])
+        self.assertEqual(control_plane["focus"]["scopeTask"]["id"], payload["taskId"])
+        self.assertIn("当前焦点任务", control_plane["systemSummary"])
+        self.assertGreaterEqual(control_plane["stats"]["totalTaskCount"], 1)
+        self.assertEqual(control_plane["stats"]["scopeAutodriveEnabledCount"], 0)
+        self.assertTrue({"start_global_autodrive", "dispatch_next", "continue_task_family", "start_task_autodrive"}.issubset(action_keys))
+
+    def test_operator_actions_can_restart_global_autodrive(self):
+        async def idle_continue_task(_service, *, task_id, create_plan_if_needed):
+            return SimpleNamespace(
+                action="stop",
+                reason="no_high_value_action",
+                summary="当前没有更高价值的自动下一步。",
+                task=None,
+                scope_task_id=None,
+                run=None,
+                error=None,
+            )
+
+        with (
+            patch.object(type(config.settings), "is_test_env", new_callable=PropertyMock, return_value=False),
+            patch("services.task_autodrive.GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS", new=0.05),
+            patch("services.task_dispatcher.TaskDispatcherService.continue_task", new=idle_continue_task),
+        ):
+            started = self.client.post("/api/operator/actions", json={"action": "start_global_autodrive"})
+            self.assertEqual(started.status_code, 200)
+            self.assertTrue(started.json()["controlPlane"]["globalAutoDrive"]["enabled"])
+
+            restarted = self.client.post("/api/operator/actions", json={"action": "restart_global_autodrive"})
+            self.assertEqual(restarted.status_code, 200)
+            restarted_payload = restarted.json()
+            self.assertEqual(restarted_payload["action"], "restart_global_autodrive")
+            self.assertTrue(restarted_payload["controlPlane"]["globalAutoDrive"]["enabled"])
+            self.assertIn("重启全局无人值守", restarted_payload["summary"])
+
+            stopped = self.client.post("/api/operator/actions", json={"action": "stop_global_autodrive"})
+            self.assertEqual(stopped.status_code, 200)
+            self.assertFalse(stopped.json()["controlPlane"]["globalAutoDrive"]["enabled"])
+
+    def test_operator_action_can_cancel_running_run(self):
+        async def slow_run_command(_engine, command, cwd):
+            await asyncio.sleep(10)
+            return 0, "should not finish"
+
+        with (
+            patch.object(type(config.settings), "is_test_env", new_callable=PropertyMock, return_value=False),
+            patch("services.run_engine.RunEngine._run_command", new=slow_run_command),
+        ):
+            task = self.client.post(
+                "/api/tasks",
+                json={
+                    "title": "打断当前运行中的 run",
+                    "status": "in_progress",
+                    "priority": "high",
+                    "labels": ["dogfood", "operator"],
+                    "metadata": {
+                        "recommendedPrompt": "执行一个很慢的 run。",
+                        "recommendedAgent": "codex",
+                    },
+                },
+            ).json()
+
+            run = self.client.post(
+                f"/api/tasks/{task['id']}/runs",
+                json={"agent": "codex", "task": "执行一个很慢的 run。"},
+            ).json()
+
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                current = self.client.get(f"/api/runs/{run['id']}").json()
+                if current["status"] == "running":
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("run did not enter running state before cancel")
+
+            control_plane = self.client.get(f"/api/operator/control-plane?task_id={task['id']}").json()
+            cancel_action = next((item for item in control_plane["actions"] if item["key"] == "cancel_run"), None)
+            self.assertIsNotNone(cancel_action)
+            self.assertEqual(cancel_action["runId"], run["id"])
+
+            cancelled = self.client.post(
+                "/api/operator/actions",
+                json={"action": "cancel_run", "taskId": task["id"], "runId": run["id"]},
+            )
+            self.assertEqual(cancelled.status_code, 200)
+            cancelled_payload = cancelled.json()
+            self.assertEqual(cancelled_payload["runId"], run["id"])
+            self.assertIn("已打断 run", cancelled_payload["summary"])
+
+            refreshed = self.client.get(f"/api/runs/{run['id']}").json()
+            self.assertEqual(refreshed["status"], "cancelled")
+            self.assertIn("执行已取消", refreshed["resultSummary"])
+
     async def _truncate_tables(self):
         async with engine.begin() as conn:
             for table in (

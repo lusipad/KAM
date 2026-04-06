@@ -1,41 +1,39 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   addTaskRef,
   addTaskDependency,
   adoptRun,
   archiveTask,
-  continueTask,
+  cancelRun,
   createTask,
   createTaskCompare,
   createTaskRun,
   deleteTaskRef,
   deleteTaskDependency,
-  dispatchNextTask,
   getErrorMessage,
-  getGlobalAutoDriveStatus,
+  getOperatorControlPlane,
   getRunArtifacts,
   getTask,
   listTasks,
   planTaskFollowUps,
+  performOperatorAction,
   resolveTaskContext,
-  startGlobalAutoDrive,
-  startTaskAutoDrive,
-  stopGlobalAutoDrive,
-  stopTaskAutoDrive,
   retryRun,
   updateTask,
 } from '@/api/client'
-import { autoDriveActionLabel, autoDriveReasonLabel, autoDriveStatusLabel } from '@/features/tasks/autoDriveLabels'
+import { OperatorPanel } from '@/features/operator/OperatorPanel'
+import { readPlanningMetadata, taskShouldPoll } from '@/features/tasks/taskMetadata'
 import { TaskPanel } from '@/features/tasks/TaskPanel'
 import { TaskSidebar } from '@/features/tasks/TaskSidebar'
 import { TaskWorkbench } from '@/features/tasks/TaskWorkbench'
 import { AppShell } from '@/layout/AppShell'
 import type { ToastItem } from '@/layout/Toast'
 import type {
-  GlobalAutoDriveResponse,
+  OperatorActionKey,
+  OperatorActionRecord,
+  OperatorControlPlaneResponse,
   RunArtifactRecord,
-  SuggestedTaskRefRecord,
   TaskContinueResponse,
   TaskDetail,
   TaskPlanSuggestion,
@@ -90,110 +88,6 @@ function parseLabelsText(value: string) {
     .filter(Boolean)
 }
 
-function parsePlannerPrompt(value: unknown) {
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function parsePlannerAgent(value: unknown): 'codex' | 'claude-code' {
-  return value === 'claude-code' ? 'claude-code' : 'codex'
-}
-
-function parsePlannerAcceptanceChecks(value: unknown) {
-  if (!Array.isArray(value)) {
-    return []
-  }
-  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-}
-
-function parsePlannerSuggestedRefs(value: unknown): SuggestedTaskRefRecord[] {
-  if (!Array.isArray(value)) {
-    return []
-  }
-  return value.flatMap((item) => {
-    if (!item || typeof item !== 'object') {
-      return []
-    }
-    const candidate = item as Record<string, unknown>
-    const kind = typeof candidate.kind === 'string' ? candidate.kind.trim() : ''
-    const label = typeof candidate.label === 'string' ? candidate.label.trim() : ''
-    const refValue = typeof candidate.value === 'string' ? candidate.value.trim() : ''
-    if (!kind || !label || !refValue) {
-      return []
-    }
-    return [
-      {
-        kind,
-        label,
-        value: refValue,
-        metadata: candidate.metadata && typeof candidate.metadata === 'object' ? (candidate.metadata as Record<string, unknown>) : {},
-      },
-    ]
-  })
-}
-
-function parseAutoDriveEnabled(value: unknown) {
-  return value === true
-}
-
-function parseAutoDriveStatus(value: unknown) {
-  return typeof value === 'string' ? value.trim() : ''
-}
-
-function autoDriveLeaseLabel(value: GlobalAutoDriveResponse['lease']) {
-  if (!value) {
-    return null
-  }
-  const owner = value.hostname && value.pid ? `${value.hostname}:${value.pid}` : value.ownerId
-  if (!owner) {
-    return null
-  }
-  return value.ownedByCurrentProcess ? `${owner} · 当前实例` : owner
-}
-
-function autoDriveTimeLabel(value: string | null) {
-  if (!value) {
-    return null
-  }
-  const timestamp = new Date(value)
-  if (Number.isNaN(timestamp.getTime())) {
-    return value
-  }
-  return timestamp.toLocaleTimeString('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
-}
-
-function shouldPollTask(detail: TaskDetail | null) {
-  if (!detail) {
-    return false
-  }
-  if (detail.runs.some((run) => run.status === 'pending' || run.status === 'running')) {
-    return true
-  }
-  if (!parseAutoDriveEnabled(detail.metadata.autoDriveEnabled)) {
-    return false
-  }
-  const status = parseAutoDriveStatus(detail.metadata.autoDriveStatus)
-  return status === 'running' || status === 'waiting_for_run'
-}
-
-function shouldPollGlobalAutoDrive(status: GlobalAutoDriveResponse | null) {
-  return Boolean(status && (status.enabled || status.running))
-}
-
-function readPlanningMetadata(metadata: Record<string, unknown> | null | undefined) {
-  const value = metadata ?? {}
-  return {
-    recommendedPrompt: parsePlannerPrompt(value.recommendedPrompt),
-    recommendedAgent: parsePlannerAgent(value.recommendedAgent),
-    acceptanceChecks: parsePlannerAcceptanceChecks(value.acceptanceChecks),
-    suggestedRefs: parsePlannerSuggestedRefs(value.suggestedRefs),
-  }
-}
-
 function EmptyTaskState({
   value,
   onChange,
@@ -226,6 +120,7 @@ function EmptyTaskState({
 }
 
 function App() {
+  const operatorRefreshSeqRef = useRef(0)
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [task, setTask] = useState<TaskDetail | null>(null)
@@ -245,10 +140,6 @@ function App() {
   const [creatingCompare, setCreatingCompare] = useState(false)
   const [creatingPlan, setCreatingPlan] = useState(false)
   const [addingDependency, setAddingDependency] = useState(false)
-  const [dispatchingNext, setDispatchingNext] = useState(false)
-  const [continuingTask, setContinuingTask] = useState(false)
-  const [managingAutoDrive, setManagingAutoDrive] = useState(false)
-  const [managingGlobalAutoDrive, setManagingGlobalAutoDrive] = useState(false)
   const [savingTask, setSavingTask] = useState(false)
   const [snapshotFocus, setSnapshotFocus] = useState('')
   const [refDraft, setRefDraft] = useState({ kind: 'file', label: '', value: '' })
@@ -256,7 +147,9 @@ function App() {
   const [plannedTasks, setPlannedTasks] = useState<TaskRecord[]>([])
   const [planSuggestions, setPlanSuggestions] = useState<TaskPlanSuggestion[]>([])
   const [continueDecision, setContinueDecision] = useState<TaskContinueResponse | null>(null)
-  const [globalAutoDrive, setGlobalAutoDrive] = useState<GlobalAutoDriveResponse | null>(null)
+  const [operatorControl, setOperatorControl] = useState<OperatorControlPlaneResponse | null>(null)
+  const [operatorActionPending, setOperatorActionPending] = useState<OperatorActionKey | null>(null)
+  const [refreshingOperatorControl, setRefreshingOperatorControl] = useState(false)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const pushToast = useCallback((toast: ToastItem) => {
@@ -286,11 +179,22 @@ function App() {
     return data.tasks
   }, [includeArchived])
 
-  const refreshGlobalAutoDrive = useCallback(async () => {
-    const status = await getGlobalAutoDriveStatus()
-    setGlobalAutoDrive(status)
-    return status
-  }, [])
+  const refreshOperatorControl = useCallback(async (taskId?: string | null) => {
+    const requestId = operatorRefreshSeqRef.current + 1
+    operatorRefreshSeqRef.current = requestId
+    setRefreshingOperatorControl(true)
+    try {
+      const controlPlane = await getOperatorControlPlane(taskId ?? selectedTaskId)
+      if (requestId === operatorRefreshSeqRef.current) {
+        setOperatorControl(controlPlane)
+      }
+      return controlPlane
+    } finally {
+      if (requestId === operatorRefreshSeqRef.current) {
+        setRefreshingOperatorControl(false)
+      }
+    }
+  }, [selectedTaskId])
 
   const refreshTask = useCallback(async (taskId: string) => {
     setLoading(true)
@@ -325,8 +229,15 @@ function App() {
   }, [refreshTasks])
 
   useEffect(() => {
-    void refreshGlobalAutoDrive()
-  }, [refreshGlobalAutoDrive])
+    void refreshOperatorControl()
+  }, [refreshOperatorControl])
+
+  useEffect(() => {
+    if (!selectedTaskId) {
+      return
+    }
+    void refreshOperatorControl(selectedTaskId)
+  }, [refreshOperatorControl, selectedTaskId, task?.dependencyState?.ready, task?.dependencyState?.summary, task?.updatedAt])
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -347,28 +258,70 @@ function App() {
   }, [selectedTaskId])
 
   useEffect(() => {
-    if (!selectedTaskId || !shouldPollTask(task)) {
+    if (!selectedTaskId || !taskShouldPoll(task)) {
       return
     }
     const timer = window.setInterval(() => {
-      void Promise.all([refreshTask(selectedTaskId), refreshTasks()])
+      void Promise.all([refreshTask(selectedTaskId), refreshTasks(), refreshOperatorControl(selectedTaskId)])
     }, 2000)
     return () => window.clearInterval(timer)
-  }, [refreshTask, refreshTasks, selectedTaskId, task])
+  }, [refreshOperatorControl, refreshTask, refreshTasks, selectedTaskId, task])
+
+  const globalAutoDrive = operatorControl?.globalAutoDrive ?? null
 
   useEffect(() => {
-    if (!shouldPollGlobalAutoDrive(globalAutoDrive)) {
+    if (!globalAutoDrive || (!globalAutoDrive.enabled && !globalAutoDrive.running)) {
       return
     }
     const timer = window.setInterval(() => {
-      const refreshers: Promise<unknown>[] = [refreshGlobalAutoDrive(), refreshTasks()]
+      const refreshers: Promise<unknown>[] = [refreshTasks(), refreshOperatorControl(selectedTaskId)]
       if (selectedTaskId) {
         refreshers.push(refreshTask(selectedTaskId))
       }
       void Promise.all(refreshers)
     }, 2000)
     return () => window.clearInterval(timer)
-  }, [globalAutoDrive, refreshGlobalAutoDrive, refreshTask, refreshTasks, selectedTaskId])
+  }, [globalAutoDrive, refreshOperatorControl, refreshTask, refreshTasks, selectedTaskId])
+
+  const handleOperatorAction = useCallback(async (action: OperatorActionRecord) => {
+    if (operatorActionPending) {
+      return
+    }
+    setOperatorActionPending(action.key)
+    try {
+      const result = await performOperatorAction({
+        action: action.key,
+        taskId: action.taskId ?? selectedTaskId,
+        runId: action.runId,
+      })
+      operatorRefreshSeqRef.current += 1
+      setOperatorControl(result.controlPlane)
+      setRefreshingOperatorControl(false)
+      setContinueDecision(result.continueDecision ?? null)
+      if (result.taskId) {
+        setSelectedTaskId(result.taskId)
+      }
+      if (result.runId) {
+        setSelectedRunId(result.runId)
+      }
+
+      const focusTaskId = result.taskId ?? selectedTaskId
+      const refreshers: Promise<unknown>[] = [refreshTasks()]
+      if (focusTaskId) {
+        refreshers.push(refreshTask(focusTaskId))
+      }
+      await Promise.all(refreshers)
+      pushToast({
+        id: `operator-action-${action.key}-${Date.now()}`,
+        message: result.summary,
+        tone: action.key === 'cancel_run' ? 'amber' : action.tone === 'red' ? 'red' : action.tone === 'gray' ? 'amber' : 'green',
+      })
+    } catch (error) {
+      onError(error, '执行 operator 动作失败。')
+    } finally {
+      setOperatorActionPending(null)
+    }
+  }, [onError, operatorActionPending, pushToast, refreshTask, refreshTasks, selectedTaskId])
 
   const handleCreateTask = useCallback(async () => {
     if (!taskPrompt.trim() || creatingTask) {
@@ -402,14 +355,14 @@ function App() {
         priority: taskDraft.priority.trim() || 'medium',
         labels: parseLabelsText(taskDraft.labelsText),
       })
-      await Promise.all([refreshTask(task.id), refreshTasks()])
+      await Promise.all([refreshTask(task.id), refreshTasks(), refreshOperatorControl(task.id)])
       pushToast({ id: `task-save-${task.id}`, message: '任务设置已更新。', tone: 'green' })
     } catch (error) {
       onError(error, '更新任务失败。')
     } finally {
       setSavingTask(false)
     }
-  }, [onError, pushToast, refreshTask, refreshTasks, savingTask, task, taskDraft])
+  }, [onError, pushToast, refreshOperatorControl, refreshTask, refreshTasks, savingTask, task, taskDraft])
 
   const handleAddRef = useCallback(async () => {
     if (!task || addingRef || !refDraft.kind.trim() || !refDraft.label.trim() || !refDraft.value.trim()) {
@@ -446,7 +399,7 @@ function App() {
     setAddingDependency(true)
     try {
       await addTaskDependency(task.id, { dependsOnTaskId: dependencyDraft.trim() })
-      await Promise.all([refreshTask(task.id), refreshTasks()])
+      await Promise.all([refreshTask(task.id), refreshTasks(), refreshOperatorControl(task.id)])
       setDependencyDraft('')
       pushToast({ id: `task-dependency-add-${Date.now()}`, message: '依赖已添加。', tone: 'green' })
     } catch (error) {
@@ -454,7 +407,7 @@ function App() {
     } finally {
       setAddingDependency(false)
     }
-  }, [addingDependency, dependencyDraft, onError, pushToast, refreshTask, refreshTasks, task])
+  }, [addingDependency, dependencyDraft, onError, pushToast, refreshOperatorControl, refreshTask, refreshTasks, task])
 
   const handleDeleteDependency = useCallback(async (dependsOnTaskId: string) => {
     if (!task) {
@@ -462,12 +415,12 @@ function App() {
     }
     try {
       await deleteTaskDependency(task.id, dependsOnTaskId)
-      await Promise.all([refreshTask(task.id), refreshTasks()])
+      await Promise.all([refreshTask(task.id), refreshTasks(), refreshOperatorControl(task.id)])
       pushToast({ id: `task-dependency-delete-${Date.now()}`, message: '依赖已移除。', tone: 'green' })
     } catch (error) {
       onError(error, '移除依赖失败。')
     }
-  }, [onError, pushToast, refreshTask, refreshTasks, task])
+  }, [onError, pushToast, refreshOperatorControl, refreshTask, refreshTasks, task])
 
   const handleCreateSnapshot = useCallback(async () => {
     if (!task || creatingSnapshot) {
@@ -589,169 +542,6 @@ function App() {
     await executeTaskRun(plannedTask.id, planning.recommendedAgent, planning.recommendedPrompt)
   }, [executeTaskRun, pushToast])
 
-  const handleDispatchNext = useCallback(async () => {
-    if (dispatchingNext) {
-      return
-    }
-    setDispatchingNext(true)
-    try {
-      const dispatched = await dispatchNextTask({ createPlanIfNeeded: true })
-      setSelectedTaskId(dispatched.task.id)
-      await Promise.all([refreshTasks(), refreshTask(dispatched.task.id)])
-      setSelectedRunId(dispatched.run.id)
-      setPanelOpen(true)
-
-      const planning = readPlanningMetadata(dispatched.task.metadata)
-      if (planning.recommendedPrompt) {
-        setRunPrompt(planning.recommendedPrompt)
-        setRunAgent(planning.recommendedAgent)
-      }
-
-      pushToast({
-        id: `dispatch-next-${dispatched.run.id}`,
-        message:
-          dispatched.source === 'planned_task'
-            ? `KAM 已先拆后跑：${dispatched.task.title}`
-            : `KAM 已接手下一张任务：${dispatched.task.title}`,
-        tone: 'green',
-      })
-    } catch (error) {
-      onError(error, '让 KAM 接下一张任务失败。')
-    } finally {
-      setDispatchingNext(false)
-    }
-  }, [dispatchingNext, onError, pushToast, refreshTask, refreshTasks])
-
-  const handleContinueTask = useCallback(async () => {
-    if (!task || continuingTask) {
-      return
-    }
-    setContinuingTask(true)
-    try {
-      const continued = await continueTask({ taskId: task.id, createPlanIfNeeded: true })
-      setContinueDecision(continued)
-      const nextTaskId = continued.task?.id ?? task.id
-      await Promise.all([refreshTasks(), refreshTask(nextTaskId)])
-      setSelectedTaskId(nextTaskId)
-      if (continued.run) {
-        setSelectedRunId(continued.run.id)
-        setPanelOpen(true)
-      }
-
-      if (continued.task) {
-        const planning = readPlanningMetadata(continued.task.metadata)
-        if (planning.recommendedPrompt) {
-          setRunPrompt(planning.recommendedPrompt)
-          setRunAgent(planning.recommendedAgent)
-        }
-      }
-
-      pushToast({
-        id: `task-continue-${Date.now()}`,
-        message: continued.summary,
-        tone: continued.action === 'stop' ? 'amber' : 'green',
-      })
-    } catch (error) {
-      onError(error, '继续推进当前任务失败。')
-    } finally {
-      setContinuingTask(false)
-    }
-  }, [continuingTask, onError, pushToast, refreshTask, refreshTasks, task])
-
-  const handleStartAutoDrive = useCallback(async () => {
-    if (!task || managingAutoDrive) {
-      return
-    }
-    setManagingAutoDrive(true)
-    try {
-      const result = await startTaskAutoDrive(task.id)
-      setContinueDecision(null)
-      setSelectedTaskId(result.scopeTaskId)
-      await Promise.all([refreshTasks(), refreshTask(result.scopeTaskId)])
-      pushToast({
-        id: `task-autodrive-start-${Date.now()}`,
-        message: result.summary,
-        tone: 'green',
-      })
-    } catch (error) {
-      onError(error, '开启无人值守失败。')
-    } finally {
-      setManagingAutoDrive(false)
-    }
-  }, [managingAutoDrive, onError, pushToast, refreshTask, refreshTasks, task])
-
-  const handleStopAutoDrive = useCallback(async () => {
-    if (!task || managingAutoDrive) {
-      return
-    }
-    setManagingAutoDrive(true)
-    try {
-      const result = await stopTaskAutoDrive(task.id)
-      setSelectedTaskId(result.scopeTaskId)
-      await Promise.all([refreshTasks(), refreshTask(result.scopeTaskId)])
-      pushToast({
-        id: `task-autodrive-stop-${Date.now()}`,
-        message: result.summary,
-        tone: 'amber',
-      })
-    } catch (error) {
-      onError(error, '停止无人值守失败。')
-    } finally {
-      setManagingAutoDrive(false)
-    }
-  }, [managingAutoDrive, onError, pushToast, refreshTask, refreshTasks, task])
-
-  const handleStartGlobalAutoDrive = useCallback(async () => {
-    if (managingGlobalAutoDrive) {
-      return
-    }
-    setManagingGlobalAutoDrive(true)
-    try {
-      const result = await startGlobalAutoDrive()
-      setContinueDecision(null)
-      setGlobalAutoDrive(result)
-      const refreshers: Promise<unknown>[] = [refreshGlobalAutoDrive(), refreshTasks()]
-      if (selectedTaskId) {
-        refreshers.push(refreshTask(selectedTaskId))
-      }
-      await Promise.all(refreshers)
-      pushToast({
-        id: `global-autodrive-start-${Date.now()}`,
-        message: result.summary,
-        tone: 'green',
-      })
-    } catch (error) {
-      onError(error, '开启全局无人值守失败。')
-    } finally {
-      setManagingGlobalAutoDrive(false)
-    }
-  }, [managingGlobalAutoDrive, onError, pushToast, refreshGlobalAutoDrive, refreshTask, refreshTasks, selectedTaskId])
-
-  const handleStopGlobalAutoDrive = useCallback(async () => {
-    if (managingGlobalAutoDrive) {
-      return
-    }
-    setManagingGlobalAutoDrive(true)
-    try {
-      const result = await stopGlobalAutoDrive()
-      setGlobalAutoDrive(result)
-      const refreshers: Promise<unknown>[] = [refreshGlobalAutoDrive(), refreshTasks()]
-      if (selectedTaskId) {
-        refreshers.push(refreshTask(selectedTaskId))
-      }
-      await Promise.all(refreshers)
-      pushToast({
-        id: `global-autodrive-stop-${Date.now()}`,
-        message: result.summary,
-        tone: 'amber',
-      })
-    } catch (error) {
-      onError(error, '停止全局无人值守失败。')
-    } finally {
-      setManagingGlobalAutoDrive(false)
-    }
-  }, [managingGlobalAutoDrive, onError, pushToast, refreshGlobalAutoDrive, refreshTask, refreshTasks, selectedTaskId])
-
   const handleAdoptRun = useCallback(async (runId: string) => {
     try {
       await adoptRun(runId)
@@ -769,11 +559,26 @@ function App() {
       if (task) {
         await refreshTask(task.id)
       }
+      await refreshOperatorControl(task?.id ?? retried.taskId)
       setSelectedRunId(retried.id)
     } catch (error) {
       onError(error, '重试执行失败。')
     }
-  }, [onError, refreshTask, task])
+  }, [onError, refreshOperatorControl, refreshTask, task])
+
+  const handleCancelRun = useCallback(async (runId: string) => {
+    try {
+      const cancelled = await cancelRun(runId)
+      if (task) {
+        await refreshTask(task.id)
+      }
+      await refreshOperatorControl(task?.id ?? cancelled.taskId)
+      setSelectedRunId(cancelled.id)
+      pushToast({ id: `task-cancel-${runId}`, message: '当前 run 已打断。', tone: 'amber' })
+    } catch (error) {
+      onError(error, '打断执行失败。')
+    }
+  }, [onError, pushToast, refreshOperatorControl, refreshTask, task])
 
   const handleArchiveTask = useCallback(async () => {
     if (!task) {
@@ -784,38 +589,18 @@ function App() {
       setIncludeArchived(true)
       await refreshTasks({ includeArchived: true })
       setSelectedTaskId(task.id)
-      await refreshTask(task.id)
+      await Promise.all([refreshTask(task.id), refreshOperatorControl(task.id)])
       pushToast({ id: `task-archive-${task.id}`, message: '任务已归档。', tone: 'green' })
     } catch (error) {
       onError(error, '归档任务失败。')
     }
-  }, [onError, pushToast, refreshTask, refreshTasks, task])
+  }, [onError, pushToast, refreshOperatorControl, refreshTask, refreshTasks, task])
 
   const selectedRun = useMemo(
     () => task?.runs.find((item) => item.id === selectedRunId) ?? task?.runs.at(-1) ?? null,
     [selectedRunId, task],
   )
-  const autoDriveEnabled = useMemo(() => parseAutoDriveEnabled(task?.metadata.autoDriveEnabled), [task])
   const taskBlocked = useMemo(() => task?.dependencyState?.ready === false, [task])
-  const globalAutoDriveEnabled = useMemo(() => globalAutoDrive?.enabled === true, [globalAutoDrive])
-  const globalCurrentTaskTitle = useMemo(() => {
-    if (!globalAutoDrive?.currentTaskId) {
-      return null
-    }
-    return tasks.find((item) => item.id === globalAutoDrive.currentTaskId)?.title ?? globalAutoDrive.currentTaskId
-  }, [globalAutoDrive, tasks])
-  const globalScopeTaskTitle = useMemo(() => {
-    if (!globalAutoDrive?.currentScopeTaskId) {
-      return null
-    }
-    return tasks.find((item) => item.id === globalAutoDrive.currentScopeTaskId)?.title ?? globalAutoDrive.currentScopeTaskId
-  }, [globalAutoDrive, tasks])
-  const globalLeaseLabel = useMemo(() => autoDriveLeaseLabel(globalAutoDrive?.lease ?? null), [globalAutoDrive?.lease])
-  const globalLeaseHeartbeatLabel = useMemo(
-    () => autoDriveTimeLabel(globalAutoDrive?.lease?.heartbeatAt ?? null),
-    [globalAutoDrive?.lease?.heartbeatAt],
-  )
-  const globalUpdatedAtLabel = useMemo(() => autoDriveTimeLabel(globalAutoDrive?.updatedAt ?? null), [globalAutoDrive?.updatedAt])
 
   const breadcrumb = useMemo(() => (task ? `Tasks / ${task.title}` : 'Tasks'), [task])
   const selectedRunLabel = useMemo(() => {
@@ -846,95 +631,23 @@ function App() {
       panel={<TaskPanel artifacts={artifacts} snapshots={task?.snapshots ?? []} reviews={task?.reviews ?? []} selectedRunLabel={selectedRunLabel} />}
       main={
         <div className="task-main-shell">
-          <section className="feed-card">
-            <div className="feed-card-head">
-              <div className="feed-card-title-stack">
-                <div className="feed-card-title">全局无人值守</div>
-                <div className="feed-card-subtle">{globalAutoDrive?.summary ?? '当前还没有开启全局无人值守。'}</div>
-              </div>
-              <button
-                type="button"
-                className="button-secondary"
-                disabled={managingGlobalAutoDrive}
-                onClick={globalAutoDriveEnabled ? handleStopGlobalAutoDrive : handleStartGlobalAutoDrive}
-              >
-                {managingGlobalAutoDrive
-                  ? globalAutoDriveEnabled
-                    ? '停止中…'
-                    : '启动中…'
-                  : globalAutoDriveEnabled
-                    ? '停止全局无人值守'
-                    : '开启全局无人值守'}
-              </button>
-            </div>
-            <div className="task-chip-row">
-              <span className="file-chip">状态 · {globalAutoDriveEnabled ? '已开启' : '未开启'}</span>
-              {globalAutoDrive?.status ? <span className="file-chip">阶段 · {autoDriveStatusLabel(globalAutoDrive.status)}</span> : null}
-              {globalAutoDrive?.lastAction ? <span className="file-chip">动作 · {globalAutoDrive.lastAction}</span> : null}
-              {globalAutoDrive?.lastReason ? (
-                <span className="file-chip">原因 · {autoDriveReasonLabel(globalAutoDrive.lastReason)}</span>
-              ) : null}
-              {typeof globalAutoDrive?.loopCount === 'number' ? <span className="file-chip">轮次 · {globalAutoDrive.loopCount}</span> : null}
-              {globalLeaseLabel ? <span className="file-chip">Lease · {globalLeaseLabel}</span> : null}
-              {globalAutoDrive?.lease?.stale ? <span className="file-chip">Lease 状态 · stale</span> : null}
-              {globalLeaseHeartbeatLabel ? <span className="file-chip">Lease 心跳 · {globalLeaseHeartbeatLabel}</span> : null}
-              {globalUpdatedAtLabel ? <span className="file-chip">最近更新 · {globalUpdatedAtLabel}</span> : null}
-            </div>
-            {globalCurrentTaskTitle || globalScopeTaskTitle || globalAutoDrive?.currentRunId || globalAutoDrive?.error ? (
-              <div className="task-chip-row">
-                {globalCurrentTaskTitle ? <span className="file-chip">当前任务 · {globalCurrentTaskTitle}</span> : null}
-                {globalScopeTaskTitle ? <span className="file-chip">当前 scope · {globalScopeTaskTitle}</span> : null}
-                {globalAutoDrive?.currentRunId ? <span className="file-chip">当前 Run · {globalAutoDrive.currentRunId}</span> : null}
-                {globalAutoDrive?.error ? <span className="file-chip">错误 · {globalAutoDrive.error}</span> : null}
-              </div>
-            ) : null}
-            {globalAutoDrive?.recentEvents?.length ? (
-              <div className="task-list">
-                {globalAutoDrive.recentEvents
-                  .slice()
-                  .reverse()
-                  .slice(0, 4)
-                  .map((event) => (
-                    <article key={`${event.recordedAt}-${event.reason ?? event.status ?? 'event'}`} className="task-list-row">
-                      <div className="task-list-copy">
-                        <strong>{event.summary || autoDriveStatusLabel(event.status)}</strong>
-                        <span>{autoDriveTimeLabel(event.recordedAt) || '刚刚'}</span>
-                        <div className="task-chip-row">
-                          {event.status ? <span className="file-chip">阶段 · {autoDriveStatusLabel(event.status)}</span> : null}
-                          {event.action ? <span className="file-chip">动作 · {autoDriveActionLabel(event.action)}</span> : null}
-                          {event.reason ? <span className="file-chip">原因 · {autoDriveReasonLabel(event.reason)}</span> : null}
-                          {event.taskId ? <span className="file-chip">任务 · {event.taskId}</span> : null}
-                          {event.runId ? <span className="file-chip">Run · {event.runId}</span> : null}
-                          {event.error ? <span className="file-chip">错误 · {event.error}</span> : null}
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-              </div>
-            ) : null}
-          </section>
+          <OperatorPanel
+            controlPlane={operatorControl}
+            actionPending={operatorActionPending}
+            refreshing={refreshingOperatorControl}
+            selectedTaskBlockedReason={taskBlocked ? task?.dependencyState?.summary ?? '当前任务仍被依赖阻塞。' : null}
+            onRefresh={() => {
+              void refreshOperatorControl()
+            }}
+            onAction={(action) => {
+              void handleOperatorAction(action)
+            }}
+            onSelectTask={setSelectedTaskId}
+          />
 
           {selectedTaskId ? (
             <>
             <div className="task-main-actions">
-                <button type="button" className="button-primary" disabled={dispatchingNext} onClick={handleDispatchNext}>
-                  {dispatchingNext ? 'KAM 接任务中…' : '让 KAM 接下一张'}
-                </button>
-              {task ? (
-                <button
-                  type="button"
-                  className="button-secondary"
-                  disabled={managingAutoDrive || (!autoDriveEnabled && taskBlocked)}
-                  onClick={autoDriveEnabled ? handleStopAutoDrive : handleStartAutoDrive}
-                >
-                  {managingAutoDrive ? (autoDriveEnabled ? '停止中…' : '启动中…') : autoDriveEnabled ? '停止无人值守' : '进入无人值守'}
-                </button>
-              ) : null}
-              {task ? (
-                <button type="button" className="button-secondary" disabled={continuingTask || taskBlocked} onClick={handleContinueTask}>
-                  {continuingTask ? 'KAM 推进中…' : '继续推进当前任务'}
-                </button>
-              ) : null}
               <button type="button" className="button-secondary" onClick={() => setSelectedTaskId(null)}>
                 新建任务
               </button>
@@ -993,6 +706,7 @@ function App() {
               onRunPlannedTask={handleRunPlannedTask}
               onAdoptRun={handleAdoptRun}
               onRetryRun={handleRetryRun}
+              onCancelRun={handleCancelRun}
             />
             </>
           ) : (

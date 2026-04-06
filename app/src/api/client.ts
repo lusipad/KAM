@@ -1,8 +1,6 @@
 import type {
-  GlobalAutoDriveResponse,
-  TaskAutoDriveResponse,
-  TaskContinueResponse,
-  TaskDispatchResponse,
+  OperatorActionResponse,
+  OperatorControlPlaneResponse,
   ReviewCompareRecord,
   RunArtifactRecord,
   RunRecord,
@@ -44,6 +42,7 @@ export function getErrorMessage(error: unknown, fallback = '操作失败，请�
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
+    cache: 'no-store',
     headers: {
       'Content-Type': 'application/json',
       ...(init?.headers ?? {}),
@@ -169,45 +168,23 @@ export function planTaskFollowUps(taskId: string, payload?: { createTasks?: bool
   })
 }
 
-export function dispatchNextTask(payload?: { createPlanIfNeeded?: boolean }) {
-  return request<TaskDispatchResponse>('/tasks/dispatch-next', {
-    method: 'POST',
-    body: JSON.stringify(payload ?? {}),
-  })
+export function getOperatorControlPlane(taskId?: string | null) {
+  const search = new URLSearchParams()
+  if (taskId) {
+    search.set('task_id', taskId)
+  }
+  const suffix = search.size ? `?${search.toString()}` : ''
+  return request<OperatorControlPlaneResponse>(`/operator/control-plane${suffix}`)
 }
 
-export function continueTask(payload?: { taskId?: string | null; createPlanIfNeeded?: boolean }) {
-  return request<TaskContinueResponse>('/tasks/continue', {
+export function performOperatorAction(payload: {
+  action: string
+  taskId?: string | null
+  runId?: string | null
+}) {
+  return request<OperatorActionResponse>('/operator/actions', {
     method: 'POST',
-    body: JSON.stringify(payload ?? {}),
-  })
-}
-
-export function startTaskAutoDrive(taskId: string) {
-  return request<TaskAutoDriveResponse>(`/tasks/${taskId}/autodrive/start`, {
-    method: 'POST',
-  })
-}
-
-export function stopTaskAutoDrive(taskId: string) {
-  return request<TaskAutoDriveResponse>(`/tasks/${taskId}/autodrive/stop`, {
-    method: 'POST',
-  })
-}
-
-export function getGlobalAutoDriveStatus() {
-  return request<GlobalAutoDriveResponse>('/tasks/autodrive/global')
-}
-
-export function startGlobalAutoDrive() {
-  return request<GlobalAutoDriveResponse>('/tasks/autodrive/global/start', {
-    method: 'POST',
-  })
-}
-
-export function stopGlobalAutoDrive() {
-  return request<GlobalAutoDriveResponse>('/tasks/autodrive/global/stop', {
-    method: 'POST',
+    body: JSON.stringify(payload),
   })
 }
 
@@ -219,6 +196,12 @@ export function adoptRun(runId: string) {
 
 export function retryRun(runId: string) {
   return request<RunRecord>(`/runs/${runId}/retry`, {
+    method: 'POST',
+  })
+}
+
+export function cancelRun(runId: string) {
+  return request<RunRecord>(`/runs/${runId}/cancel`, {
     method: 'POST',
   })
 }

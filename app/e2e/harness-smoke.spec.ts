@@ -15,6 +15,9 @@ test.beforeEach(async ({ page }) => {
 
 test('task-first harness workbench is reachable', async ({ page }) => {
   await expect(page).toHaveTitle('KAM Harness')
+  await expect(page.locator('.feed-card-title').filter({ hasText: '操作台' }).first()).toBeVisible()
+  await expect(page.getByText('值守说明')).toBeVisible()
+  await expect(page.getByText('怎么看状态')).toBeVisible()
   await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
   await expect(page.locator('.feed-card-title').filter({ hasText: '让 KAM 自己排工作' }).first()).toBeVisible()
   await expect(page.getByRole('main').getByText('Refs', { exact: true })).toBeVisible()
@@ -125,7 +128,7 @@ test('can enter global self-driving mode across task families', async ({ page })
   await page.getByRole('button', { name: '开启全局无人值守' }).click()
 
   await expect(page.getByRole('button', { name: '停止全局无人值守' })).toBeVisible()
-  await expect(page.locator('.feed-card-title').filter({ hasText: '全局无人值守' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '操作台' }).first()).toBeVisible()
   await expect.poll(async () => {
     const response = await page.request.get('/api/tasks/autodrive/global')
     const payload = await response.json()
