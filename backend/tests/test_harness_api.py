@@ -1175,6 +1175,57 @@ class HarnessApiTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_global_autodrive_recovers_after_dispatch_timeout(self):
+        async def scenario():
+            attempts = 0
+
+            async def slow_then_stop(_service, *, task_id, create_plan_if_needed):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    await asyncio.sleep(0.15)
+                return SimpleNamespace(
+                    action="stop",
+                    reason="no_high_value_action",
+                    summary="已恢复并回到轮询空闲。",
+                    task=None,
+                    scope_task_id=None,
+                    run=None,
+                    error=None,
+                )
+
+            with (
+                patch.object(type(config.settings), "is_test_env", new_callable=PropertyMock, return_value=False),
+                patch("services.task_autodrive.GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS", new=0.05),
+                patch("services.task_autodrive.GLOBAL_AUTO_DRIVE_DECISION_TIMEOUT_SECONDS", new=0.05),
+                patch("services.task_dispatcher.TaskDispatcherService.continue_task", new=slow_then_stop),
+            ):
+                service = GlobalAutoDriveService()
+                start_result = await service.start()
+                self.assertTrue(start_result.enabled)
+
+                deadline = asyncio.get_running_loop().time() + 1.5
+                status = None
+                while asyncio.get_running_loop().time() < deadline:
+                    status = await service.get_status()
+                    if status.status == "idle" and status.last_reason == "no_high_value_action" and attempts >= 2:
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    self.fail("global autodrive did not recover after dispatch timeout")
+
+                self.assertIsNotNone(status)
+                self.assertEqual(status.status, "idle")
+                self.assertEqual(status.last_reason, "no_high_value_action")
+                self.assertGreaterEqual(attempts, 2)
+                self.assertFalse(status.error)
+                self.assertTrue(any(item["reason"] == "global_auto_drive_dispatch_timeout" for item in status.recent_events))
+
+                stop_result = await service.stop()
+                self.assertFalse(stop_result.enabled)
+
+        asyncio.run(scenario())
+
     def test_global_autodrive_lease_blocks_second_process_until_owner_releases(self):
         owner = self._spawn_global_lease_probe_process(sleep_seconds=3.0, release_on_exit=True)
         try:
@@ -1441,6 +1492,38 @@ class HarnessApiTests(unittest.TestCase):
         tasks = self.client.get("/api/tasks").json()["tasks"]
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0]["id"], task["id"])
+
+    def test_task_family_autodrive_records_dispatch_timeout(self):
+        self.client.post("/api/dev/seed-harness", json={"reset": True})
+
+        async def slow_continue_task(_service, *, task_id, create_plan_if_needed):
+            await asyncio.sleep(0.15)
+            return SimpleNamespace(
+                action="stop",
+                reason="no_high_value_action",
+                summary="不应该走到这里。",
+                task=None,
+                scope_task_id=task_id,
+                run=None,
+                error=None,
+            )
+
+        with (
+            patch("services.task_autodrive.AUTO_DRIVE_DECISION_TIMEOUT_SECONDS", new=0.05),
+            patch("services.task_dispatcher.TaskDispatcherService.continue_task", new=slow_continue_task),
+        ):
+            response = self.client.post("/api/tasks/task-harness-cutover/autodrive/start")
+
+        self.assertEqual(response.status_code, 200)
+        detail = self.client.get("/api/tasks/task-harness-cutover").json()
+        self.assertTrue(detail["metadata"]["autoDriveEnabled"])
+        self.assertEqual(detail["metadata"]["autoDriveStatus"], "error")
+        self.assertEqual(detail["metadata"]["autoDriveLastAction"], "stop")
+        self.assertEqual(detail["metadata"]["autoDriveLastReason"], "auto_drive_dispatch_timeout")
+        self.assertIn("单步调度超过 0.05s", detail["metadata"]["autoDriveLastSummary"])
+        self.assertTrue(
+            any(item["reason"] == "auto_drive_dispatch_timeout" for item in detail["metadata"]["autoDriveRecentEvents"])
+        )
 
     def test_autodrive_stop_disables_scope_metadata(self):
         self.client.post("/api/dev/seed-harness", json={"reset": True})

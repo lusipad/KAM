@@ -53,6 +53,7 @@
 - 服务重启后会恢复 persisted global auto-drive，并把重启前残留的 `pending/running` runs 标记为中断失败，避免假活跃 run 卡死调度
 - global auto-drive 已增加本地文件 lease：并发 KAM 进程会做 owner 去重、fresh lease 等待、stale lease 回收，避免重复接同一批活
 - global auto-drive loop 遇到调度异常后会自动重试，而不是保持 enabled 但后台 supervisor 已退出
+- task family / global auto-drive 已增加单步调度超时保护：`continue_task()` 卡住时会显式打点 timeout，而不是把 supervisor 静默挂死
 - global auto-drive 状态面板已返回结构化 lease / health 字段，能直接看到 owner、heartbeat、stale 与最近状态更新时间
 - task family / global auto-drive 已返回 recent events，可直接回看等待、暂停、重启、错误与最近任务切换
 - 已补真实多进程 lease 回归：验证第二个进程会被 active owner 挡住，owner 释放后新的进程可以接管

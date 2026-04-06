@@ -32,8 +32,10 @@ AUTO_DRIVE_RECENT_EVENTS_KEY = "autoDriveRecentEvents"
 
 AUTO_DRIVE_MAX_STEPS = 8
 AUTO_DRIVE_RECENT_EVENTS_MAX = 8
+AUTO_DRIVE_DECISION_TIMEOUT_SECONDS = 20.0
 GLOBAL_AUTO_DRIVE_MAX_STEPS = 12
 GLOBAL_AUTO_DRIVE_RECENT_EVENTS_MAX = 12
+GLOBAL_AUTO_DRIVE_DECISION_TIMEOUT_SECONDS = 20.0
 GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS = 1.0
 GLOBAL_AUTO_DRIVE_DISABLED_SUMMARY = "当前还没有开启全局无人值守。"
 GLOBAL_AUTO_DRIVE_RECOVERED_SUMMARY = "已恢复全局无人值守，KAM 会继续跨 task family 接活。"
@@ -498,9 +500,12 @@ async def _run_scope_autodrive(scope_task_id: str) -> bool:
 
                 from services.task_dispatcher import TaskDispatcherService
 
-                decision = await TaskDispatcherService(session).continue_task(
-                    task_id=scope_task_id,
-                    create_plan_if_needed=True,
+                decision = await asyncio.wait_for(
+                    TaskDispatcherService(session).continue_task(
+                        task_id=scope_task_id,
+                        create_plan_if_needed=True,
+                    ),
+                    timeout=AUTO_DRIVE_DECISION_TIMEOUT_SECONDS,
                 )
                 enabled = True
                 status = "running"
@@ -549,6 +554,24 @@ async def _run_scope_autodrive(scope_task_id: str) -> bool:
                 reason="auto_drive_step_limit_reached",
                 summary="自动托管达到单轮步数上限，等待新的 run 结果或再次启动。",
                 error="",
+            )
+            scope_task.updated_at = now()
+            await session.commit()
+        return True
+    except TimeoutError:
+        async with async_session() as session:
+            service = TaskAutoDriveService(session)
+            scope_task = await service.load_scope_root(scope_task_id)
+            if scope_task is None:
+                return True
+            timeout_label = f"{AUTO_DRIVE_DECISION_TIMEOUT_SECONDS:g}"
+            service._update_scope_metadata(
+                scope_task,
+                status="error",
+                action="stop",
+                reason="auto_drive_dispatch_timeout",
+                summary=f"自动托管单步调度超过 {timeout_label}s，已暂停当前任务族自动托管循环。",
+                error=f"TimeoutError: autodrive decision exceeded {timeout_label}s",
             )
             scope_task.updated_at = now()
             await session.commit()
@@ -606,9 +629,12 @@ async def _run_global_autodrive() -> bool:
                     async with async_session() as session:
                         from services.task_dispatcher import TaskDispatcherService
 
-                        decision = await TaskDispatcherService(session).continue_task(
-                            task_id=None,
-                            create_plan_if_needed=True,
+                        decision = await asyncio.wait_for(
+                            TaskDispatcherService(session).continue_task(
+                                task_id=None,
+                                create_plan_if_needed=True,
+                            ),
+                            timeout=GLOBAL_AUTO_DRIVE_DECISION_TIMEOUT_SECONDS,
                         )
                     _update_global_state_from_decision(decision)
                     await asyncio.to_thread(_refresh_global_lease_if_owned)
@@ -640,6 +666,21 @@ async def _run_global_autodrive() -> bool:
                 await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                timeout_label = f"{GLOBAL_AUTO_DRIVE_DECISION_TIMEOUT_SECONDS:g}"
+                _update_global_state(
+                    status="error",
+                    summary=f"全局无人值守单步调度超过 {timeout_label}s，稍后自动重试。",
+                    action="stop",
+                    reason="global_auto_drive_dispatch_timeout",
+                    current_task_id=None,
+                    current_scope_task_id=None,
+                    current_run_id=None,
+                    error=f"TimeoutError: autodrive decision exceeded {timeout_label}s",
+                )
+                if settings.is_test_env:
+                    return True
+                await asyncio.sleep(GLOBAL_AUTO_DRIVE_POLL_INTERVAL_SECONDS)
             except Exception as exc:
                 _update_global_state(
                     status="error",

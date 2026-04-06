@@ -177,6 +177,12 @@ function autoDriveReasonLabel(value: string | null) {
   if (value === 'global_auto_drive_error') {
     return '调度异常，系统会自动重试'
   }
+  if (value === 'global_auto_drive_dispatch_timeout') {
+    return '全局无人值守单步调度超时，系统会自动重试'
+  }
+  if (value === 'auto_drive_dispatch_timeout') {
+    return '当前任务族单步调度超时'
+  }
   if (value === 'global_auto_drive_restarting') {
     return 'supervisor 中断后正在自动重启'
   }
