@@ -107,6 +107,8 @@ foreach ($directory in @("api", "adapters", "alembic", "scripts", "services")) {
 
 foreach ($file in @(
     ".env.example",
+    "kam.cmd",
+    "kam.ps1",
     "kam-operator.ps1",
     "seed-harness.ps1",
     "start-local.ps1",

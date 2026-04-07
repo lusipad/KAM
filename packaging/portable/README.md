@@ -2,11 +2,26 @@
 
 这个压缩包已经内置前端 `app/dist`，本机只需要 Python 3；不需要再安装 Node。
 
+最简单的入口是：
+
+```text
+kam.cmd
+```
+
+执行后会让你选择：
+
+- 打开 KAM 工作台
+- 进入 operator 菜单
+- 播种 demo 数据
+- 查看状态
+- 持续 watch
+- 跑本地验证
+
 ## Windows
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\install.ps1
-pwsh -File .\run.ps1
+.\kam.cmd
 ```
 
 启动后访问 `http://127.0.0.1:8000`。
