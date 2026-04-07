@@ -5,20 +5,52 @@ from pathlib import Path
 from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from runtime_paths import bundle_root, is_frozen_runtime, runtime_path
+
+
+def _default_database_url() -> str:
+    return f"sqlite+aiosqlite:///{runtime_path('storage', 'kam-harness.db').as_posix()}"
+
+
+def _default_storage_path() -> str:
+    return str(runtime_path("storage"))
+
+
+def _default_run_root() -> str:
+    return str(runtime_path("storage", "runs"))
+
+
+def _env_files() -> tuple[str, ...]:
+    candidates = [
+        runtime_path(".env"),
+        bundle_root() / ".env",
+        Path(".env"),
+        Path("../.env"),
+    ]
+    values: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = str(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        values.append(normalized)
+    return tuple(values)
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=(".env", "../.env"), extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(env_file=_env_files(), extra="ignore", case_sensitive=False)
 
     app_name: str = "KAM Harness"
     app_version: str = "3.0.0"
-    app_env: str = "development"
+    app_env: str = "production" if is_frozen_runtime() else "development"
     app_debug: bool = False
     mock_runs: bool = False
     app_cors_origins: str = "http://localhost:8000,http://127.0.0.1:8000,http://localhost:5173,http://127.0.0.1:5173"
 
-    database_url: str = "sqlite+aiosqlite:///./storage/kam-harness.db"
-    storage_path: str = "./storage"
-    run_root: str = "./storage/runs"
+    database_url: str = _default_database_url()
+    storage_path: str = _default_storage_path()
+    run_root: str = _default_run_root()
 
     anthropic_api_key: str = ""
     chat_model: str = "claude-sonnet-4-20250514"

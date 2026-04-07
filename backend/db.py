@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from config import settings
+from runtime_paths import bundled_path
 
 
 connect_args: dict[str, object] = {}
@@ -25,7 +26,7 @@ if settings.database_url.startswith("sqlite"):
 
 engine = create_async_engine(settings.database_url, echo=settings.app_debug, connect_args=connect_args, **engine_kwargs)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-BACKEND_ROOT = Path(__file__).resolve().parent
+BACKEND_ROOT = bundled_path("backend")
 ALEMBIC_INI_PATH = BACKEND_ROOT / "alembic.ini"
 ALEMBIC_SCRIPT_PATH = BACKEND_ROOT / "alembic"
 LEGACY_BASE_REVISION = "001_v3_initial"

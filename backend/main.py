@@ -10,11 +10,12 @@ from fastapi.responses import FileResponse
 from api import api_router
 from config import settings
 from db import init_db
+from runtime_paths import bundle_root
 from services.run_engine import recover_interrupted_runs
 from services.task_autodrive import recover_autodrive_runtime_state
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = bundle_root()
 FRONTEND_DIST_DIR = PROJECT_ROOT / "app" / "dist"
 FRONTEND_INDEX_FILE = FRONTEND_DIST_DIR / "index.html"
 RESERVED_BACKEND_PREFIXES = ("api", "docs", "redoc", "openapi.json", "health")

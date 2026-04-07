@@ -130,6 +130,26 @@ bash ./run.sh
 
 运行包只要求 Python 3；不要求本机再执行 `npm install` 或 `npm run build`。
 
+## Windows 即开即用 Release
+
+如果你要的是“直接双击可运行”的 Windows 版本，优先下载 `kam-windows-exe-<version>.zip`。
+
+解压后直接运行：
+
+```text
+KAM.exe
+```
+
+它会：
+
+- 自动启动本地 KAM 服务
+- 自动打开浏览器到 `http://127.0.0.1:8000`
+- 把数据库和运行产物写到解压目录下的 `storage/`
+
+这个 release 包不需要本机安装 Python 或 Node。
+
+需要注意的是：如果你要让 KAM 真正调用 `codex` 或 `claude-code` 去执行任务，这些 agent CLI 仍然要在你的机器上可用。
+
 ## 操作者入口
 
 如果你平时主要从终端值守，优先用这些入口：
