@@ -22,6 +22,7 @@ import {
   retryRun,
   updateTask,
 } from '@/api/client'
+import { FrontDoorPanel } from '@/features/operator/FrontDoorPanel'
 import { OperatorPanel } from '@/features/operator/OperatorPanel'
 import { readPlanningMetadata, taskShouldPoll } from '@/features/tasks/taskMetadata'
 import { TaskPanel } from '@/features/tasks/TaskPanel'
@@ -102,12 +103,12 @@ function EmptyTaskState({
   return (
     <div className="empty-state">
       <div className="empty-icon">T</div>
-      <div className="empty-title">Task-First Harness</div>
-      <div className="empty-copy">描述一个真实要推进的任务。KAM 会围绕 task、refs、snapshot、runs 和 artifacts 工作。</div>
+      <div className="empty-title">先创建一张真实任务</div>
+      <div className="empty-copy">写清楚你要推进的目标。创建后，KAM 才能围绕 refs、snapshot、runs 和后续计划继续工作。</div>
       <div className="empty-composer">
         <textarea
           className="task-empty-textarea"
-          placeholder="例如：把当前默认前端主入口切成 task-first workbench"
+          placeholder="例如：把首页改成用户能一眼看懂当前状态和下一步的界面"
           value={value}
           onChange={(event) => onChange(event.target.value)}
         />
@@ -631,6 +632,17 @@ function App() {
       panel={<TaskPanel artifacts={artifacts} snapshots={task?.snapshots ?? []} reviews={task?.reviews ?? []} selectedRunLabel={selectedRunLabel} />}
       main={
         <div className="task-main-shell">
+          <FrontDoorPanel
+            controlPlane={operatorControl}
+            tasksCount={tasks.length}
+            actionPending={operatorActionPending}
+            onAction={(action) => {
+              void handleOperatorAction(action)
+            }}
+            onOpenTask={setSelectedTaskId}
+            onCreateTask={() => setSelectedTaskId(null)}
+          />
+
           <OperatorPanel
             controlPlane={operatorControl}
             actionPending={operatorActionPending}

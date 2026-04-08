@@ -193,8 +193,8 @@ export function OperatorPanel({
     <section className="feed-card operator-card">
       <div className="feed-card-head">
         <div className="feed-card-title-stack">
-          <div className="feed-card-title">操作台</div>
-          <div className="feed-card-subtle">{selectedTaskBlockedReason ?? controlPlane?.systemSummary ?? '正在读取 KAM 当前状态。'}</div>
+          <div className="feed-card-title">详细状态与人工介入</div>
+          <div className="feed-card-subtle">{selectedTaskBlockedReason ?? controlPlane?.systemSummary ?? '这里是更细的系统状态、推荐动作和人工介入入口。'}</div>
         </div>
         <button type="button" className="button-secondary" disabled={refreshing} onClick={onRefresh}>
           {refreshing ? '刷新中…' : '刷新状态'}
