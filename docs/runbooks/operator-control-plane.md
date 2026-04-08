@@ -16,6 +16,7 @@
 - 持续盯盘优先 `pwsh -File .\kam-operator.ps1 watch --interval-seconds 5`
 - 脚本集成优先 `pwsh -File .\kam-operator.ps1 status --json`
 - 告警/计划任务优先 `pwsh -File .\kam-operator.ps1 status --fail-on-attention`
+- GitHub Issue 自动入池的注册 / 查看 / 手动重扫 / 删除，优先 `pwsh -File .\monitor-github-issues.ps1 ...`
 
 ## 入口
 
@@ -57,6 +58,26 @@ CLI 还有一个约定：
 - `continue / start-scope / stop-scope` 在未传 `--task-id` 时，会自动复用当前 control plane 的焦点 task
 - `adopt / retry / cancel` 在未传 `--run-id` 时，会自动复用当前 control plane 已推荐的 run
 - 如果你要绕过当前推荐对象，仍可显式传 `--task-id` / `--run-id`
+
+GitHub Issue 自动入池不走 `kam-operator.ps1`，而走单独的 monitor 入口：
+
+```powershell
+pwsh -File .\monitor-github-issues.ps1 -Repo owner/repo
+pwsh -File .\monitor-github-issues.ps1 list
+pwsh -File .\monitor-github-issues.ps1 run-once -Repo owner/repo
+pwsh -File .\monitor-github-issues.ps1 remove -Repo owner/repo
+```
+
+这里的语义分别是：
+
+- `-Repo owner/repo`
+  - 注册或更新一个持久化 monitor，并默认立即扫一轮
+- `list`
+  - 看当前有哪些仓库已经进入自动入池
+- `run-once`
+  - 立刻手动重扫一轮，不用等下一个后台轮询周期
+- `remove`
+  - 停止并删除某个仓库的自动入池配置
 
 ## 命令怎么选
 
@@ -102,6 +123,21 @@ CLI 还有一个约定：
 - 来源：`某个 repo 的某个 issue`
 - 目标：`对应本地 repoPath`
 - 成功结果：`issue 对应的分析、修复或后续计划已经沉淀进 task / run / artifacts`
+
+如果你要确认 “GitHub 上现在提的 issue 为什么还没进来”，先单独看 monitor 状态，而不是只看 control plane：
+
+- `running`
+  - 当前 KAM 进程里是否已经起了该仓库的后台轮询
+- `status` / `summary`
+  - 最近一轮轮询结果，例如 `idle / enqueued / failed / source-error`
+- `lastCheckedAt`
+  - 最近一次实际检查时间
+
+最常见的误解是：
+
+- monitor 已注册，但 KAM 服务当前没运行
+- KAM 刚启动，尚未到下一个轮询周期
+- 私有仓库 token 不可用，monitor 进入了 `source-error`
 
 如果一张 task 没有远端执行目标，它通常就是：
 
@@ -186,6 +222,13 @@ pwsh -File .\kam-operator.ps1 adopt
 - `继续推进当前任务`
 - `让 KAM 接下一张`
 - `重启全局 supervisor`
+
+对于 GitHub Issue 自动入池，重启语义再补一条：
+
+- 已注册的 monitor 配置会保留在 `storage/`
+- KAM 重启后会自动恢复这些 monitor
+- 重启不会补跑“停机期间错过的后台 loop”，而是从恢复后的下一轮检查重新同步
+- 如果你不想等下一轮轮询，直接执行 `pwsh -File .\monitor-github-issues.ps1 run-once -Repo owner/repo`
 
 ## 重启后状态怎么体现
 

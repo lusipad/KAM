@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     codex_path: str = "codex"
 
     github_token: str = ""
+    github_issue_monitor_poll_seconds: float = 300.0
     azure_devops_pat: str = ""
     azure_devops_org: str = ""
 

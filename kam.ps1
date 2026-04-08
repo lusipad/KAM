@@ -118,20 +118,15 @@ function Run-Verify {
 
 function Start-IssueMonitor {
     Ensure-Backend
-    $repo = $GitHubRepo
-    if (-not $repo.Trim()) {
-        $repo = (Read-Host "GitHub repo (owner/name)").Trim()
-    }
-    if (-not $repo) {
-        throw "必须提供 GitHub repo。"
-    }
-
-    $arguments = @("-Repo", $repo, "-BaseUrl", $BaseUrl)
-    if ($PythonBin) {
-        $arguments += @("-PythonBin", $PythonBin)
+    $arguments = @("-BaseUrl", $BaseUrl)
+    if ($GitHubRepo) {
+        $arguments += @("-Repo", $GitHubRepo)
     }
     if ($RepoPath) {
         $arguments += @("-RepoPath", $RepoPath)
+    }
+    if ($PythonBin) {
+        $arguments += @("-PythonBin", $PythonBin)
     }
     & $IssueMonitorScript @arguments
 }
@@ -150,7 +145,7 @@ function Show-Menu {
         Write-Host "4. 查看当前状态"
         Write-Host "5. 持续 watch 状态"
         Write-Host "6. 跑本地验证"
-        Write-Host "7. 启动 GitHub Issue 入池监控"
+        Write-Host "7. 配置 GitHub Issue 自动入池"
         Write-Host "Q. 退出"
         $choice = (Read-Host "请选择入口").Trim().ToLowerInvariant()
 
