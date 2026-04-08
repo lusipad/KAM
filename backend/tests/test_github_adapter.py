@@ -57,6 +57,32 @@ class GitHubPRAdapterTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in changes["review_comments"]], [12, 13])
         self.assertEqual([item["id"] for item in changes["created"]], [12])
         self.assertEqual([item["id"] for item in changes["updated"]], [13])
+        self.assertEqual(changes["issues"], [])
+
+    def test_diff_only_surfaces_new_or_updated_issues(self):
+        adapter = GitHubPRAdapter()
+        previous = {
+            "items": [
+                {"id": 21, "number": 101, "updated_at": "2026-04-06T00:00:00Z", "title": "old issue"},
+                {"id": 22, "number": 102, "updated_at": "2026-04-06T00:30:00Z", "title": "updated issue"},
+            ],
+            "meta": {"repo": "lusipad/KAM", "watch": "issues"},
+        }
+        current = {
+            "items": [
+                {"id": 21, "number": 101, "updated_at": "2026-04-06T00:00:00Z", "title": "old issue"},
+                {"id": 22, "number": 102, "updated_at": "2026-04-06T01:00:00Z", "title": "updated issue"},
+                {"id": 23, "number": 103, "updated_at": "2026-04-06T02:00:00Z", "title": "new issue"},
+            ],
+            "meta": {"repo": "lusipad/KAM", "watch": "issues"},
+        }
+
+        changes = adapter.diff(previous, current)
+
+        self.assertEqual([item["number"] for item in changes["issues"]], [103, 102])
+        self.assertEqual([item["number"] for item in changes["created"]], [103])
+        self.assertEqual([item["number"] for item in changes["updated"]], [102])
+        self.assertEqual(changes["review_comments"], [])
 
     def test_diff_records_new_source_errors_once(self):
         adapter = GitHubPRAdapter()
@@ -108,6 +134,45 @@ class GitHubPRAdapterTests(unittest.TestCase):
         self.assertIn("新发现的评审评论", task)
         self.assertIn("run_engine.py", task)
         self.assertIn("discussion_r1", task)
+
+    def test_recommended_actions_include_issue_context_and_comment_details(self):
+        adapter = GitHubPRAdapter()
+        changes = {
+            "issues": [
+                {
+                    "id": 88,
+                    "number": 4519,
+                    "title": "UI 首屏太难理解",
+                    "body": "希望用户第一次打开就知道当前状态、下一步和入口。",
+                    "labels": ["ux", "bug"],
+                    "user": "lus",
+                    "html_url": "https://github.com/lusipad/KAM/issues/4519",
+                    "updated_at": "2026-04-06T08:00:00Z",
+                    "issue_comments": [
+                        {
+                            "id": 7001,
+                            "body": "最好默认就是新手视角。",
+                            "user": "reviewer",
+                            "html_url": "https://github.com/lusipad/KAM/issues/4519#issuecomment-7001",
+                        }
+                    ],
+                }
+            ],
+            "meta": {"repo": "lusipad/KAM", "watch": "issues"},
+        }
+
+        actions = adapter.recommended_actions(
+            {"name": "Issue intake", "config": {"repo": "lusipad/KAM", "watch": "issues"}},
+            changes,
+        )
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["kind"], "create_run")
+        self.assertEqual(actions[0]["params"]["sourceIssueNumber"], 4519)
+        task = actions[0]["params"]["task"]
+        self.assertIn("lusipad/KAM Issue #4519", task)
+        self.assertIn("UI 首屏太难理解", task)
+        self.assertIn("默认就是新手视角", task)
 
 
 if __name__ == "__main__":

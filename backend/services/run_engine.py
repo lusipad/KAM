@@ -531,15 +531,28 @@ class RunEngine:
     def _build_source_context_artifact(self, metadata: dict[str, Any]) -> dict[str, Any] | None:
         source_kind = metadata.get("sourceKind")
         source_meta = metadata.get("sourceMeta")
-        source_comments = metadata.get("sourceReviewComments")
-        if not source_kind and not source_meta and not source_comments:
+        source_review_comments = metadata.get("sourceReviewComments")
+        source_issue_comments = metadata.get("sourceIssueComments")
+        if (
+            not source_kind
+            and not source_meta
+            and not source_review_comments
+            and not source_issue_comments
+            and metadata.get("sourceIssueNumber") is None
+            and metadata.get("sourceIssueTitle") is None
+            and metadata.get("sourceIssueBody") is None
+        ):
             return None
         payload = {
             "sourceKind": source_kind,
             "sourceRepo": metadata.get("sourceRepo"),
             "sourcePullNumber": metadata.get("sourcePullNumber"),
+            "sourceIssueNumber": metadata.get("sourceIssueNumber"),
+            "sourceIssueTitle": metadata.get("sourceIssueTitle"),
+            "sourceIssueBody": metadata.get("sourceIssueBody"),
             "sourceMeta": source_meta if isinstance(source_meta, dict) else {},
-            "sourceReviewComments": source_comments if isinstance(source_comments, list) else [],
+            "sourceReviewComments": source_review_comments if isinstance(source_review_comments, list) else [],
+            "sourceIssueComments": source_issue_comments if isinstance(source_issue_comments, list) else [],
         }
         return {
             "type": "source_context",

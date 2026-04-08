@@ -124,8 +124,15 @@ function sourceMappingLabel(task: TaskRecord | null) {
   const sourceKind = metadataText(metadata.sourceKind)
   const sourceRepo = metadataText(metadata.sourceRepo)
   const sourcePullNumber = pullNumberLabel(metadata.sourcePullNumber)
+  const sourceIssueNumber = pullNumberLabel(metadata.sourceIssueNumber)
   if (sourceKind === 'github_pr_review_comments' && sourceRepo && sourcePullNumber) {
     return `GitHub PR 评审 · ${sourceRepo}#${sourcePullNumber}`
+  }
+  if (sourceKind === 'github_issue' && sourceRepo && sourceIssueNumber) {
+    return `GitHub Issue · ${sourceRepo}#${sourceIssueNumber}`
+  }
+  if (sourceRepo && sourceIssueNumber) {
+    return `${sourceRepo}#${sourceIssueNumber}`
   }
   if (sourceRepo && sourcePullNumber) {
     return `${sourceRepo}#${sourcePullNumber}`

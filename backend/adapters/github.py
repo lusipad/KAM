@@ -7,7 +7,7 @@ from typing import Any
 from ghapi.all import GhApi
 
 from config import settings
-from services.source_tasks import build_github_review_task_prompt
+from services.source_tasks import build_github_issue_task_prompt, build_github_review_task_prompt
 
 
 def _split_repo(repo: str) -> tuple[str, str]:
@@ -40,7 +40,40 @@ def _resolve_github_token() -> str:
     return settings.github_token or _load_git_credential_token()
 
 
-class GitHubPRAdapter:
+def _github_issue_comment_record(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "body": item.body or "",
+        "user": getattr(item.user, "login", "unknown"),
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "html_url": item.html_url,
+    }
+
+
+def _github_issue_record(item: Any, issue_comments: list[dict[str, Any]]) -> dict[str, Any]:
+    labels: list[str] = []
+    for label in getattr(item, "labels", []) or []:
+        name = getattr(label, "name", None)
+        if isinstance(name, str) and name.strip():
+            labels.append(name.strip())
+    return {
+        "id": item.id,
+        "number": item.number,
+        "title": item.title or "",
+        "state": item.state,
+        "updated_at": item.updated_at,
+        "created_at": item.created_at,
+        "user": getattr(item.user, "login", "unknown"),
+        "html_url": item.html_url,
+        "body": item.body or "",
+        "labels": labels,
+        "comments_count": len(issue_comments),
+        "issue_comments": issue_comments,
+    }
+
+
+class GitHubAdapter:
     def __init__(self) -> None:
         self._token = _resolve_github_token()
         self._api = GhApi(token=self._token) if self._token else GhApi()
@@ -75,6 +108,7 @@ class GitHubPRAdapter:
                 return {
                     "items": [],
                     "review_comments": [],
+                    "issues": [],
                     "meta": {**meta, "error": f"{type(exc).__name__}: {exc}"},
                 }
 
@@ -92,7 +126,29 @@ class GitHubPRAdapter:
                 }
                 for item in comments
             ]
-            return {"items": items, "review_comments": items, "meta": meta}
+            return {"items": items, "review_comments": items, "issues": [], "meta": meta}
+
+        if watch == "issues":
+            meta = {"repo": repo, "watch": watch}
+            try:
+                issues = list(self._api.issues.list_for_repo(owner, name, state="open", sort="updated", direction="desc"))
+                items: list[dict[str, Any]] = []
+                for issue in issues:
+                    if getattr(issue, "pull_request", None) is not None:
+                        continue
+                    issue_comments = [
+                        _github_issue_comment_record(item)
+                        for item in self._api.issues.list_comments(owner, name, issue.number)
+                    ]
+                    items.append(_github_issue_record(issue, issue_comments))
+            except Exception as exc:
+                return {
+                    "items": [],
+                    "review_comments": [],
+                    "issues": [],
+                    "meta": {**meta, "error": f"{type(exc).__name__}: {exc}"},
+                }
+            return {"items": items, "review_comments": [], "issues": items, "meta": meta}
 
         try:
             pulls = list(self._api.pulls.list(owner, name, state="open"))
@@ -100,6 +156,7 @@ class GitHubPRAdapter:
             return {
                 "items": [],
                 "review_comments": [],
+                "issues": [],
                 "meta": {"repo": repo, "watch": watch, "error": f"{type(exc).__name__}: {exc}"},
             }
 
@@ -121,7 +178,7 @@ class GitHubPRAdapter:
                     "html_url": pull.html_url,
                 }
             )
-        return {"items": items, "review_comments": [], "meta": {"repo": repo, "watch": watch}}
+        return {"items": items, "review_comments": [], "issues": [], "meta": {"repo": repo, "watch": watch}}
 
     def diff(self, previous: dict[str, Any] | None, current: dict[str, Any]) -> dict[str, Any]:
         previous_items = {str(item["id"]): item for item in (previous or {}).get("items", [])}
@@ -149,10 +206,19 @@ class GitHubPRAdapter:
                 }
             )
 
+        review_comments: list[dict[str, Any]] = []
+        issues: list[dict[str, Any]] = []
+        watch = current_meta.get("watch")
+        if watch == "review_comments":
+            review_comments = [*created, *updated]
+        if watch == "issues":
+            issues = [*created, *updated]
+
         return {
             "created": created,
             "updated": updated,
-            "review_comments": [*created, *updated],
+            "review_comments": review_comments,
+            "issues": issues,
             "errors": errors,
             "meta": current_meta,
         }
@@ -180,6 +246,7 @@ class GitHubPRAdapter:
                     "params": {
                         "agent": "codex",
                         "task": build_github_review_task_prompt(repo, number, changed_comments),
+                        "sourcePullNumber": number,
                         "initialArtifacts": [
                             {
                                 "type": "github_pr_context",
@@ -205,6 +272,64 @@ class GitHubPRAdapter:
                     },
                 }
             ]
+
+        if changes.get("issues"):
+            config = watcher.get("config", {})
+            repo = config.get("repo", "owner/repo")
+            actions: list[dict[str, Any]] = []
+            for issue in changes["issues"]:
+                issue_number = issue.get("number")
+                if not isinstance(issue_number, int):
+                    continue
+                issue_title = " ".join(str(issue.get("title", "")).split())
+                issue_comments = issue.get("issue_comments") if isinstance(issue.get("issue_comments"), list) else []
+                actions.append(
+                    {
+                        "label": f"处理 Issue #{issue_number}",
+                        "kind": "create_run",
+                        "params": {
+                            "agent": "codex",
+                            "task": build_github_issue_task_prompt(
+                                repo,
+                                issue_number,
+                                issue_title,
+                                issue.get("body"),
+                                issue_comments,
+                            ),
+                            "sourceIssueNumber": issue_number,
+                            "initialArtifacts": [
+                                {
+                                    "type": "github_issue_context",
+                                    "content": json.dumps(
+                                        {
+                                            "watcherName": watcher.get("name"),
+                                            "repo": repo,
+                                            "number": issue_number,
+                                            "watch": config.get("watch", "issues"),
+                                            "issue": {
+                                                "title": issue.get("title"),
+                                                "body": issue.get("body"),
+                                                "labels": issue.get("labels"),
+                                                "html_url": issue.get("html_url"),
+                                                "user": issue.get("user"),
+                                                "updated_at": issue.get("updated_at"),
+                                            },
+                                        },
+                                        ensure_ascii=False,
+                                        indent=2,
+                                    ),
+                                    "metadata": {"repo": repo, "number": issue_number},
+                                },
+                                {
+                                    "type": "github_issue_comments",
+                                    "content": json.dumps(issue_comments, ensure_ascii=False, indent=2),
+                                    "metadata": {"count": len(issue_comments)},
+                                },
+                            ],
+                        },
+                    }
+                )
+            return actions
         return []
 
     async def perform(self, action: dict[str, Any]) -> dict[str, Any]:
@@ -230,3 +355,6 @@ class GitHubPRAdapter:
             return {"ok": True}
 
         return {"ok": False, "error": f"unsupported_action:{kind}"}
+
+
+GitHubPRAdapter = GitHubAdapter

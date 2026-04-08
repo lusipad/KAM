@@ -333,6 +333,114 @@ class HarnessApiTests(unittest.TestCase):
             ["PR", "Review comment #1", "Review comment #2"],
         )
 
+    def test_create_task_reuses_active_github_issue_source_task_with_same_dedup_key(self):
+        first = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "处理 GitHub Issue",
+                "description": "第一轮 issue 描述。",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+                "labels": ["github", "issue"],
+                "metadata": {
+                    "recommendedPrompt": "处理第一轮 issue。",
+                    "recommendedAgent": "codex",
+                    "sourceKind": "github_issue",
+                    "sourceDedupKey": "github_issue:lusipad/KAM:4519",
+                    "sourceRepo": "lusipad/KAM",
+                    "sourceIssueNumber": 4519,
+                    "sourceIssueTitle": "UI 首屏太难理解",
+                    "sourceIssueBody": "希望用户第一次打开就知道当前状态、下一步和入口。",
+                    "sourceIssueComments": [
+                        {
+                            "id": 7001,
+                            "body": "最好默认就是新手视角。",
+                            "user": "reviewer",
+                            "html_url": "https://github.com/lusipad/KAM/issues/4519#issuecomment-7001",
+                        }
+                    ],
+                },
+                "refs": [
+                    {
+                        "kind": "url",
+                        "label": "Issue",
+                        "value": "https://github.com/lusipad/KAM/issues/4519",
+                        "metadata": {"intakeSourceKind": "github_issue"},
+                    },
+                    {
+                        "kind": "url",
+                        "label": "Issue comment #7001",
+                        "value": "https://github.com/lusipad/KAM/issues/4519#issuecomment-7001",
+                        "metadata": {"intakeSourceKind": "github_issue", "commentId": 7001},
+                    },
+                ],
+            },
+        ).json()
+
+        second = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "处理 GitHub Issue",
+                "description": "第二轮 issue 更新。",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+                "labels": ["github", "issue", "autodrive"],
+                "metadata": {
+                    "recommendedPrompt": "处理第二轮 issue。",
+                    "recommendedAgent": "codex",
+                    "sourceKind": "github_issue",
+                    "sourceDedupKey": "github_issue:lusipad/KAM:4519",
+                    "sourceRepo": "lusipad/KAM",
+                    "sourceIssueNumber": 4519,
+                    "sourceIssueTitle": "UI 首屏太难理解",
+                    "sourceIssueBody": "希望用户第一次打开就知道当前状态、下一步和入口。",
+                    "sourceIssueComments": [
+                        {
+                            "id": 7002,
+                            "body": "还要告诉我当前系统在干什么。",
+                            "user": "lus",
+                            "html_url": "https://github.com/lusipad/KAM/issues/4519#issuecomment-7002",
+                        }
+                    ],
+                },
+                "refs": [
+                    {
+                        "kind": "url",
+                        "label": "Issue",
+                        "value": "https://github.com/lusipad/KAM/issues/4519",
+                        "metadata": {"intakeSourceKind": "github_issue"},
+                    },
+                    {
+                        "kind": "url",
+                        "label": "Issue comment #7002",
+                        "value": "https://github.com/lusipad/KAM/issues/4519#issuecomment-7002",
+                        "metadata": {"intakeSourceKind": "github_issue", "commentId": 7002},
+                    },
+                ],
+            },
+        ).json()
+
+        self.assertEqual(second["id"], first["id"])
+
+        tasks = self.client.get("/api/tasks").json()["tasks"]
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(len(tasks[0]["metadata"]["sourceIssueComments"]), 2)
+        self.assertIn("UI 首屏太难理解", tasks[0]["metadata"]["recommendedPrompt"])
+        self.assertIn("当前系统在干什么", tasks[0]["metadata"]["recommendedPrompt"])
+        self.assertIn("autodrive", tasks[0]["labels"])
+
+        detail = self.client.get(f"/api/tasks/{first['id']}").json()
+        self.assertIn("Issue 标题", detail["description"])
+        self.assertIn("最好默认就是新手视角", detail["description"])
+        self.assertIn("当前系统在干什么", detail["description"])
+        self.assertEqual(len(detail["refs"]), 3)
+        self.assertEqual(
+            [item["label"] for item in detail["refs"]],
+            ["Issue", "Issue comment #7001", "Issue comment #7002"],
+        )
+
     def test_create_task_creates_follow_up_when_same_source_task_is_already_running(self):
         first = self.client.post(
             "/api/tasks",
@@ -627,6 +735,49 @@ class HarnessApiTests(unittest.TestCase):
 
         artifacts = self.client.get(f"/api/runs/{payload['run']['id']}/artifacts").json()["artifacts"]
         self.assertTrue(any(item["type"] == "source_context" for item in artifacts))
+
+    def test_build_task_initial_artifacts_include_github_issue_source_context(self):
+        task = self.client.post(
+            "/api/tasks",
+            json={
+                "title": "处理 GitHub Issue",
+                "repoPath": "D:/Repos/KAM",
+                "status": "open",
+                "priority": "high",
+                "labels": ["github", "issue"],
+                "metadata": {
+                    "recommendedPrompt": "先看 issue 再决定是否修改代码。",
+                    "recommendedAgent": "codex",
+                    "sourceKind": "github_issue",
+                    "sourceRepo": "lusipad/KAM",
+                    "sourceIssueNumber": 4519,
+                    "sourceIssueTitle": "UI 首屏太难理解",
+                    "sourceIssueBody": "希望用户第一次打开就知道当前状态、下一步和入口。",
+                    "sourceIssueComments": [
+                        {
+                            "id": 7001,
+                            "body": "最好默认就是新手视角。",
+                            "user": "reviewer",
+                            "html_url": "https://github.com/lusipad/KAM/issues/4519#issuecomment-7001",
+                        }
+                    ],
+                },
+            },
+        ).json()
+
+        async def build_artifacts() -> list[dict[str, object]]:
+            async with async_session() as session:
+                return await RunEngine(session).build_task_initial_artifacts(task["id"])
+
+        artifacts = asyncio.run(build_artifacts())
+        source_context = next(item for item in artifacts if item["type"] == "source_context")
+        payload = json.loads(source_context["content"])
+
+        self.assertEqual(payload["sourceKind"], "github_issue")
+        self.assertEqual(payload["sourceRepo"], "lusipad/KAM")
+        self.assertEqual(payload["sourceIssueNumber"], 4519)
+        self.assertEqual(payload["sourceIssueTitle"], "UI 首屏太难理解")
+        self.assertEqual(payload["sourceIssueComments"][0]["id"], 7001)
 
     def test_dispatch_next_skips_task_with_unresolved_dependencies(self):
         prerequisite = self.client.post(

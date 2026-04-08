@@ -16,6 +16,7 @@ from models import now
 
 
 GITHUB_PR_REVIEW_SOURCE_KIND = "github_pr_review_comments"
+GITHUB_ISSUE_SOURCE_KIND = "github_issue"
 
 _SOURCE_TASK_LOCK_DIRNAME = "source-task-locks"
 _SOURCE_TASK_LOCK_TTL_SECONDS = 15.0
@@ -44,6 +45,24 @@ def merge_source_task_metadata(existing: dict[str, Any], incoming: dict[str, Any
         pull_number = _normalize_pull_number(merged.get("sourcePullNumber"))
         if repo and pull_number is not None and merged_comments:
             merged["recommendedPrompt"] = build_github_review_task_prompt(repo, pull_number, merged_comments)
+    elif source_kind == GITHUB_ISSUE_SOURCE_KIND:
+        merged_comments = merge_github_issue_comments(
+            existing.get("sourceIssueComments"),
+            incoming.get("sourceIssueComments"),
+        )
+        merged["sourceIssueComments"] = merged_comments
+        repo = str(merged.get("sourceRepo") or "").strip()
+        issue_number = _normalize_issue_number(merged.get("sourceIssueNumber"))
+        issue_title = _normalized_source_text(merged.get("sourceIssueTitle"))
+        issue_body = _normalized_source_text(merged.get("sourceIssueBody"))
+        if repo and issue_number is not None:
+            merged["recommendedPrompt"] = build_github_issue_task_prompt(
+                repo,
+                issue_number,
+                issue_title,
+                issue_body,
+                merged_comments,
+            )
     return merged
 
 
@@ -63,8 +82,32 @@ def merge_github_review_comments(
     return [merged_by_key[key] for key in ordered_keys if key in merged_by_key]
 
 
+def merge_github_issue_comments(
+    existing_comments: Any,
+    incoming_comments: Any,
+) -> list[dict[str, Any]]:
+    merged_by_key: dict[str, dict[str, Any]] = {}
+    ordered_keys: list[str] = []
+    for raw in [*(existing_comments or []), *(incoming_comments or [])]:
+        if not isinstance(raw, dict):
+            continue
+        key = _github_issue_comment_key(raw)
+        if key not in ordered_keys:
+            ordered_keys.append(key)
+        merged_by_key[key] = dict(raw)
+    return [merged_by_key[key] for key in ordered_keys if key in merged_by_key]
+
+
 def build_github_review_task_title(repo: str, pull_number: int) -> str:
     return f"处理 {repo} PR #{pull_number} 新发现的评审评论"
+
+
+def build_github_issue_task_title(repo: str, issue_number: int, issue_title: str | None) -> str:
+    base = f"处理 {repo} Issue #{issue_number}"
+    normalized_issue_title = _normalized_source_text(issue_title)
+    if not normalized_issue_title:
+        return base
+    return _truncate_text(f"{base} · {normalized_issue_title}", limit=180)
 
 
 def build_github_review_task_description(
@@ -78,6 +121,29 @@ def build_github_review_task_description(
     ]
     if summarized_comments:
         description_lines.append("待处理评论摘要：")
+        description_lines.extend(f"- {line}" for line in summarized_comments)
+    return "\n".join(description_lines)
+
+
+def build_github_issue_task_description(
+    repo: str,
+    issue_number: int,
+    issue_title: str | None,
+    issue_body: str | None,
+    issue_comments: list[dict[str, Any]],
+) -> str:
+    description_lines = [
+        f"把 {repo} Issue #{issue_number} 接入 KAM 任务池，并在对应本地仓库上完成分析、修复、验证或拆解下一步。",
+    ]
+    normalized_issue_title = _normalized_source_text(issue_title)
+    normalized_issue_body = _normalized_source_text(issue_body)
+    if normalized_issue_title:
+        description_lines.append(f"Issue 标题：{normalized_issue_title}")
+    if normalized_issue_body:
+        description_lines.append(f"Issue 描述摘要：{_truncate_text(normalized_issue_body, limit=280)}")
+    summarized_comments = _summarize_github_issue_comments(issue_comments, limit=3)
+    if summarized_comments:
+        description_lines.append("Issue 评论摘要：")
         description_lines.extend(f"- {line}" for line in summarized_comments)
     return "\n".join(description_lines)
 
@@ -110,6 +176,37 @@ def build_github_review_task_prompt(
     )
 
 
+def build_github_issue_task_prompt(
+    repo: str,
+    issue_number: int,
+    issue_title: str | None,
+    issue_body: str | None,
+    issue_comments: list[dict[str, Any]],
+) -> str:
+    scope = f"{repo} Issue #{issue_number}"
+    normalized_issue_title = _normalized_source_text(issue_title) or "未提供标题"
+    normalized_issue_body = _truncate_text(_normalized_source_text(issue_body) or "未提供描述", limit=400)
+    pending_comments = [
+        {
+            "id": item.get("id"),
+            "user": item.get("user"),
+            "url": item.get("html_url") or item.get("url"),
+            "body": _truncate_text(_normalized_source_text(item.get("body")) or "", limit=180),
+        }
+        for item in issue_comments[:5]
+        if isinstance(item, dict)
+    ]
+    return (
+        f"处理 {scope}：先理解 issue 描述，确认这是 bug、改进还是需求。"
+        " 如果能在当前代码库里直接落地，就完成最小修改并验证；"
+        " 如果需求不清、缺少上下文或当前仓库无法直接落地，不要猜，明确写出阻塞点、需要确认的问题和建议的下一步。"
+        f" 当前 issue 标题：{normalized_issue_title}。"
+        f" 当前 issue 描述摘要：{normalized_issue_body}。"
+        f" 当前 issue 评论是：{json.dumps(pending_comments, ensure_ascii=False)}。"
+        " 优先运行与改动相关的最小验证，并把无法自动完成的部分整理成清晰的后续动作。"
+    )
+
+
 def build_github_review_task_description_from_metadata(metadata: dict[str, Any]) -> str | None:
     if str(metadata.get("sourceKind") or "").strip() != GITHUB_PR_REVIEW_SOURCE_KIND:
         return None
@@ -122,6 +219,20 @@ def build_github_review_task_description_from_metadata(metadata: dict[str, Any])
     if not comments:
         return None
     return build_github_review_task_description(repo, pull_number, comments)
+
+
+def build_github_issue_task_description_from_metadata(metadata: dict[str, Any]) -> str | None:
+    if str(metadata.get("sourceKind") or "").strip() != GITHUB_ISSUE_SOURCE_KIND:
+        return None
+    repo = str(metadata.get("sourceRepo") or "").strip()
+    issue_number = _normalize_issue_number(metadata.get("sourceIssueNumber"))
+    if not repo or issue_number is None:
+        return None
+    issue_title = _normalized_source_text(metadata.get("sourceIssueTitle"))
+    issue_body = _normalized_source_text(metadata.get("sourceIssueBody"))
+    source_issue_comments = metadata.get("sourceIssueComments")
+    comments = [dict(item) for item in source_issue_comments if isinstance(item, dict)] if isinstance(source_issue_comments, list) else []
+    return build_github_issue_task_description(repo, issue_number, issue_title, issue_body, comments)
 
 
 @asynccontextmanager
@@ -239,6 +350,10 @@ def _normalize_pull_number(value: Any) -> int | None:
     return None
 
 
+def _normalize_issue_number(value: Any) -> int | None:
+    return _normalize_pull_number(value)
+
+
 def _github_review_comment_key(comment: dict[str, Any]) -> str:
     comment_id = comment.get("id")
     if isinstance(comment_id, int):
@@ -252,6 +367,20 @@ def _github_review_comment_key(comment: dict[str, Any]) -> str:
     line = comment.get("line")
     body = " ".join(str(comment.get("body", "")).split())
     return f"fallback:{path}:{line}:{body}"
+
+
+def _github_issue_comment_key(comment: dict[str, Any]) -> str:
+    comment_id = comment.get("id")
+    if isinstance(comment_id, int):
+        return f"id:{comment_id}"
+    if isinstance(comment_id, str) and comment_id.strip():
+        return f"id:{comment_id.strip()}"
+    comment_url = comment.get("html_url") or comment.get("url")
+    if isinstance(comment_url, str) and comment_url.strip():
+        return f"url:{comment_url.strip()}"
+    body = _normalized_source_text(comment.get("body")) or ""
+    user = _normalized_source_text(comment.get("user")) or ""
+    return f"fallback:{user}:{body}"
 
 
 def _summarize_github_review_comments(
@@ -269,3 +398,33 @@ def _summarize_github_review_comments(
         if summary:
             summaries.append(summary)
     return summaries
+
+
+def _summarize_github_issue_comments(
+    issue_comments: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[str]:
+    summaries: list[str] = []
+    for item in issue_comments[:limit]:
+        body = _normalized_source_text(item.get("body")) or ""
+        user = _normalized_source_text(item.get("user")) or "unknown"
+        summary = f"{user} · {body[:160]}".strip(" ·")
+        if summary:
+            summaries.append(summary)
+    return summaries
+
+
+def _normalized_source_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.split())
+    return normalized if normalized else None
+
+
+def _truncate_text(value: str, *, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    if limit <= 3:
+        return value[:limit]
+    return f"{value[: limit - 3]}..."

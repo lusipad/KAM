@@ -124,6 +124,11 @@ try {
         "-Command",
         "& '$Python' -m unittest backend.tests.test_github_adapter -v"
     ) $RootDir
+    Invoke-CheckedProcess "GitHub Issue monitor 回归" $Pwsh @(
+        "-NoProfile",
+        "-Command",
+        "& '$Python' -m unittest backend.tests.test_github_issue_monitor -v"
+    ) $RootDir
     Invoke-CheckedProcess "PR review monitor 回归" $Pwsh @(
         "-NoProfile",
         "-Command",

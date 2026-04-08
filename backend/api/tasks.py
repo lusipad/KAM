@@ -22,7 +22,9 @@ from services.task_dependencies import (
 from services.task_autodrive import GlobalAutoDriveService, TaskAutoDriveService
 from services.run_engine import RunEngine
 from services.source_tasks import (
+    GITHUB_ISSUE_SOURCE_KIND,
     build_github_review_task_description_from_metadata,
+    build_github_issue_task_description_from_metadata,
     merge_source_task_metadata,
     source_dedup_key,
     source_task_guard,
@@ -335,10 +337,16 @@ def _source_ref_signature(ref_payload: TaskRefCreate) -> tuple[str, str, str]:
 
 
 def _merged_task_description(payload_description: str | None, metadata: dict[str, Any] | None) -> str | None:
-    if metadata and str(metadata.get("sourceKind") or "").strip() == GITHUB_PR_REVIEW_SOURCE_KIND:
-        source_description = build_github_review_task_description_from_metadata(metadata)
-        if source_description:
-            return source_description
+    if metadata:
+        source_kind = str(metadata.get("sourceKind") or "").strip()
+        if source_kind == GITHUB_PR_REVIEW_SOURCE_KIND:
+            source_description = build_github_review_task_description_from_metadata(metadata)
+            if source_description:
+                return source_description
+        if source_kind == GITHUB_ISSUE_SOURCE_KIND:
+            source_description = build_github_issue_task_description_from_metadata(metadata)
+            if source_description:
+                return source_description
     return payload_description.strip() if payload_description else None
 
 

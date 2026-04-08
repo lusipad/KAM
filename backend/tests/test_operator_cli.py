@@ -245,6 +245,21 @@ class OperatorCliTests(unittest.TestCase):
         self.assertIn("现实: source=GitHub PR 评审 · lusipad/KAM#4518 | target=lusipad/KAM:feature/pr-4518", completed.stdout)
         self.assertIn("重启语义: 不会续跑中断 run；未完成 run 会标记 failed；若此前已开启全局无人值守", completed.stdout)
 
+    def test_status_shows_github_issue_source_mapping(self):
+        self.server.control_plane = _control_plane(
+            enabled=False,
+            task_metadata={
+                "sourceKind": "github_issue",
+                "sourceRepo": "lusipad/KAM",
+                "sourceIssueNumber": 4519,
+            },
+        )
+
+        completed = self._run_cli("status", "--kam-url", self.base_url)
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn("现实: source=GitHub Issue · lusipad/KAM#4519 | target=D:/Repos/KAM", completed.stdout)
+
     def test_action_alias_posts_operator_action(self):
         completed = self._run_cli("restart-global", "--kam-url", self.base_url, "--json")
 

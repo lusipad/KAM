@@ -82,10 +82,10 @@ class PRReviewMonitorTests(unittest.TestCase):
             finalize_mock = patch.object(pr_review_monitor, "_finalize_and_push", return_value=None)
             with (
                 patch.object(pr_review_monitor, "parse_args", return_value=args),
-                patch.object(pr_review_monitor, "_ensure_base_clone"),
-                patch.object(pr_review_monitor, "_resolve_github_token", return_value="token"),
+                patch.object(pr_review_monitor, "ensure_base_clone"),
+                patch.object(pr_review_monitor, "resolve_github_token", return_value="token"),
                 patch.object(pr_review_monitor, "GitHubPRAdapter", return_value=FakeAdapter(current_state, changes, actions)),
-                patch.object(pr_review_monitor, "_resolve_codex", return_value="codex.cmd"),
+                patch.object(pr_review_monitor, "resolve_codex", return_value="codex.cmd"),
                 patch.object(
                     pr_review_monitor,
                     "_prepare_pr_worktree",
@@ -124,10 +124,10 @@ class PRReviewMonitorTests(unittest.TestCase):
             )
             with (
                 patch.object(pr_review_monitor, "parse_args", return_value=args),
-                patch.object(pr_review_monitor, "_ensure_base_clone"),
-                patch.object(pr_review_monitor, "_resolve_github_token", return_value="token"),
+                patch.object(pr_review_monitor, "ensure_base_clone"),
+                patch.object(pr_review_monitor, "resolve_github_token", return_value="token"),
                 patch.object(pr_review_monitor, "GitHubPRAdapter", return_value=FakeAdapter(current_state, changes, actions)),
-                patch.object(pr_review_monitor, "_resolve_codex", return_value="codex.cmd"),
+                patch.object(pr_review_monitor, "resolve_codex", return_value="codex.cmd"),
                 patch.object(
                     pr_review_monitor,
                     "_prepare_pr_worktree",
@@ -177,16 +177,16 @@ class PRReviewMonitorTests(unittest.TestCase):
             )
             with (
                 patch.object(pr_review_monitor, "parse_args", return_value=args),
-                patch.object(pr_review_monitor, "_ensure_base_clone"),
-                patch.object(pr_review_monitor, "_resolve_github_token", return_value="token"),
+                patch.object(pr_review_monitor, "ensure_base_clone"),
+                patch.object(pr_review_monitor, "resolve_github_token", return_value="token"),
                 patch.object(pr_review_monitor, "GitHubPRAdapter", return_value=FakeAdapter(current_state, changes, actions)),
-                patch.object(pr_review_monitor, "_enqueue_task_to_harness", return_value={"id": "taskkam0001"}) as mocked_enqueue,
+                patch.object(pr_review_monitor, "enqueue_task_to_harness", return_value={"id": "taskkam0001"}) as mocked_enqueue,
                 patch.object(
                     pr_review_monitor,
-                    "_start_harness_global_autodrive",
+                    "start_harness_global_autodrive",
                     return_value={"enabled": True, "running": True, "status": "running"},
                 ),
-                patch.object(pr_review_monitor, "_resolve_codex") as mocked_resolve_codex,
+                patch.object(pr_review_monitor, "resolve_codex") as mocked_resolve_codex,
             ):
                 rc = pr_review_monitor.main()
 

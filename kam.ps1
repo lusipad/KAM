@@ -1,9 +1,11 @@
 param(
-    [ValidateSet("menu", "ui", "operator", "demo", "status", "watch", "verify")]
+    [ValidateSet("menu", "ui", "operator", "demo", "status", "watch", "verify", "issue-monitor")]
     [string]$Command = "menu",
     [string]$BaseUrl = "http://127.0.0.1:8000",
     [int]$Port = 8000,
-    [string]$PythonBin = ""
+    [string]$PythonBin = "",
+    [string]$GitHubRepo = "",
+    [string]$RepoPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +18,7 @@ $StartScript = Join-Path $RootDir "start-local.ps1"
 $OperatorScript = Join-Path $RootDir "kam-operator.ps1"
 $SeedScript = Join-Path $RootDir "seed-harness.ps1"
 $VerifyScript = Join-Path $RootDir "verify-local.ps1"
+$IssueMonitorScript = Join-Path $RootDir "monitor-github-issues.ps1"
 $FrontendIndex = Join-Path $RootDir "app\\dist\\index.html"
 $ApiBaseUrl = "$($BaseUrl.TrimEnd('/'))/api"
 
@@ -113,6 +116,26 @@ function Run-Verify {
     & $VerifyScript
 }
 
+function Start-IssueMonitor {
+    Ensure-Backend
+    $repo = $GitHubRepo
+    if (-not $repo.Trim()) {
+        $repo = (Read-Host "GitHub repo (owner/name)").Trim()
+    }
+    if (-not $repo) {
+        throw "必须提供 GitHub repo。"
+    }
+
+    $arguments = @("-Repo", $repo, "-BaseUrl", $BaseUrl)
+    if ($PythonBin) {
+        $arguments += @("-PythonBin", $PythonBin)
+    }
+    if ($RepoPath) {
+        $arguments += @("-RepoPath", $RepoPath)
+    }
+    & $IssueMonitorScript @arguments
+}
+
 function Show-Menu {
     while ($true) {
         $backendState = if (Test-BackendHealth) { "在线" } else { "离线" }
@@ -127,6 +150,7 @@ function Show-Menu {
         Write-Host "4. 查看当前状态"
         Write-Host "5. 持续 watch 状态"
         Write-Host "6. 跑本地验证"
+        Write-Host "7. 启动 GitHub Issue 入池监控"
         Write-Host "Q. 退出"
         $choice = (Read-Host "请选择入口").Trim().ToLowerInvariant()
 
@@ -137,6 +161,7 @@ function Show-Menu {
             "4" { Show-Status }
             "5" { Watch-Status }
             "6" { Run-Verify }
+            "7" { Start-IssueMonitor }
             "q" { return }
             "quit" { return }
             "exit" { return }
@@ -155,4 +180,5 @@ switch ($Command) {
     "status" { Show-Status }
     "watch" { Watch-Status }
     "verify" { Run-Verify }
+    "issue-monitor" { Start-IssueMonitor }
 }

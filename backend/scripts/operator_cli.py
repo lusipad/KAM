@@ -236,8 +236,13 @@ def _source_mapping_label(control_plane: dict[str, Any]) -> str | None:
     source_kind = _optional_text(metadata.get("sourceKind"))
     source_repo = _optional_text(metadata.get("sourceRepo"))
     pull_number = _pull_number_label(metadata.get("sourcePullNumber"))
+    issue_number = _pull_number_label(metadata.get("sourceIssueNumber"))
     if source_kind == "github_pr_review_comments" and source_repo and pull_number:
         return f"GitHub PR 评审 · {source_repo}#{pull_number}"
+    if source_kind == "github_issue" and source_repo and issue_number:
+        return f"GitHub Issue · {source_repo}#{issue_number}"
+    if source_repo and issue_number:
+        return f"{source_repo}#{issue_number}"
     if source_repo and pull_number:
         return f"{source_repo}#{pull_number}"
     if source_repo:
