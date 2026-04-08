@@ -55,6 +55,7 @@ def _control_plane(
     active_run_id: str | None = None,
     actions: list[dict[str, object]] | None = None,
     task_metadata: dict[str, object] | None = None,
+    issue_monitors: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     focus_task = _task_record("task-harness-cutover", "切到 task-first harness", metadata=task_metadata)
     default_actions = [
@@ -109,6 +110,9 @@ def _control_plane(
             "runningRunCount": 0,
             "passedRunAwaitingAdoptCount": 0,
             "scopeAutodriveEnabledCount": 0,
+            "issueMonitorCount": len(issue_monitors or []),
+            "issueMonitorRunningCount": sum(1 for item in (issue_monitors or []) if item.get("running") is True),
+            "issueMonitorAttentionCount": sum(1 for item in (issue_monitors or []) if item.get("attention") is True),
         },
         "focus": {
             "task": focus_task,
@@ -117,6 +121,7 @@ def _control_plane(
             "summary": "当前焦点任务是切到 task-first harness。",
             "reason": "focus_task",
         },
+        "issueMonitors": issue_monitors or [],
         "actions": default_actions if actions is None else actions,
         "attention": []
         if system_status != "attention"
@@ -259,6 +264,32 @@ class OperatorCliTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0)
         self.assertIn("现实: source=GitHub Issue · lusipad/KAM#4519 | target=D:/Repos/KAM", completed.stdout)
+
+    def test_status_shows_issue_monitor_summary(self):
+        self.server.control_plane = _control_plane(
+            issue_monitors=[
+                {
+                    "repo": "lusipad/KAM",
+                    "repoPath": "D:/Repos/KAM",
+                    "running": True,
+                    "status": "idle",
+                    "summary": "没有新的 GitHub issue 变化。",
+                    "lastCheckedAt": "2026-04-06T00:10:00Z",
+                    "issueCount": 12,
+                    "changedIssueCount": 0,
+                    "taskIds": [],
+                    "attention": False,
+                    "tone": "gray",
+                }
+            ],
+        )
+
+        completed = self._run_cli("status", "--kam-url", self.base_url)
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertIn("Issue 自动入池: registered=1 running=1 attention=0", completed.stdout)
+        self.assertIn("GitHub Issue Monitors:", completed.stdout)
+        self.assertIn("lusipad/KAM | idle | 运行中", completed.stdout)
 
     def test_action_alias_posts_operator_action(self):
         completed = self._run_cli("restart-global", "--kam-url", self.base_url, "--json")

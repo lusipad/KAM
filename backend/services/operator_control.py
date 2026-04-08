@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from models import Task, TaskRun, now
+from services.github_issue_monitors import list_issue_monitors
 from services.run_engine import RunEngine
 from services.task_autodrive import (
     AUTO_DRIVE_ENABLED_KEY,
@@ -32,6 +33,10 @@ OperatorActionKey = Literal[
     "retry_run",
     "cancel_run",
 ]
+
+OperatorTone = Literal["green", "amber", "red", "gray"]
+
+ISSUE_MONITOR_ERROR_STATUSES = {"failed", "source-error"}
 
 
 @dataclass(frozen=True)
@@ -63,7 +68,7 @@ class OperatorAttentionItem:
     kind: str
     title: str
     summary: str
-    tone: str
+    tone: OperatorTone
     task_id: str | None = None
     run_id: str | None = None
 
@@ -79,6 +84,36 @@ class OperatorAttentionItem:
 
 
 @dataclass(frozen=True)
+class OperatorIssueMonitor:
+    repo: str
+    repo_path: str | None
+    running: bool
+    status: str
+    summary: str
+    last_checked_at: str | None
+    issue_count: int | None
+    changed_issue_count: int | None
+    task_ids: list[str] = field(default_factory=list)
+    attention: bool = False
+    tone: OperatorTone = "gray"
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "repo": self.repo,
+            "repoPath": self.repo_path,
+            "running": self.running,
+            "status": self.status,
+            "summary": self.summary,
+            "lastCheckedAt": self.last_checked_at,
+            "issueCount": self.issue_count,
+            "changedIssueCount": self.changed_issue_count,
+            "taskIds": list(self.task_ids),
+            "attention": self.attention,
+            "tone": self.tone,
+        }
+
+
+@dataclass(frozen=True)
 class OperatorStats:
     total_task_count: int
     runnable_task_count: int
@@ -88,6 +123,9 @@ class OperatorStats:
     running_run_count: int
     passed_run_awaiting_adopt_count: int
     scope_autodrive_enabled_count: int
+    issue_monitor_count: int
+    issue_monitor_running_count: int
+    issue_monitor_attention_count: int
 
     def to_dict(self) -> dict[str, int]:
         return {
@@ -99,6 +137,9 @@ class OperatorStats:
             "runningRunCount": self.running_run_count,
             "passedRunAwaitingAdoptCount": self.passed_run_awaiting_adopt_count,
             "scopeAutodriveEnabledCount": self.scope_autodrive_enabled_count,
+            "issueMonitorCount": self.issue_monitor_count,
+            "issueMonitorRunningCount": self.issue_monitor_running_count,
+            "issueMonitorAttentionCount": self.issue_monitor_attention_count,
         }
 
 
@@ -128,6 +169,7 @@ class OperatorControlPlane:
     global_autodrive: GlobalAutoDriveControlResult
     stats: OperatorStats
     focus: OperatorFocus
+    issue_monitors: list[OperatorIssueMonitor] = field(default_factory=list)
     actions: list[OperatorActionDescriptor] = field(default_factory=list)
     attention: list[OperatorAttentionItem] = field(default_factory=list)
 
@@ -139,6 +181,7 @@ class OperatorControlPlane:
             "globalAutoDrive": self.global_autodrive.to_dict(),
             "stats": self.stats.to_dict(),
             "focus": self.focus.to_dict(),
+            "issueMonitors": [item.to_dict() for item in self.issue_monitors],
             "actions": [item.to_dict() for item in self.actions],
             "attention": [item.to_dict() for item in self.attention],
             "recentEvents": list(self.global_autodrive.recent_events),
@@ -176,6 +219,8 @@ class OperatorControlService:
         dependency_states = {task.id: build_task_dependency_state(task, tasks_by_id) for task in tasks}
         dispatcher = TaskDispatcherService(self.db)
         global_status = await GlobalAutoDriveService(self.db).get_status()
+        issue_monitors = self._build_issue_monitors()
+        issue_monitor_attention = next((item for item in issue_monitors if item.attention), None)
 
         selected_task = tasks_by_id.get(task_id) if task_id else None
         focus_task = selected_task
@@ -225,6 +270,7 @@ class OperatorControlService:
         )
         system_status, system_summary = self._build_system_status(
             global_status=global_status,
+            issue_monitor_attention=issue_monitor_attention,
             active_run=active_run,
             adopt_candidate=adopt_candidate,
             retry_candidate=retry_candidate,
@@ -253,6 +299,9 @@ class OperatorControlService:
                 for task in tasks
                 if not self._parent_task_id(task) and bool((task.metadata_ or {}).get(AUTO_DRIVE_ENABLED_KEY))
             ),
+            issue_monitor_count=len(issue_monitors),
+            issue_monitor_running_count=sum(1 for item in issue_monitors if item.running),
+            issue_monitor_attention_count=sum(1 for item in issue_monitors if item.attention),
         )
 
         focus = OperatorFocus(
@@ -277,6 +326,7 @@ class OperatorControlService:
         )
         attention = self._build_attention(
             global_status=global_status,
+            issue_monitors=issue_monitors,
             active_run=active_run,
             active_run_task=active_run_task,
             adopt_candidate=adopt_candidate,
@@ -293,6 +343,7 @@ class OperatorControlService:
             global_autodrive=global_status,
             stats=stats,
             focus=focus,
+            issue_monitors=issue_monitors,
             actions=actions,
             attention=attention,
         )
@@ -565,6 +616,7 @@ class OperatorControlService:
         self,
         *,
         global_status: GlobalAutoDriveControlResult,
+        issue_monitors: list[OperatorIssueMonitor],
         active_run: TaskRun | None,
         active_run_task: Task | None,
         adopt_candidate: tuple[Task, TaskRun] | None,
@@ -581,6 +633,17 @@ class OperatorControlService:
                     title="全局无人值守异常",
                     summary=global_status.error or global_status.summary,
                     tone="red",
+                )
+            )
+        for monitor in issue_monitors:
+            if not monitor.attention:
+                continue
+            items.append(
+                OperatorAttentionItem(
+                    kind=f"issue_monitor_{monitor.status}",
+                    title=f"GitHub Issue monitor · {monitor.repo}",
+                    summary=monitor.summary,
+                    tone=monitor.tone,
                 )
             )
         if active_run is not None:
@@ -648,6 +711,7 @@ class OperatorControlService:
         self,
         *,
         global_status: GlobalAutoDriveControlResult,
+        issue_monitor_attention: OperatorIssueMonitor | None,
         active_run: TaskRun | None,
         adopt_candidate: tuple[Task, TaskRun] | None,
         retry_candidate: tuple[Task, TaskRun] | None,
@@ -668,6 +732,8 @@ class OperatorControlService:
             return "attention", focus_summary or "有失败任务等待重新触发。"
         if blocked_tasks:
             return "attention", focus_summary or f"当前有 {len(blocked_tasks)} 张任务被依赖阻塞。"
+        if issue_monitor_attention is not None:
+            return "attention", issue_monitor_attention.summary
         if runnable_candidate is not None:
             return "ready", focus_summary or "当前有任务可继续推进。"
         if global_status.enabled:
@@ -753,6 +819,44 @@ class OperatorControlService:
             return None
         dependency_state = dependency_states.get(task.id)
         return task.to_dict(dependency_state=dependency_state.to_dict() if dependency_state is not None else None)
+
+    def _build_issue_monitors(self) -> list[OperatorIssueMonitor]:
+        monitors: list[OperatorIssueMonitor] = []
+        for item in list_issue_monitors():
+            if not isinstance(item, dict):
+                continue
+            repo = str(item.get("repo") or "").strip()
+            if not repo:
+                continue
+            status = str(item.get("status") or "idle").strip() or "idle"
+            running = item.get("running") is True
+            attention = status in ISSUE_MONITOR_ERROR_STATUSES or not running
+            tone: OperatorTone
+            if status in ISSUE_MONITOR_ERROR_STATUSES:
+                tone = "red"
+            elif not running:
+                tone = "amber"
+            elif status == "enqueued":
+                tone = "green"
+            else:
+                tone = "gray"
+            task_ids = item.get("taskIds") if isinstance(item.get("taskIds"), list) else []
+            monitors.append(
+                OperatorIssueMonitor(
+                    repo=repo,
+                    repo_path=str(item.get("repoPath")).strip() if isinstance(item.get("repoPath"), str) and str(item.get("repoPath")).strip() else None,
+                    running=running,
+                    status=status,
+                    summary=str(item.get("summary") or "").strip() or "监控状态未知。",
+                    last_checked_at=str(item.get("lastCheckedAt")).strip() if isinstance(item.get("lastCheckedAt"), str) and str(item.get("lastCheckedAt")).strip() else None,
+                    issue_count=item.get("issueCount") if isinstance(item.get("issueCount"), int) else None,
+                    changed_issue_count=item.get("changedIssueCount") if isinstance(item.get("changedIssueCount"), int) else None,
+                    task_ids=[str(value).strip() for value in task_ids if isinstance(value, str) and str(value).strip()],
+                    attention=attention,
+                    tone=tone,
+                )
+            )
+        return monitors
 
     def _require_task_id(self, task_id: str | None) -> str:
         if isinstance(task_id, str) and task_id.strip():

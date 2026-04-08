@@ -185,6 +185,33 @@ class GitHubIssueMonitorApiTests(unittest.TestCase):
         self.assertIs(args[1], fake_app)
         self.assertEqual(kwargs["initial_delay_seconds"], 1.0)
 
+    def test_operator_control_plane_includes_issue_monitor_status(self):
+        with patch(
+            "services.operator_control.list_issue_monitors",
+            return_value=[
+                {
+                    "repo": "lusipad/KAM",
+                    "repoPath": "D:/Repos/KAM",
+                    "running": False,
+                    "status": "source-error",
+                    "summary": "GitHub token 无法读取。",
+                    "lastCheckedAt": "2026-04-09T00:00:00Z",
+                    "issueCount": 0,
+                    "changedIssueCount": 0,
+                    "taskIds": [],
+                }
+            ],
+        ):
+            control_plane = self.client.get("/api/operator/control-plane").json()
+
+        self.assertEqual(control_plane["stats"]["issueMonitorCount"], 1)
+        self.assertEqual(control_plane["stats"]["issueMonitorRunningCount"], 0)
+        self.assertEqual(control_plane["stats"]["issueMonitorAttentionCount"], 1)
+        self.assertEqual(control_plane["issueMonitors"][0]["repo"], "lusipad/KAM")
+        self.assertTrue(control_plane["issueMonitors"][0]["attention"])
+        self.assertEqual(control_plane["issueMonitors"][0]["tone"], "red")
+        self.assertTrue(any(item["kind"] == "issue_monitor_source-error" for item in control_plane["attention"]))
+
     async def _truncate_tables(self):
         async with engine.begin() as conn:
             for table in (

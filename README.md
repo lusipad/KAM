@@ -175,6 +175,20 @@ pwsh -File .\monitor-github-issues.ps1 -Repo owner/repo
 - 把 `owner/repo` 注册进 KAM 的持久化 GitHub Issue monitor 列表
 - 立即先扫一轮，把当前新变化的 issue 同步进任务池
 
+如果你更想直接在网页里操作，现在也可以：
+
+1. 打开 `操作台`
+2. 找到 `GitHub Issue 自动入池` 区块
+3. 填 `owner/repo` 和可选的本地 `repoPath`
+4. 点击 `注册 / 更新 Monitor`
+
+注册后，UI 会直接显示：
+
+- 已注册多少个 monitor
+- 哪些 monitor 正在运行
+- 哪个仓库最近检查失败
+- 某个 monitor 最近一次同步进来的任务
+
 如果你已经有本地仓库，希望 KAM 直接在那份代码上工作，而不是用 monitor 自己维护的 clone：
 
 ```powershell
@@ -196,6 +210,11 @@ pwsh -File .\monitor-github-issues.ps1 remove -Repo owner/repo
 - `running=true`：当前 KAM 进程里已经有后台轮询任务
 - `status` / `summary`：最近一轮轮询结果
 - `lastCheckedAt`：最近一次检查时间
+
+同样这些信息现在也会显示在：
+
+- 网页 `操作台`
+- `kam-operator.ps1 status`
 
 要点：
 

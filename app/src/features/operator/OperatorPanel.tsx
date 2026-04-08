@@ -1,6 +1,6 @@
 import { autoDriveActionLabel, autoDriveReasonLabel, autoDriveStatusLabel } from '@/features/tasks/autoDriveLabels'
 import { metadataText } from '@/features/tasks/taskMetadata'
-import type { OperatorActionKey, OperatorActionRecord, OperatorControlPlaneResponse, TaskRecord } from '@/types/harness'
+import type { IssueMonitorRecord, OperatorActionKey, OperatorActionRecord, OperatorControlPlaneResponse, TaskRecord } from '@/types/harness'
 
 const guideItems = [
   {
@@ -67,6 +67,25 @@ function buttonClassForTone(tone: OperatorActionRecord['tone']) {
     return 'button-danger'
   }
   return 'button-secondary'
+}
+
+function monitorStatusLabel(value: string) {
+  if (value === 'enqueued') {
+    return '已入池'
+  }
+  if (value === 'source-error') {
+    return '源错误'
+  }
+  if (value === 'failed') {
+    return '失败'
+  }
+  if (value === 'idle') {
+    return '空闲'
+  }
+  if (value === 'noop') {
+    return '无动作'
+  }
+  return value
 }
 
 function actionBusyLabel(action: OperatorActionKey) {
@@ -167,27 +186,66 @@ function restartSemanticsLabel(controlPlane: OperatorControlPlaneResponse | null
   return '不会续跑已中断 run；启动恢复时，未完成 run 会标记为 failed；需要时可手动重启 supervisor 重新恢复调度。'
 }
 
+function issueMonitorBusyLabel(value: string | null) {
+  if (value === 'register') {
+    return '注册中…'
+  }
+  if (value?.startsWith('run:')) {
+    return '重扫中…'
+  }
+  if (value?.startsWith('remove:')) {
+    return '移除中…'
+  }
+  return '处理中…'
+}
+
+function monitorToneLabel(monitor: IssueMonitorRecord) {
+  if (monitor.tone === 'red') {
+    return '异常'
+  }
+  if (monitor.tone === 'amber') {
+    return '待处理'
+  }
+  if (monitor.tone === 'green') {
+    return '正常'
+  }
+  return '观察中'
+}
+
 export function OperatorPanel({
   controlPlane,
   actionPending,
+  issueMonitorDraft,
+  issueMonitorPending,
   refreshing,
   selectedTaskBlockedReason,
   onRefresh,
   onAction,
+  onIssueMonitorDraftChange,
+  onSaveIssueMonitor,
+  onRunIssueMonitor,
+  onDeleteIssueMonitor,
   onSelectTask,
 }: {
   controlPlane: OperatorControlPlaneResponse | null
   actionPending: OperatorActionKey | null
+  issueMonitorDraft: { repo: string; repoPath: string }
+  issueMonitorPending: string | null
   refreshing: boolean
   selectedTaskBlockedReason: string | null
   onRefresh: () => void
   onAction: (action: OperatorActionRecord) => void
+  onIssueMonitorDraftChange: (value: { repo: string; repoPath: string }) => void
+  onSaveIssueMonitor: () => void
+  onRunIssueMonitor: (repo: string) => void
+  onDeleteIssueMonitor: (repo: string) => void
   onSelectTask: (taskId: string) => void
 }) {
   const currentTask = controlPlane?.focus.task ?? null
   const scopeTask = controlPlane?.focus.scopeTask ?? null
   const activeRun = controlPlane?.focus.activeRun ?? null
   const globalAutoDrive = controlPlane?.globalAutoDrive ?? null
+  const issueMonitors = controlPlane?.issueMonitors ?? []
   const recentEvents = controlPlane?.recentEvents.slice().reverse().slice(0, 4) ?? []
   const lease = leaseLabel(controlPlane)
   const focusSummary = selectedTaskBlockedReason ?? controlPlane?.focus.summary ?? null
@@ -195,6 +253,9 @@ export function OperatorPanel({
   const sourceMapping = sourceMappingLabel(mappingTask)
   const targetMapping = targetMappingLabel(mappingTask)
   const restartSemantics = restartSemanticsLabel(controlPlane)
+  const monitorRegisteredCount = controlPlane?.stats.issueMonitorCount ?? issueMonitors.length
+  const monitorRunningCount = controlPlane?.stats.issueMonitorRunningCount ?? issueMonitors.filter((item) => item.running).length
+  const monitorAttentionCount = controlPlane?.stats.issueMonitorAttentionCount ?? issueMonitors.filter((item) => item.attention).length
 
   return (
     <section className="feed-card operator-card">
@@ -224,6 +285,9 @@ export function OperatorPanel({
         {typeof controlPlane?.stats.passedRunAwaitingAdoptCount === 'number' ? (
           <span className="file-chip">待采纳 · {controlPlane.stats.passedRunAwaitingAdoptCount}</span>
         ) : null}
+        {monitorRegisteredCount > 0 ? <span className="file-chip">Issue 监控 · {monitorRegisteredCount}</span> : null}
+        {monitorRunningCount > 0 ? <span className="file-chip">Monitor Running · {monitorRunningCount}</span> : null}
+        {monitorAttentionCount > 0 ? <span className="file-chip">Monitor 异常 · {monitorAttentionCount}</span> : null}
         {lease ? <span className="file-chip">Lease · {lease}</span> : null}
         {globalAutoDrive?.lease?.stale ? <span className="file-chip">Lease 状态 · stale</span> : null}
         {timeLabel(controlPlane?.generatedAt ?? null) ? <span className="file-chip">刷新时间 · {timeLabel(controlPlane?.generatedAt ?? null)}</span> : null}
@@ -281,6 +345,86 @@ export function OperatorPanel({
             </article>
           ))}
         </div>
+      </section>
+
+      <section className="operator-section">
+        <div className="group-label">GitHub Issue 自动入池</div>
+        <div className="task-list">
+          <article className="task-list-row">
+            <div className="task-list-copy">
+              <strong>注册一个仓库后，KAM 运行期间会持续轮询；重启后会自动恢复。</strong>
+              <span>如果你没有任务，但希望系统自己从 GitHub 接活，优先在这里注册 Issue monitor。</span>
+              <div className="task-chip-row">
+                <span className="file-chip">已注册 · {monitorRegisteredCount}</span>
+                <span className="file-chip">运行中 · {monitorRunningCount}</span>
+                {monitorAttentionCount > 0 ? <span className="file-chip">需要处理 · {monitorAttentionCount}</span> : null}
+              </div>
+            </div>
+          </article>
+        </div>
+        <div className="task-inline-form">
+          <input
+            className="watcher-input"
+            value={issueMonitorDraft.repo}
+            onChange={(event) => onIssueMonitorDraftChange({ ...issueMonitorDraft, repo: event.target.value })}
+            placeholder="GitHub repo，例如 lusipad/KAM"
+          />
+          <input
+            className="watcher-input"
+            value={issueMonitorDraft.repoPath}
+            onChange={(event) => onIssueMonitorDraftChange({ ...issueMonitorDraft, repoPath: event.target.value })}
+            placeholder="本地 repoPath（可留空）"
+          />
+          <button type="button" className="button-primary" disabled={Boolean(issueMonitorPending) || !issueMonitorDraft.repo.trim()} onClick={onSaveIssueMonitor}>
+            {issueMonitorPending === 'register' ? issueMonitorBusyLabel(issueMonitorPending) : '注册 / 更新 Monitor'}
+          </button>
+        </div>
+        {issueMonitors.length ? (
+          <div className="task-list">
+            {issueMonitors.map((monitor) => (
+              <article key={monitor.repo} className="task-list-row">
+                <div className="task-list-copy">
+                  <strong>{monitor.repo}</strong>
+                  <span>{monitor.summary}</span>
+                  <div className="task-chip-row">
+                    <span className="file-chip">状态 · {monitorStatusLabel(monitor.status)}</span>
+                    <span className="file-chip">运行态 · {monitor.running ? '运行中' : '未运行'}</span>
+                    <span className="file-chip">健康度 · {monitorToneLabel(monitor)}</span>
+                    {monitor.lastCheckedAt ? <span className="file-chip">上次检查 · {timeLabel(monitor.lastCheckedAt) ?? monitor.lastCheckedAt}</span> : null}
+                    {typeof monitor.issueCount === 'number' ? <span className="file-chip">Issue 总数 · {monitor.issueCount}</span> : null}
+                    {typeof monitor.changedIssueCount === 'number' ? <span className="file-chip">本轮变化 · {monitor.changedIssueCount}</span> : null}
+                    {monitor.repoPath ? <span className="file-chip">repoPath · {monitor.repoPath}</span> : null}
+                    {monitor.taskIds[0] ? (
+                      <button type="button" className="task-link-button" onClick={() => onSelectTask(monitor.taskIds[0])}>
+                        打开最近任务
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="task-list-actions">
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    disabled={Boolean(issueMonitorPending)}
+                    onClick={() => onRunIssueMonitor(monitor.repo)}
+                  >
+                    {issueMonitorPending === `run:${monitor.repo}` ? issueMonitorBusyLabel(issueMonitorPending) : '立即扫一轮'}
+                  </button>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    disabled={Boolean(issueMonitorPending)}
+                    onClick={() => onDeleteIssueMonitor(monitor.repo)}
+                  >
+                    {issueMonitorPending === `remove:${monitor.repo}` ? issueMonitorBusyLabel(issueMonitorPending) : '移除'}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-panel">当前还没有注册任何 GitHub Issue 自动入池。注册后，新 issue 会自动进入 KAM 任务池。</div>
+        )}
       </section>
 
       <div className="operator-sections">

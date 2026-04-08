@@ -9,6 +9,7 @@ import {
   createTask,
   createTaskCompare,
   createTaskRun,
+  deleteIssueMonitorRecord,
   deleteTaskRef,
   deleteTaskDependency,
   getErrorMessage,
@@ -19,7 +20,9 @@ import {
   planTaskFollowUps,
   performOperatorAction,
   resolveTaskContext,
+  runIssueMonitorOnce,
   retryRun,
+  upsertIssueMonitor,
   updateTask,
 } from '@/api/client'
 import { FrontDoorPanel } from '@/features/operator/FrontDoorPanel'
@@ -59,6 +62,11 @@ type TaskDraft = {
   status: string
   priority: string
   labelsText: string
+}
+
+type IssueMonitorDraft = {
+  repo: string
+  repoPath: string
 }
 
 function toTaskDraft(task: TaskRecord | TaskDetail | null): TaskDraft {
@@ -151,6 +159,8 @@ function App() {
   const [operatorControl, setOperatorControl] = useState<OperatorControlPlaneResponse | null>(null)
   const [operatorActionPending, setOperatorActionPending] = useState<OperatorActionKey | null>(null)
   const [refreshingOperatorControl, setRefreshingOperatorControl] = useState(false)
+  const [issueMonitorDraft, setIssueMonitorDraft] = useState<IssueMonitorDraft>({ repo: '', repoPath: '' })
+  const [issueMonitorPending, setIssueMonitorPending] = useState<string | null>(null)
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
   const pushToast = useCallback((toast: ToastItem) => {
@@ -323,6 +333,83 @@ function App() {
       setOperatorActionPending(null)
     }
   }, [onError, operatorActionPending, pushToast, refreshTask, refreshTasks, selectedTaskId])
+
+  const handleSaveIssueMonitor = useCallback(async () => {
+    const repo = issueMonitorDraft.repo.trim()
+    if (!repo || issueMonitorPending) {
+      return
+    }
+    setIssueMonitorPending('register')
+    try {
+      const monitor = await upsertIssueMonitor({
+        repo,
+        repoPath: issueMonitorDraft.repoPath.trim() || null,
+        runNow: true,
+      })
+      const nextTaskId = monitor.taskIds[0] ?? selectedTaskId
+      const refreshers: Promise<unknown>[] = [refreshTasks(), refreshOperatorControl(nextTaskId)]
+      if (nextTaskId) {
+        setSelectedTaskId(nextTaskId)
+        refreshers.push(refreshTask(nextTaskId))
+      }
+      await Promise.all(refreshers)
+      pushToast({
+        id: `issue-monitor-register-${repo}-${Date.now()}`,
+        message: `已注册 GitHub Issue 自动入池：${monitor.repo}`,
+        tone: 'green',
+      })
+    } catch (error) {
+      onError(error, '注册 GitHub Issue 自动入池失败。')
+    } finally {
+      setIssueMonitorPending(null)
+    }
+  }, [issueMonitorDraft.repo, issueMonitorDraft.repoPath, issueMonitorPending, onError, pushToast, refreshOperatorControl, refreshTask, refreshTasks, selectedTaskId])
+
+  const handleRunIssueMonitor = useCallback(async (repo: string) => {
+    if (!repo.trim() || issueMonitorPending) {
+      return
+    }
+    setIssueMonitorPending(`run:${repo}`)
+    try {
+      const result = await runIssueMonitorOnce(repo)
+      const nextTaskId = result.taskIds[0] ?? selectedTaskId
+      const refreshers: Promise<unknown>[] = [refreshTasks(), refreshOperatorControl(nextTaskId)]
+      if (nextTaskId) {
+        setSelectedTaskId(nextTaskId)
+        refreshers.push(refreshTask(nextTaskId))
+      }
+      await Promise.all(refreshers)
+      pushToast({
+        id: `issue-monitor-run-${repo}-${Date.now()}`,
+        message: result.message,
+        tone: result.status === 'failed' || result.status === 'source-error' ? 'red' : result.status === 'enqueued' ? 'green' : 'amber',
+      })
+    } catch (error) {
+      onError(error, '手动重扫 GitHub Issue 失败。')
+    } finally {
+      setIssueMonitorPending(null)
+    }
+  }, [issueMonitorPending, onError, pushToast, refreshOperatorControl, refreshTask, refreshTasks, selectedTaskId])
+
+  const handleDeleteIssueMonitor = useCallback(async (repo: string) => {
+    if (!repo.trim() || issueMonitorPending) {
+      return
+    }
+    setIssueMonitorPending(`remove:${repo}`)
+    try {
+      await deleteIssueMonitorRecord(repo)
+      await refreshOperatorControl(selectedTaskId)
+      pushToast({
+        id: `issue-monitor-remove-${repo}-${Date.now()}`,
+        message: `已移除 GitHub Issue 自动入池：${repo}`,
+        tone: 'green',
+      })
+    } catch (error) {
+      onError(error, '移除 GitHub Issue 自动入池失败。')
+    } finally {
+      setIssueMonitorPending(null)
+    }
+  }, [issueMonitorPending, onError, pushToast, refreshOperatorControl, selectedTaskId])
 
   const handleCreateTask = useCallback(async () => {
     if (!taskPrompt.trim() || creatingTask) {
@@ -646,6 +733,8 @@ function App() {
           <OperatorPanel
             controlPlane={operatorControl}
             actionPending={operatorActionPending}
+            issueMonitorDraft={issueMonitorDraft}
+            issueMonitorPending={issueMonitorPending}
             refreshing={refreshingOperatorControl}
             selectedTaskBlockedReason={taskBlocked ? task?.dependencyState?.summary ?? '当前任务仍被依赖阻塞。' : null}
             onRefresh={() => {
@@ -653,6 +742,16 @@ function App() {
             }}
             onAction={(action) => {
               void handleOperatorAction(action)
+            }}
+            onIssueMonitorDraftChange={setIssueMonitorDraft}
+            onSaveIssueMonitor={() => {
+              void handleSaveIssueMonitor()
+            }}
+            onRunIssueMonitor={(repo) => {
+              void handleRunIssueMonitor(repo)
+            }}
+            onDeleteIssueMonitor={(repo) => {
+              void handleDeleteIssueMonitor(repo)
             }}
             onSelectTask={setSelectedTaskId}
           />

@@ -79,6 +79,7 @@ function actionBusyLabel(action: OperatorActionKey) {
 function summaryHeadline(controlPlane: OperatorControlPlaneResponse | null, tasksCount: number) {
   const focusTask = controlPlane?.focus.task ?? controlPlane?.focus.scopeTask ?? null
   const taskTitle = focusTask?.title ?? '当前系统'
+  const issueMonitorRunningCount = controlPlane?.stats.issueMonitorRunningCount ?? 0
 
   if (!controlPlane) {
     return '正在读取 KAM 当前状态。'
@@ -92,6 +93,9 @@ function summaryHeadline(controlPlane: OperatorControlPlaneResponse | null, task
   }
   if (controlPlane.systemStatus === 'ready') {
     return `KAM 已经准备好继续推进「${taskTitle}」`
+  }
+  if (controlPlane.systemStatus === 'idle' && tasksCount === 0 && issueMonitorRunningCount > 0) {
+    return '当前还没有任务，但 GitHub Issue 自动入池已经在值守'
   }
   if (controlPlane.systemStatus === 'idle' && tasksCount === 0) {
     return '现在系统里还没有任务'
@@ -110,6 +114,8 @@ function summaryDetail(controlPlane: OperatorControlPlaneResponse | null, tasksC
   const preferredAction = controlPlane?.actions.find((action) => !action.disabled) ?? null
   const attentionItem = controlPlane?.attention[0] ?? null
   const activeRun = controlPlane?.focus.activeRun ?? null
+  const issueMonitorRunningCount = controlPlane?.stats.issueMonitorRunningCount ?? 0
+  const issueMonitorAttentionCount = controlPlane?.stats.issueMonitorAttentionCount ?? 0
 
   if (!controlPlane) {
     return '稍等几秒，系统会把当前状态和推荐动作读出来。'
@@ -123,6 +129,9 @@ function summaryDetail(controlPlane: OperatorControlPlaneResponse | null, tasksC
   }
 
   if (controlPlane.systemStatus === 'attention') {
+    if (issueMonitorAttentionCount > 0 && attentionItem?.kind?.startsWith('issue_monitor_')) {
+      return `${attentionItem.summary} 先处理外部任务源，再继续让 KAM 自动接活。`
+    }
     return attentionItem?.summary || '先看“需要关注”，再执行推荐动作。这里通常表示失败、阻塞或需要人工确认。'
   }
 
@@ -130,6 +139,10 @@ function summaryDetail(controlPlane: OperatorControlPlaneResponse | null, tasksC
     return preferredAction
       ? `最直接的下一步就是点「${preferredAction.label}」。`
       : '系统已经准备好继续推进，但当前没有明确的推荐动作。'
+  }
+
+  if (controlPlane.systemStatus === 'idle' && tasksCount === 0 && issueMonitorRunningCount > 0) {
+    return '你现在不用先手工建任务。只要 GitHub 上有新的 issue 变化，KAM 会自动把它们送进任务池。'
   }
 
   if (controlPlane.systemStatus === 'idle' && tasksCount === 0) {
@@ -201,6 +214,11 @@ export function FrontDoorPanel({
             {activeRun ? <span className="file-chip">当前 Run · {activeRun.agent}</span> : null}
             {controlPlane?.globalAutoDrive ? (
               <span className="file-chip">全局无人值守 · {controlPlane.globalAutoDrive.enabled ? '已开启' : '未开启'}</span>
+            ) : null}
+            {typeof controlPlane?.stats.issueMonitorCount === 'number' && controlPlane.stats.issueMonitorCount > 0 ? (
+              <span className="file-chip">
+                Issue 自动入池 · {controlPlane.stats.issueMonitorRunningCount}/{controlPlane.stats.issueMonitorCount}
+              </span>
             ) : null}
           </div>
 

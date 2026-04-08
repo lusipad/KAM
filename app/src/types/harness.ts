@@ -187,6 +187,32 @@ export interface GlobalAutoDriveResponse {
   recentEvents: AutoDriveEventRecord[]
 }
 
+export interface IssueMonitorRecord {
+  repo: string
+  repoPath: string | null
+  running: boolean
+  status: string
+  summary: string
+  lastCheckedAt: string | null
+  issueCount: number | null
+  changedIssueCount: number | null
+  taskIds: string[]
+  attention: boolean
+  tone: 'green' | 'amber' | 'red' | 'gray'
+}
+
+export interface IssueMonitorRunSummary {
+  checkedAt: string | null
+  repo: string
+  status: string
+  message: string
+  workspace: string | null
+  issueCount: number | null
+  changedIssueCount: number | null
+  issueNumbers: number[]
+  taskIds: string[]
+}
+
 export type OperatorActionKey =
   | 'start_global_autodrive'
   | 'stop_global_autodrive'
@@ -228,6 +254,9 @@ export interface OperatorStats {
   runningRunCount: number
   passedRunAwaitingAdoptCount: number
   scopeAutodriveEnabledCount: number
+  issueMonitorCount: number
+  issueMonitorRunningCount: number
+  issueMonitorAttentionCount: number
 }
 
 export interface OperatorFocus {
@@ -245,6 +274,7 @@ export interface OperatorControlPlaneResponse {
   globalAutoDrive: GlobalAutoDriveResponse
   stats: OperatorStats
   focus: OperatorFocus
+  issueMonitors: IssueMonitorRecord[]
   actions: OperatorActionRecord[]
   attention: OperatorAttentionItem[]
   recentEvents: AutoDriveEventRecord[]
@@ -258,4 +288,8 @@ export interface OperatorActionResponse {
   runId: string | null
   continueDecision: TaskContinueResponse | null
   controlPlane: OperatorControlPlaneResponse
+}
+
+export interface IssueMonitorListResponse {
+  monitors: IssueMonitorRecord[]
 }

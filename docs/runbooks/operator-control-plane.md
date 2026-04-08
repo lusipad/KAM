@@ -79,6 +79,13 @@ pwsh -File .\monitor-github-issues.ps1 remove -Repo owner/repo
 - `remove`
   - 停止并删除某个仓库的自动入池配置
 
+如果你更习惯在 UI 里操作，也可以直接打开 `操作台` 的 `GitHub Issue 自动入池` 区块：
+
+- 直接注册或更新 `owner/repo`
+- 直接手动 `立即扫一轮`
+- 直接删除某个 monitor
+- 直接看最近一次检查状态、是否运行中、最近生成的任务
+
 ## 命令怎么选
 
 - 你是人在本机操作：优先 `menu`
@@ -138,6 +145,13 @@ pwsh -File .\monitor-github-issues.ps1 remove -Repo owner/repo
 - monitor 已注册，但 KAM 服务当前没运行
 - KAM 刚启动，尚未到下一个轮询周期
 - 私有仓库 token 不可用，monitor 进入了 `source-error`
+
+现在 operator 视图里也会直接把这些 monitor 摘要带出来；如果你看到：
+
+- `Issue 监控 > 0`
+  - 说明已经至少注册了一个自动入池 monitor
+- `Monitor 异常 > 0`
+  - 说明至少有一个 monitor 失败、源报错，或者没有正常运行
 
 如果一张 task 没有远端执行目标，它通常就是：
 

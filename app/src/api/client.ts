@@ -1,4 +1,7 @@
 import type {
+  IssueMonitorListResponse,
+  IssueMonitorRecord,
+  IssueMonitorRunSummary,
   OperatorActionResponse,
   OperatorControlPlaneResponse,
   ReviewCompareRecord,
@@ -175,6 +178,35 @@ export function getOperatorControlPlane(taskId?: string | null) {
   }
   const suffix = search.size ? `?${search.toString()}` : ''
   return request<OperatorControlPlaneResponse>(`/operator/control-plane${suffix}`)
+}
+
+export function listIssueMonitors() {
+  return request<IssueMonitorListResponse>('/issue-monitors')
+}
+
+export function upsertIssueMonitor(payload: {
+  repo: string
+  repoPath?: string | null
+  runNow?: boolean
+}) {
+  return request<IssueMonitorRecord>('/issue-monitors', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function runIssueMonitorOnce(repo: string) {
+  const [owner, name] = repo.split('/', 2)
+  return request<IssueMonitorRunSummary>(`/issue-monitors/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/run-once`, {
+    method: 'POST',
+  })
+}
+
+export function deleteIssueMonitorRecord(repo: string) {
+  const [owner, name] = repo.split('/', 2)
+  return request<{ ok: boolean; repo: string }>(`/issue-monitors/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
 }
 
 export function performOperatorAction(payload: {

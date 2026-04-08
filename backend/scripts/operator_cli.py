@@ -191,6 +191,13 @@ def _action_descriptors(control_plane: dict[str, Any]) -> list[dict[str, Any]]:
     return [action for action in actions if isinstance(action, dict)]
 
 
+def _issue_monitor_descriptors(control_plane: dict[str, Any]) -> list[dict[str, Any]]:
+    issue_monitors = control_plane.get("issueMonitors")
+    if not isinstance(issue_monitors, list):
+        return []
+    return [item for item in issue_monitors if isinstance(item, dict)]
+
+
 def _action_key(action: dict[str, Any]) -> str | None:
     return _optional_text(action.get("key"))
 
@@ -290,11 +297,22 @@ def _format_action(action: dict[str, Any]) -> str:
     return f"- {label}{suffix}"
 
 
+def _format_issue_monitor(item: dict[str, Any]) -> str:
+    repo = _optional_text(item.get("repo")) or "-"
+    status = _optional_text(item.get("status")) or "unknown"
+    running = "运行中" if item.get("running") is True else "未运行"
+    summary = _optional_text(item.get("summary")) or "无摘要"
+    last_checked_at = _optional_text(item.get("lastCheckedAt"))
+    suffix = f" | 上次检查：{last_checked_at}" if last_checked_at else ""
+    return f"- {repo} | {status} | {running}{suffix} | {summary}"
+
+
 def format_control_plane(control_plane: dict[str, Any]) -> str:
     focus = control_plane.get("focus") if isinstance(control_plane.get("focus"), dict) else {}
     stats = control_plane.get("stats") if isinstance(control_plane.get("stats"), dict) else {}
     attention = control_plane.get("attention") if isinstance(control_plane.get("attention"), list) else []
     actions = _action_descriptors(control_plane)
+    issue_monitors = _issue_monitor_descriptors(control_plane)
     preferred = _preferred_action(control_plane)
 
     lines = [
@@ -316,6 +334,13 @@ def format_control_plane(control_plane: dict[str, Any]) -> str:
             f"awaiting_adopt={stats.get('passedRunAwaitingAdoptCount', 0)}"
         ),
     ]
+    if stats.get("issueMonitorCount", 0) or issue_monitors:
+        lines.append(
+            "Issue 自动入池: "
+            f"registered={stats.get('issueMonitorCount', len(issue_monitors))} "
+            f"running={stats.get('issueMonitorRunningCount', sum(1 for item in issue_monitors if item.get('running') is True))} "
+            f"attention={stats.get('issueMonitorAttentionCount', sum(1 for item in issue_monitors if item.get('attention') is True))}"
+        )
     source_mapping = _source_mapping_label(control_plane)
     target_mapping = _target_mapping_label(control_plane)
     if source_mapping or target_mapping:
@@ -334,6 +359,11 @@ def format_control_plane(control_plane: dict[str, Any]) -> str:
             title = item.get("title") if isinstance(item.get("title"), str) else item.get("kind")
             summary = item.get("summary") if isinstance(item.get("summary"), str) else ""
             lines.append(f"- {title}: {summary}".rstrip())
+
+    if issue_monitors:
+        lines.append("GitHub Issue Monitors:")
+        for item in issue_monitors[:4]:
+            lines.append(_format_issue_monitor(item))
 
     if actions:
         lines.append("可执行动作:")
