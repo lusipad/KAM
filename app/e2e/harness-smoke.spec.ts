@@ -2,6 +2,8 @@ import { expect, test } from '@playwright/test'
 
 test.describe.configure({ mode: 'serial' })
 
+const seededTaskTitle = '处理 GitHub issue：首页要讲清持续推进链路'
+const seededRunSummary = '首页已经补出差异点证据区和默认演示链路，控制面继续保留人工接管入口。'
 
 test.beforeEach(async ({ page }) => {
   const response = await page.request.post('/api/dev/seed-harness', {
@@ -13,33 +15,40 @@ test.beforeEach(async ({ page }) => {
 })
 
 
-test('task-first harness workbench is reachable', async ({ page }) => {
+test('front door shows proof and seeded demo flow', async ({ page }) => {
   await expect(page).toHaveTitle('KAM Harness')
-  await expect(page.locator('.feed-card-title').filter({ hasText: '操作台' }).first()).toBeVisible()
-  await expect(page.getByText('值守说明')).toBeVisible()
-  await expect(page.getByText('怎么看状态')).toBeVisible()
-  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
-  await expect(page.locator('.feed-card-title').filter({ hasText: '让 KAM 自己排工作' }).first()).toBeVisible()
-  await expect(page.getByRole('main').getByText('Refs', { exact: true })).toBeVisible()
-  await expect(page.getByRole('main').getByText('Context Snapshot', { exact: true })).toBeVisible()
-  await expect(page.getByRole('main').getByText('Runs', { exact: true })).toBeVisible()
-  await expect(page.getByRole('main').getByText('Compare', { exact: true })).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '让 AI 不只写代码，而是持续做工程工作' }).first()).toBeVisible()
+  await expect(page.getByText('KAM 是本地优先的 AI 工程控制面。')).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: 'Local-first' }).first()).toBeVisible()
+  await expect(page.locator('.file-chip').filter({ hasText: 'GitHub-driven' }).first()).toBeVisible()
+  await expect(page.locator('.frontdoor-proof-card').filter({ hasText: 'Task-native' }).first()).toBeVisible()
+  await expect(page.locator('.frontdoor-proof-card').filter({ hasText: 'With receipts' }).first()).toBeVisible()
+  await expect(page.locator('.frontdoor-proof-card').filter({ hasText: 'Operator-native' }).first()).toBeVisible()
+  await expect(page.locator('.frontdoor-story-card .frontdoor-section-label').filter({ hasText: '默认演示链路' })).toBeVisible()
+  await expect(page.locator('.frontdoor-story-step').filter({ hasText: 'GitHub issue / PR comment' })).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: seededTaskTitle }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '详细状态与人工介入' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: 'Refs' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: 'Context Snapshot' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: 'Runs' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: 'Compare' }).first()).toBeVisible()
   await expect(page.getByRole('button', { name: '继续推进当前任务' })).toBeVisible()
-  await expect(page.getByRole('main').getByText('[file] PRD')).toBeVisible()
+  await expect(page.getByRole('main').getByText('[url] GitHub Issue')).toBeVisible()
 
-  await expect(page.locator('.run-card').first()).toContainText('Task')
-  await expect(page.locator('.run-card').filter({ hasText: '默认入口已切到 task-first workbench' }).first()).toBeVisible()
+  await expect(page.locator('.run-card').first()).toBeVisible()
+  await expect(page.locator('.run-card').first()).toContainText('把首页改成一眼看懂持续推进链路')
+  await expect(page.locator('.run-card').filter({ hasText: seededRunSummary }).first()).toBeVisible()
 
   await page.getByRole('button', { name: '对比最近两个 Run' }).click()
   await expect(page.locator('.task-list-row').filter({ hasText: '对比 2 个 run' }).first()).toBeVisible()
 
   await expect(page.locator('.memory-title').filter({ hasText: 'Artifacts' })).toBeVisible()
   await expect(page.locator('.task-artifact-card').filter({ hasText: 'stdout' }).first()).toBeVisible()
-  await expect(page.locator('.task-artifact-content').filter({ hasText: '前端主入口已切换。' }).first()).toBeVisible()
+  await expect(page.locator('.task-artifact-content').filter({ hasText: '首页差异点区已接上。' }).first()).toBeVisible()
 })
 
 test('can let KAM plan follow-up tasks from the current task', async ({ page }) => {
-  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: seededTaskTitle }).first()).toBeVisible()
 
   await page.getByRole('button', { name: '让 KAM 自己排工作' }).click()
 
@@ -58,7 +67,7 @@ test('can let KAM plan follow-up tasks from the current task', async ({ page }) 
 })
 
 test('can let KAM dispatch the next runnable task from the queue', async ({ page }) => {
-  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: seededTaskTitle }).first()).toBeVisible()
 
   await page.getByRole('button', { name: '让 KAM 接下一张' }).click()
 
@@ -69,7 +78,7 @@ test('can let KAM dispatch the next runnable task from the queue', async ({ page
 })
 
 test('can let KAM continue the current task family', async ({ page }) => {
-  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: seededTaskTitle }).first()).toBeVisible()
 
   await page.getByRole('button', { name: '继续推进当前任务' }).click()
 
@@ -79,7 +88,7 @@ test('can let KAM continue the current task family', async ({ page }) => {
 })
 
 test('can let KAM continue the current task with an automatic decision', async ({ page }) => {
-  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: seededTaskTitle }).first()).toBeVisible()
 
   await page.getByRole('button', { name: '继续推进当前任务' }).click()
 
@@ -91,7 +100,7 @@ test('can let KAM continue the current task with an automatic decision', async (
 })
 
 test('can enter self-driving mode for the current task family', async ({ page }) => {
-  await expect(page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: seededTaskTitle }).first()).toBeVisible()
 
   await page.getByRole('button', { name: '进入无人值守' }).click()
 
@@ -124,11 +133,11 @@ test('can enter global self-driving mode across task families', async ({ page })
   expect(secondRootResponse.ok()).toBeTruthy()
   const secondRoot = await secondRootResponse.json()
 
-  await expect(page.getByRole('button', { name: '开启全局无人值守' })).toBeVisible()
-  await page.getByRole('button', { name: '开启全局无人值守' }).click()
+  await expect(page.getByRole('button', { name: '开启全局无人值守', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '开启全局无人值守', exact: true }).click()
 
-  await expect(page.getByRole('button', { name: '停止全局无人值守' })).toBeVisible()
-  await expect(page.locator('.feed-card-title').filter({ hasText: '操作台' }).first()).toBeVisible()
+  await expect(page.getByRole('button', { name: '停止全局无人值守', exact: true })).toBeVisible()
+  await expect(page.locator('.feed-card-title').filter({ hasText: '详细状态与人工介入' }).first()).toBeVisible()
   await expect.poll(async () => {
     const response = await page.request.get('/api/tasks/autodrive/global')
     const payload = await response.json()
@@ -184,7 +193,7 @@ test('can block a task with dependencies from the workbench', async ({ page }) =
 test('mobile keeps task detail and artifact panel reachable', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
 
-  const taskTitle = page.locator('.feed-card-title').filter({ hasText: '切到 task-first harness' }).first()
+  const taskTitle = page.locator('.feed-card-title').filter({ hasText: seededTaskTitle }).first()
   await taskTitle.scrollIntoViewIfNeeded()
   await expect(taskTitle).toBeVisible()
   await expect(page.locator('.memory-title').filter({ hasText: 'Artifacts' })).toBeVisible()
@@ -192,9 +201,9 @@ test('mobile keeps task detail and artifact panel reachable', async ({ page }) =
 })
 
 test('can create a task, add refs, generate a snapshot, launch runs, and compare them', async ({ page }) => {
-  await page.getByRole('button', { name: '新建任务' }).first().click()
+  await page.locator('.sidebar-footer').getByRole('button', { name: '新建任务', exact: true }).click()
 
-  await page.getByPlaceholder('例如：把当前默认前端主入口切成 task-first workbench').fill('把 run runtime 切成 task-native')
+  await page.getByPlaceholder('例如：把首页改成用户能一眼看懂当前状态和下一步的界面').fill('把 run runtime 切成 task-native')
   await page.getByRole('button', { name: '创建任务' }).click()
 
   await expect(page.locator('.feed-card-title').filter({ hasText: '把 run runtime 切成 task-native' }).first()).toBeVisible()
@@ -212,7 +221,7 @@ test('can create a task, add refs, generate a snapshot, launch runs, and compare
 
   await expect(page.locator('.task-list-row').filter({ hasText: '[file] Run Engine' }).first()).toBeVisible()
 
-  await page.getByPlaceholder('可选 focus，例如：先切前端主入口').fill('先把 task run 挂到 task 下')
+  await page.getByPlaceholder('可选 focus，例如：先把首页差异点和默认演示链路讲清').fill('先把 task run 挂到 task 下')
   await page.getByRole('button', { name: '生成快照' }).click()
 
   await expect(page.locator('.task-list-row').filter({ hasText: '把 task-native run 收口到日常开发台 · 1 refs' }).first()).toBeVisible()

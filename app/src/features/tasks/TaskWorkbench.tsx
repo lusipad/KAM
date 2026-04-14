@@ -596,7 +596,7 @@ export function TaskWorkbench({
               className="watcher-input"
               value={snapshotFocus}
               onChange={(event) => onSnapshotFocusChange(event.target.value)}
-              placeholder="可选 focus，例如：先切前端主入口"
+              placeholder="可选 focus，例如：先把首页差异点和默认演示链路讲清"
             />
             <div className="task-list">
               {task.snapshots.length ? (

@@ -144,14 +144,16 @@ class HarnessApiTests(unittest.TestCase):
 
         tasks = self.client.get("/api/tasks").json()["tasks"]
         self.assertEqual(len(tasks), 1)
-        self.assertEqual(tasks[0]["title"], "切到 task-first harness")
+        self.assertEqual(tasks[0]["title"], "处理 GitHub issue：首页要讲清持续推进链路")
 
         detail = self.client.get("/api/tasks/task-harness-cutover").json()
         self.assertEqual(len(detail["refs"]), 2)
         self.assertEqual(len(detail["snapshots"]), 1)
         self.assertEqual(len(detail["runs"]), 2)
         self.assertEqual(len(detail["reviews"]), 1)
-        self.assertEqual(detail["metadata"], {})
+        self.assertEqual(detail["metadata"]["sourceKind"], "github_issue")
+        self.assertEqual(detail["metadata"]["sourceRepo"], "lusipad/KAM")
+        self.assertEqual(detail["metadata"]["sourceIssueNumber"], 4519)
 
         artifacts = self.client.get("/api/runs/task-run-2/artifacts").json()["artifacts"]
         self.assertTrue(any(item["type"] == "stdout" for item in artifacts))

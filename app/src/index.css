@@ -1259,6 +1259,76 @@ button {
   gap: 10px;
 }
 
+.frontdoor-section-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.frontdoor-proof-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.frontdoor-proof-card,
+.frontdoor-story-card {
+  display: grid;
+  gap: 8px;
+  border: 0.5px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 12px;
+}
+
+.frontdoor-proof-card strong,
+.frontdoor-story-head strong {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.frontdoor-proof-card span,
+.frontdoor-story-head span {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-soft);
+}
+
+.frontdoor-story-head {
+  display: grid;
+  gap: 6px;
+}
+
+.frontdoor-story-rail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.frontdoor-story-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.frontdoor-story-step {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(200, 122, 60, 0.12);
+  border: 0.5px solid rgba(200, 122, 60, 0.28);
+  font-size: 11px;
+  color: #f3c792;
+  font-family: 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace;
+}
+
+.frontdoor-story-arrow {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 .frontdoor-guide-card {
   display: grid;
   gap: 6px;
@@ -1549,6 +1619,14 @@ button {
   .frontdoor-layout,
   .operator-sections {
     grid-template-columns: 1fr;
+  }
+
+  .frontdoor-proof-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .frontdoor-story-arrow {
+    display: none;
   }
 
   .watcher-layout {
